@@ -27,10 +27,10 @@ from __future__ import annotations
 
 import os
 
-import _deploy as L
 import numpy as np
 import pytest
-from conftest import sidecar_of
+from conftest import _launch as _bound_plan
+from conftest import assert_within, sidecar_of, sum_bound
 
 import hawk
 from hawk import HawkError, Mutable, Param, Scalar, Terminated, kernel
@@ -76,15 +76,8 @@ def bundle(tmp_path_factory, cache_dir):
 
 
 def _launch(bundle, name, target, **planes):
-    import eagle.exec as eexec
-    from eagle import plan as eplan
-
-    sidecar = sidecar_of(bundle, name)
-    if target == "host":
-        plugin, structure = (L.host_plugin(bundle.directory, name, sidecar), eexec.HostTeam)
-    else:
-        plugin, structure = (L.device_plugin(bundle.directory, name, sidecar), eexec.DeviceKernel)
-    bound = eplan.plan(plugin, structure=structure).bind(**planes)
+    """The plan of ``name`` over ``planes``, launched once and returned."""
+    bound = _bound_plan(bundle, name, target, planes)
     bound.launch()
     return bound
 
@@ -166,28 +159,20 @@ def _loss_gradients(bundle, name, k, b):
         "bar_x": np.zeros(N),
     }
     if name == "law_pvjp":
-        rows = -(-N // 32)
         planes.update(k=np.array([k]), b=np.array([b]))
-        planes.update(
-            {n: np.full(rows, np.nan) for n in ("bar_k", "bar_k_comp", "bar_b", "bar_b_comp")}
-        )
+        # the host library folds the rows into the one cell and makes the compensation plane itself
+        planes.update({n: np.full(1, np.nan) for n in ("bar_k", "bar_b")})
     else:
         planes.update(k=k, b=b)
     assert {"bar_k", "bar_b"} <= {n for _, n in sc["arg_spec"]}
     _launch(bundle, name, "host", **planes)
-    if name == "law_pvjp":
-        return (planes["bar_k"] + planes["bar_k_comp"], planes["bar_b"] + planes["bar_b_comp"])
     return planes["bar_k"], planes["bar_b"]
 
 
-def _per_32(plane):
-    return np.add.reduceat(plane, np.arange(0, plane.size, 32))
-
-
-def test_vjp_gradient_is_summed_per_32_samples_and_matches_finite_difference(bundle):
+def test_vjp_gradient_is_summed_over_the_samples_and_matches_finite_difference(bundle):
     k, b, h = 1.3, 0.7, 1e-6
     gk, gb = _loss_gradients(bundle, "law_pvjp", k, b)
-    assert gk.shape == (-(-N // 32),) and gb.shape == (-(-N // 32),)
+    assert gk.shape == (1,) and gb.shape == (1,)
     x = _x()
 
     def loss(kk, bb):
@@ -196,8 +181,8 @@ def test_vjp_gradient_is_summed_per_32_samples_and_matches_finite_difference(bun
     assert abs(gk.sum() - (loss(k + h, b) - loss(k - h, b)) / (2 * h)) < 1e-6
     assert abs(gb.sum() - (loss(k, b + h) - loss(k, b - h)) / (2 * h)) < 1e-6
     pk, pb = _loss_gradients(bundle, "law_vjp", k, b)
-    np.testing.assert_allclose(gk, _per_32(pk), rtol=1e-14)
-    np.testing.assert_allclose(gb, _per_32(pb), rtol=1e-14)
+    assert_within(gk, pk.sum(), sum_bound(pk))
+    assert_within(gb, pb.sum(), sum_bound(pb))
 
 
 def test_a_name_clash_and_an_unknown_name_are_refused():
@@ -257,15 +242,11 @@ def test_the_cell_is_loaded_once_before_the_sample_loop(bundle):
 
 
 def _cell_and_value_arms(bundle):
-    import eagle.exec as eexec
-    from eagle import plan as eplan
-
     n = 1 << 18
     x, y1, y2 = np.random.default_rng(1).uniform(-1, 1, n), np.zeros(n), np.zeros(n)
 
     def bind(name, **planes):
-        plugin = L.host_plugin(bundle.directory, name, sidecar_of(bundle, name))
-        return eplan.plan(plugin, structure=eexec.HostTeam).bind(x=x, **planes)
+        return hawk.plan(hawk.load(bundle.directory, name)).bind(x=x, **planes)
 
     by_value = bind("law", k=1.7, b=-0.4, y=y1)
     cell = bind("law_params", k=np.array([1.7]), b=np.array([-0.4]), y=y2)

@@ -36,7 +36,8 @@ import math
 import _deploy as L
 import numpy as np
 import pytest
-from conftest import sidecar_of
+from _unit_sidecar import finish_mask, sidecar_of_kernel
+from conftest import _launch, _xp, sidecar_of
 
 import hawk
 from hawk import (
@@ -46,13 +47,12 @@ from hawk import (
     Scalar,
     Terminated,
     Vector,
+    _ir,
     kernel,
 )
 from hawk.artifact import build_bundle
-from _unit_sidecar import finish_mask, sidecar_of_kernel
 from hawk.diff import jvp, vjp
 from hawk.errors import HawkError
-from hawk import _ir
 
 N = 48
 DT = 0.0625
@@ -306,30 +306,11 @@ def _planes(which, xp):
 
 
 def _run(bundle, name, which, target):
-    import eagle.exec as eexec
-    from eagle import plan as eplan
-
-    sidecar = sidecar_of(bundle, name)
-    if target == "host":
-        plugin, structure, xp = (
-            L.host_plugin(bundle.directory, name, sidecar),
-            eexec.HostTeam,
-            np,
-        )
-    else:
-        import cupy as cp
-
-        plugin, structure, xp = (
-            L.device_plugin(bundle.directory, name, sidecar),
-            eexec.DeviceKernel,
-            cp,
-        )
+    xp = _xp(target)
     planes, stop = _planes(which, xp)
     planes["terminated"] = xp.zeros(N, dtype=bool)
     counter = xp.zeros(1, dtype=xp.uint32)
-    bound = eplan.plan(plugin, structure=structure).bind(
-        dt=DT, finished_count=counter, **planes
-    )
+    bound = _launch(bundle, name, target, {"dt": DT, "finished_count": counter, **planes})
     launches = 0
     while int(counter[0]) < N and launches < CAP:
         bound.launch()
@@ -430,26 +411,24 @@ def test_a_derivative_of_the_auto_kernel_refuses(transform):
 K_SEQ = (1, 3, 64, 7, 2, 16, 5, 33)
 
 
-def _driver(bundle, name, which, target, *, active=False, never=False):
-    """``(bound, planes, counter, word, xp, active_planes)`` of one run."""
+def _bind(bundle, name, target, planes, active):
+    """The plan bound over ``planes``. An active set is made by a runner hawk's verbs do not have yet (the library refuses the
+    caller's ``active_count``), so that row binds through eagle's plan."""
+    if not active:
+        return _launch(bundle, name, target, planes)
     import eagle.exec as eexec
     from eagle import plan as eplan
 
-    sidecar = sidecar_of(bundle, name)
-    if target == "host":
-        plugin, structure, xp = (
-            L.host_plugin(bundle.directory, name, sidecar),
-            eexec.HostTeam,
-            np,
-        )
-    else:
-        import cupy as cp
+    plugin = (L.host_plugin(bundle.directory, name, sidecar_of(bundle, name)) if target == "host"
+              else L.device_plugin(bundle.directory, name, sidecar_of(bundle, name)))
+    structure = eexec.HostTeam if target == "host" else eexec.DeviceKernel
+    return eplan.plan(plugin, structure=structure).bind(**planes)
 
-        plugin, structure, xp = (
-            L.device_plugin(bundle.directory, name, sidecar),
-            eexec.DeviceKernel,
-            cp,
-        )
+
+def _driver(bundle, name, which, target, *, active=False, never=False):
+    """``(bound, planes, counter, word, xp, active_planes)`` of one run."""
+    sidecar = sidecar_of(bundle, name)
+    xp = _xp(target)
     planes, _ = _planes(which, xp)
     if never:
         planes["t_final"] = xp.full(N, np.inf)
@@ -462,9 +441,7 @@ def _driver(bundle, name, which, target, *, active=False, never=False):
     if active:
         extra["active_map"] = xp.arange(N, dtype=xp.int32)
         extra["active_count"] = xp.full(1, N, dtype=xp.uint32)
-    bound = eplan.plan(plugin, structure=structure).bind(
-        dt=DT, finished_count=counter, **planes, **extra
-    )
+    bound = _bind(bundle, name, target, {"dt": DT, "finished_count": counter, **planes, **extra}, active)
     return bound, planes, counter, extra, xp
 
 

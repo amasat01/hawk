@@ -33,7 +33,9 @@ import pytest
 from conftest import refuse_device_row
 from _device_file import device_artifact
 
+import hawk
 from hawk.artifact import build_bundle
+from hawk.errors import HawkError
 
 #: GRefMirror deliberately 41 instead of 40; every other field correct.
 BAD = (41, 32, 32, 4, 24)
@@ -61,8 +63,8 @@ def test_the_override_reaches_the_library_the_units_are_linked_into(bad_bundle):
 
 
 def test_a_wrong_layout_host_artifact_is_refused_naming_the_field(bad_bundle):
-    with pytest.raises(ValueError, match="GRefMirror") as excinfo:
-        L.host_selfcheck(bad_bundle.directory / "axpb.so")
+    with pytest.raises(HawkError, match="GRefMirror") as excinfo:
+        hawk.load(bad_bundle.directory, "axpb")
     assert "41" in str(excinfo.value) and "layout" in str(excinfo.value)
 
 

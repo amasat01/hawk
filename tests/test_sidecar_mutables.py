@@ -26,12 +26,12 @@ This test previously failed under a plant: ``_mutable_dtype`` collapsed to a con
 
 from __future__ import annotations
 
-import _deploy as L
 import _deployable as D
 import numpy as np
 import pytest
 from conftest import sidecar_of
 
+import hawk
 from hawk.artifact import plan_view
 from hawk import _ir
 
@@ -106,16 +106,10 @@ def test_a_scalar_and_a_matrix_mutable_declare_their_own_dtypes(built):
 
 
 def test_the_declared_kernel_computes_the_right_answer_through_the_mirror(built):
-    import eagle.exec as eexec
-    from eagle import plan as eplan
-
-    bundle = built["vec3"]
-    plugin = L.host_plugin(bundle.directory, "vec3_scale",
-                           sidecar_of(bundle, "vec3_scale"))
     x = np.arange(24, dtype=float).reshape(3, 8)
-    np.testing.assert_allclose(
-        eplan.plan(plugin, structure=eexec.HostTeam).run(x=x, a=3.0),
-        D.ref_vec3_scale(x, 3.0))
+    y = np.zeros_like(x)
+    hawk.run(hawk.load(built["vec3"].directory, "vec3_scale"), x=x, a=3.0, y=y)
+    np.testing.assert_allclose(y, D.ref_vec3_scale(x, 3.0))
 
 
 @pytest.mark.parametrize("cxx", ["g++", "clang++"])
@@ -124,9 +118,6 @@ def test_a_512_wide_vector_assign_compiles_and_runs_under_each_host_compiler(
     """clang caps a fold expression at 256 operands; the whole-value assign
     must not grow a fold with the extent."""
     import shutil
-
-    import eagle.exec as eexec
-    from eagle import plan as eplan
 
     from hawk import Mutable, Param, Vector, kernel
     from hawk.artifact import build_bundle
@@ -141,7 +132,7 @@ def test_a_512_wide_vector_assign_compiles_and_runs_under_each_host_compiler(
 
     bundle = build_bundle([scale512], tmp_path / cxx, targets=("host",),
                           cache_dir=str(tmp_path / ("cache_" + cxx)), host_profile="native")
-    plugin = L.host_plugin(bundle.directory, "scale512", sidecar_of(bundle, "scale512"))
     x = np.arange(512 * 8, dtype=float).reshape(512, 8)
-    np.testing.assert_array_equal(
-        eplan.plan(plugin, structure=eexec.HostTeam).run(x=x, a=3.0), 3.0 * x)
+    y = np.zeros_like(x)
+    hawk.run(hawk.load(bundle.directory, "scale512"), x=x, a=3.0, y=y)
+    np.testing.assert_array_equal(y, 3.0 * x)

@@ -34,6 +34,7 @@ import numpy as np
 import pytest
 from conftest import sidecar_of
 
+import hawk
 from hawk import Mutable, Param, Scalar, Terminated, kernel
 from hawk.artifact import build_bundle
 from _unit_sidecar import finish_mask, sidecar_of_kernel
@@ -215,16 +216,14 @@ def _reference(t_final, x, v, mask):
 
 
 def _runner(bundle, name, target):
+    """``(plan, array module)`` of ``name``: hawk's plan on the host, eagle's on the device."""
+    if target == "host":
+        return hawk.plan(hawk.load(bundle.directory, name)), np
     import eagle.exec as eexec
+    import cupy as cp
     from eagle import plan as eplan
 
-    sidecar = sidecar_of(bundle, name)
-    if target == "host":
-        plugin = L.host_plugin(bundle.directory, name, sidecar)
-        return eplan.plan(plugin, structure=eexec.HostTeam), np
-    import cupy as cp
-
-    plugin = L.device_plugin(bundle.directory, name, sidecar)
+    plugin = L.device_plugin(bundle.directory, name, sidecar_of(bundle, name))
     return eplan.plan(plugin, structure=eexec.DeviceKernel), cp
 
 

@@ -6,6 +6,7 @@
 * **twin** — the cell is BITWISE the one eagle's ordered finish gives (sum, max,
   min, mean; scalar and three-column cells; ragged and aligned ``n``; both
   precisions); skipped without eagle;
+* **plan** — a plan bound over the cell and launched gives the cell ``hawk.run`` gives, bit for bit;
 * **numpy** — the cell is within rounding of numpy (exact for max and min);
 * **scratch** — the rows are made once per kernel and sample count;
 * **refusal** — binding rows instead of the cell names the cell.
@@ -62,6 +63,13 @@ def _hawk_cell(bundles, name, n, mode, columns=1):
     return kernel_, t
 
 
+def _plan_cell(bundles, name, n, mode, columns=1):
+    """The cell of ``name`` through a plan bound over it and launched."""
+    t = np.full(columns, np.nan, dtype=mode)
+    hawk.plan(hawk.load(bundles[name].directory, name)).bind(x=_x(n, mode), t=t).launch()
+    return t
+
+
 def _eagle_cell(bundles, name, n, mode):
     bundle = bundles[name]
     eexec = pytest.importorskip("eagle.exec")
@@ -94,6 +102,21 @@ def test_a_three_column_cell_is_bitwise_eagles_ordered_cell(built, n):
     out = _eagle_cell(bundles, "wide", n, mode)
     want = np.concatenate([np.asarray(out[f"t_{k}"]) for k in range(3)])
     assert got.tobytes() == want.tobytes()
+
+
+@pytest.mark.parametrize("n", SIZES)
+@pytest.mark.parametrize("op", OPS)
+def test_a_planned_cell_is_bitwise_the_run_cell(built, op, n):
+    bundles, mode = built
+    _, want = _hawk_cell(bundles, f"cell_{op}", n, mode)
+    assert _plan_cell(bundles, f"cell_{op}", n, mode).tobytes() == want.tobytes()
+
+
+@pytest.mark.parametrize("n", SIZES)
+def test_a_planned_three_column_cell_is_bitwise_the_run_cell(built, n):
+    bundles, mode = built
+    _, want = _hawk_cell(bundles, "wide", n, mode, columns=3)
+    assert _plan_cell(bundles, "wide", n, mode, columns=3).tobytes() == want.tobytes()
 
 
 @pytest.mark.parametrize("n", SIZES)

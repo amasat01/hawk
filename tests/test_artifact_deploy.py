@@ -49,6 +49,8 @@ import numpy as np
 import pytest
 from conftest import refuse_device_row, sidecar_of
 
+import hawk
+
 N = 16
 
 
@@ -76,15 +78,10 @@ def _compare(got, want, dtype):
 
 @pytest.mark.parametrize("bundle_name,kernel,kw,want", _cases(),
                          ids=[c[0] for c in _cases()])
-def test_the_artifact_runs_on_the_host_through_eagle(built, bundle_name, kernel,
-                                                     kw, want):
-    import eagle.exec as eexec
-    from eagle import plan as eplan
-
+def test_the_artifact_runs_on_the_host_through_a_plan(built, bundle_name, kernel, kw, want):
     bundle = built[bundle_name]
     sc = sidecar_of(bundle, kernel)
-    plugin = L.host_plugin(bundle.directory, kernel, sc)
-    got = eplan.plan(plugin, structure=eexec.HostTeam).run(**kw)
+    got = hawk.plan(hawk.load(bundle.directory, kernel)).run(**kw)
     _compare(got, want, np.float32 if sc["scalar_type"] == "float32" else np.float64)
 
 
@@ -153,14 +150,8 @@ def test_the_artifact_is_partition_invariant_on_the_host(built):
     """The partition-invariance ruling, for a ``sample_local`` body: whole vs two partitions must be
     BIT-identical — the property that says the emitted body reads its own
     column through the triple and nothing else."""
-    import eagle.exec as eexec
-    from eagle import plan as eplan
-
-    bundle = built["vec3"]
-    plugin = L.host_plugin(bundle.directory, "vec3_scale",
-                           sidecar_of(bundle, "vec3_scale"))
+    loaded = hawk.load(built["vec3"].directory, "vec3_scale")
     x = D.plane(N)
-    whole = eplan.plan(plugin, structure=eexec.HostTeam).run(x=x, a=-1.25)
-    split = eplan.plan(plugin, structure=eexec.HostTeam,
-                       partitions=[(0, 6, N), (6, N - 6, N)]).run(x=x, a=-1.25)
+    whole = hawk.plan(loaded).run(x=x, a=-1.25)
+    split = hawk.plan(loaded, partitions=[hawk.Partition(0, 6, N), hawk.Partition(6, N - 6, N)]).run(x=x, a=-1.25)
     np.testing.assert_array_equal(whole, split)

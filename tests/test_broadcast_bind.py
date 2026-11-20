@@ -35,7 +35,6 @@ from hawk import _broadcast as B
 from hawk import runtime as rt
 from hawk.artifact import build_bundle
 from hawk.diff import jvp, vjp
-import eagle
 from hawk.diff.transform import _masked_sink
 from hawk import _ir
 from hawk.trace.kernel import Kernel
@@ -436,7 +435,7 @@ def test_a_compensated_scatter_stays_compensated_under_a_terminated_mask():
 
 def test_rebinding_a_plan_to_another_pattern_is_refused(run_cache, rng):
     var = B.twin(affine, {"x": B.kept_axes((A, 1, NC), (), affine.lane_space, A)})
-    bound = eagle.deploy(var).bind(x=rng.random(A * NC), out=np.zeros(LANE), a=A)
+    bound = hawk.deploy(var).bind(x=rng.random(A * NC), out=np.zeros(LANE), a=A)
     bound.rebind(x=rng.random(A * NC))
     with pytest.raises(HawkError, match=r"varying along \[a, c\].*rebound varying along \[c\]"):
         bound.rebind(x=rng.random(NC))

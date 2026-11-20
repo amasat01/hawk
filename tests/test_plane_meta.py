@@ -28,11 +28,15 @@ def plain(x: Vector[3], y: Mutable[Scalar]):
     y = x[0] + x[1] + x[2]
 
 
-def test_the_notes_travel_in_the_sidecar_and_back_through_eagle(tmp_path):
+def test_the_notes_travel_in_the_sidecar(tmp_path):
     bundle = build_bundle([noted, plain], tmp_path, targets=("host",), host_profile="native")
     meta = sidecar_of(bundle, noted.name)
     assert meta["plane_meta"] == {"x": {"frame": "J2000", "unit": "km"}}
     assert "plane_meta" not in sidecar_of(bundle, plain.name)
+
+
+def test_the_notes_come_back_through_eagles_loaded_kernel(tmp_path):
+    bundle = build_bundle([noted, plain], tmp_path, targets=("host",), host_profile="native")
     from eagle.host_launch import HostPluginLibrary
 
     def loaded(kernel):

@@ -226,16 +226,14 @@ def built(request, tmp_path_factory, cache_dir):
 
 
 def _launch(bundle, name, target, planes, **extent):
+    bundle = bundle[name]
+    if target == "host":
+        return hawk.plan(hawk.load(bundle.directory, name)).bind(**extent, **planes)
     import eagle.exec as eexec
     from eagle import plan as eplan
 
-    bundle = bundle[name]
-    sidecar = sidecar_of(bundle, name)
-    if target == "host":
-        plugin, structure = L.host_plugin(bundle.directory, name, sidecar), eexec.HostTeam
-    else:
-        plugin, structure = L.device_plugin(bundle.directory, name, sidecar), eexec.DeviceKernel
-    return eplan.plan(plugin, structure=structure).bind(**extent, **planes)
+    plugin = L.device_plugin(bundle.directory, name, sidecar_of(bundle, name))
+    return eplan.plan(plugin, structure=eexec.DeviceKernel).bind(**extent, **planes)
 
 
 def _run(bundle, name, target, ins, outs, **extent):
@@ -276,6 +274,20 @@ def _scaled(got, exact, magnitude, mode):
 TARGETS = ["host", pytest.param("cuda", marks=pytest.mark.gpu)]
 
 
+def _cell_planes(n, mode, target, *names):
+    """Empty planes of the sum cells ``names``: a row per 32 samples with a companion plane on the device; on the host the
+    library folds the rows into one cell and makes the companion itself."""
+    if target == "host":
+        return _empty(n, mode, **{name: 1 for name in names})
+    rows = -(-n // 32)
+    return _empty(n, mode, **{name + s: rows for name in names for s in ("", "_comp")})
+
+
+def _cell_total(got, name):
+    """The value of sum cell ``name``: its rows plus their companions, added in float64."""
+    return (got[name].astype(np.float64) + got.get(name + "_comp", 0.0)).sum()
+
+
 @pytest.mark.parametrize("n", SIZES)
 @pytest.mark.parametrize("target", TARGETS)
 def test_at_equals_take(built, target, n):
@@ -294,15 +306,12 @@ def test_at_equals_take(built, target, n):
 def test_where_reduce_equals_numpy(built, target, n):
     bundle, mode = built
     x = _data(n, mode)["x"]
-    rows_n = -(-n // 32)
-    outs = _empty(n, mode, s=rows_n, s_comp=rows_n, c=rows_n, c_comp=rows_n)
-    got, *_ = _run(bundle, "positive", target, {"x": x}, outs)
-    top, *_ = _run(bundle, "positive_max", target, {"x": x}, _empty(n, mode, top=rows_n))
+    got, *_ = _run(bundle, "positive", target, {"x": x}, _cell_planes(n, mode, target, "s", "c"))
+    top, *_ = _run(bundle, "positive_max", target, {"x": x}, _empty(n, mode, top=1 if target == "host" else -(-n // 32)))
     xs = x.astype(np.float64)
     tol = TOL[mode] * 10 * max(1.0, np.abs(xs).sum())
-    s = (got["s"].astype(np.float64) + got["s_comp"]).sum()
-    assert abs(s - xs[xs > 0].sum()) <= tol
-    assert (got["c"].astype(np.float64) + got["c_comp"]).sum() == (xs > 0).sum()
+    assert abs(_cell_total(got, "s") - xs[xs > 0].sum()) <= tol
+    assert _cell_total(got, "c") == (xs > 0).sum()
     want = xs[xs > 0].max() if (xs > 0).any() else -np.inf
     assert top["top"].astype(np.float64).max() == want
 
@@ -345,17 +354,17 @@ def test_vector_and_matrix_cells_equal_columnwise_numpy(built, target, n):
     rng = np.random.default_rng(n + 1)
     v = rng.uniform(-2, 2, (3, n)).astype(mode)
     mm = rng.uniform(-2, 2, (2, 3, n)).astype(mode)
-    rows_n = -(-n // 32)
-    names = [f"{c}_{k}{s}" for c in "tu" for k in range(3) for s in ("", "_comp")]
-    outs = _empty(n, mode, **{k: rows_n for k in names})
+    # the host library folds the rows into the cell: one value per column, bound under the cell's own name
+    outs = (_empty(n, mode, t=3, u=3) if target == "host"
+            else _cell_planes(n, mode, target, *(f"{c}_{k}" for c in "tu" for k in range(3))))
     got, *_ = _run(bundle, "vcell", target, {"v": v, "mm": mm.reshape(6, n)}, outs)
     sidecar = sidecar_of(bundle["vcell"], "vcell")
     assert sidecar["cells"] == {"t": {"op": "sum", "columns": 3},
                                 "u": {"op": "sum", "columns": 3}}
     for c, want in (("t", v.astype(np.float64).sum(axis=1)),
                     ("u", mm.astype(np.float64).sum(axis=(0, 2)))):
-        cell = np.array([(got[f"{c}_{k}"].astype(np.float64) + got[f"{c}_{k}_comp"]).sum()
-                         for k in range(3)])
+        cell = (got[c].astype(np.float64) if target == "host"
+                else np.array([_cell_total(got, f"{c}_{k}") for k in range(3)]))
         columns = (v, mm.transpose(1, 0, 2).reshape(3, -1))[c == "u"]
         bound = [sum_bound(column, mode) for column in columns]
         assert_within(cell, want, bound)
@@ -443,7 +452,7 @@ def test_a_sum_over_8192_lanes_is_within_the_contract(built, target, contract):
     name = "ksum_a" if contract == "auto" else "ksum_c"
     x = np.random.default_rng(8).uniform(-1, 1, (KP, 8192)).astype(mode)
     outs = {"out": np.zeros(KP, mode)}
-    if contract == "compensated":
+    if contract == "compensated" and target != "host":      # the host library makes the companion itself
         outs["out_c"] = np.zeros(KP, mode)
     got, *_ = _run(bundle, name, target, {"x": x.ravel()}, outs, key=KP)
     total = got["out"].astype(np.float64) + got.get("out_c", 0.0)

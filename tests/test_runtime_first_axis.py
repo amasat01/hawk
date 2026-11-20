@@ -13,7 +13,6 @@ import numpy as np
 import pytest
 from conftest import sidecar_of
 
-import eagle
 import hawk
 from hawk import Grid, HawkError, Index, Mutable, Scalar, Table
 from hawk import runtime as rt
@@ -84,7 +83,7 @@ def test_one_unit_serves_every_size(tmp_path, cache_dir):
 
 @pytest.mark.parametrize("n", [4, 9])
 def test_the_label_sizes_the_sink_and_the_plane_passed_agrees(n):
-    deployed = eagle.deploy(count)
+    deployed = hawk.deploy(count)
     by_label = deployed.run(conn=_conn(n), e=2, node=n)
     by_plane = deployed.run(conn=_conn(n), e=2, b=np.zeros(n))
     assert by_label.shape == (n,)
@@ -98,12 +97,12 @@ def test_a_label_that_contradicts_the_plane_passed_is_refused(host):
         rt.run(k, conn=_conn(4), b=np.zeros(5), e=2, node=4)
     with pytest.raises(HawkError, match=r"node= is the extent.*positive int"):
         rt.run(k, conn=_conn(4), b=np.zeros(4), e=2, node=0)
-    with pytest.raises(ValueError, match=r"pass node=<extent of 'node'>"):
-        eagle.deploy(count).run(conn=_conn(4), e=2)
+    with pytest.raises(HawkError, match=r"pass node=<extent of 'node'>"):
+        hawk.deploy(count).run(conn=_conn(4), e=2)
 
 
 def test_a_table_first_axis_is_the_plane_passed():
-    deployed = eagle.deploy(by_row)
+    deployed = hawk.deploy(by_row)
     for rows in (3, 7):
         w = np.arange(rows * 3, dtype=float)
         got = deployed.run(w=w, e=rows)
@@ -112,7 +111,7 @@ def test_a_table_first_axis_is_the_plane_passed():
 
 def test_a_label_a_lane_axis_shares_is_the_lane_extent(host):
     assert lane_sink.planes["b"].dims == (("e", None, 1),)
-    got = eagle.deploy(lane_sink).run(x=np.ones(5), e=5)
+    got = hawk.deploy(lane_sink).run(x=np.ones(5), e=5)
     np.testing.assert_array_equal(got, np.ones(5))
 
 
@@ -124,18 +123,33 @@ def test_a_label_that_is_also_a_parameter_name_is_refused():
 
 
 def test_a_bound_plan_and_its_rebind_take_the_plane_as_its_extent():
-    plan = eagle.deploy(count).bind(conn=_conn(9), e=2, b=np.zeros(9))
+    plan = hawk.deploy(count).bind(conn=_conn(9), e=2, b=np.zeros(9))
     plan.launch()
     np.testing.assert_array_equal(plan.planes["b"], _want(9))
     plan.rebind(b=np.zeros(9))
 
 
-def test_a_direct_call_takes_the_free_label_as_a_keyword(tmp_path):
-    import eagle
+def test_a_rebind_of_another_plane_keeps_the_stated_extent():
+    plan = hawk.deploy(count).bind(conn=_conn(9), e=2, b=np.zeros(9))
+    plan.rebind(conn=(_conn(9) + 1) % 9)
+    plan.launch()
+    want = np.zeros(9)
+    np.add.at(want, (_conn(9) + 1) % 9, 1.0)
+    np.testing.assert_array_equal(plan.planes["b"], want)
 
+
+def test_a_rebind_stating_a_contradicting_extent_is_refused_by_name():
+    plan = hawk.deploy(count).bind(conn=_conn(9), e=2, b=np.zeros(9))
+    with pytest.raises(HawkError, match=r"declared with the axes \(node\).*got \(9,\)"):
+        plan.rebind(node=4)
+    with pytest.raises(HawkError, match="rebind cannot change the sample count"):
+        plan.rebind(e=3)
+
+
+def test_a_direct_call_takes_the_free_label_as_a_keyword(tmp_path):
     conn = _conn(4)
     got = count(conn, e=2, node=4)
     np.testing.assert_array_equal(got, _want(4))
-    np.testing.assert_array_equal(eagle.deploy(count).run(conn=conn, e=2, node=4), got)
+    np.testing.assert_array_equal(hawk.deploy(count).run(conn=conn, e=2, node=4), got)
     with pytest.raises(ValueError, match="node"):
         count(conn, b=np.zeros(5), e=2, node=4)

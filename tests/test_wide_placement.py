@@ -119,8 +119,8 @@ def test_the_warp_form_is_exact_and_replays_bit_for_bit_on_the_device(name, mode
     # a kernel with stages runs its stages only when they are linked to its plugin: eagle.deploy (eagle.plan.auto given the kernel)
     # does that, but it builds its own bundle and takes no wide_form, so the build above is linked the way deploy links its own
     by_name = hawk.artifact.plugins(bundle, device_loader=load_manifest)
-    _split.link(by_name, bundle)
-    bound = eagle.plan.auto(by_name[entry.kernel.name]).bind(**bound_args, **{entry.out: out})
+    linked = _split.linked(by_name[entry.kernel.name], "test_wide_placement")
+    bound = eagle.plan.auto(linked).bind(**bound_args, **{entry.out: out})
     got = []
     for _ in range(3):
         bound.launch()

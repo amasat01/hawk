@@ -12,11 +12,15 @@ import threading
 import numpy as np
 import pytest
 
-eagle = pytest.importorskip("eagle")
+import hawk
+from hawk import Grid, Index, Mutable, Param, Scalar, Table, Vector
+from hawk.artifact import cache_stats
 
-import hawk  # noqa: E402
-from hawk.artifact import cache_stats  # noqa: E402
-from hawk import Grid, Index, Mutable, Param, Scalar, Table, Vector  # noqa: E402
+
+@pytest.fixture
+def eagle():
+    """eagle, the runtime a kernel called as a function runs through: a row that needs it is skipped without it."""
+    return pytest.importorskip("eagle")
 
 
 @pytest.fixture
@@ -42,7 +46,7 @@ def _bundles(cache):
     return sorted(p.name for p in cache.rglob("*") if p.suffix == ".so")
 
 
-def test_kernel_call_cpu(private_cache):
+def test_kernel_call_cpu(private_cache, eagle):
     k = _scale()
     x = np.arange(8.0)
     y = k(x, 2.0, 1.0)
@@ -56,6 +60,7 @@ def test_kernel_call_cpu(private_cache):
     assert _tool_runs() == first
 
 
+@pytest.mark.usefixtures("eagle")
 def test_kernel_call_positional_and_keyword(private_cache):
     k = _scale()
     x = np.arange(4.0)
@@ -67,6 +72,7 @@ def test_kernel_call_positional_and_keyword(private_cache):
         k(x, 2.0)
 
 
+@pytest.mark.usefixtures("eagle")
 def test_kernel_call_returns_the_tree(private_cache):
     @hawk.kernel
     def kick(p: Vector[3], v: Vector[3], dt: Param):
@@ -85,7 +91,7 @@ def test_kernel_call_missing_eagle(monkeypatch):
         _scale()(np.arange(4.0), 2.0, 1.0)
 
 
-def test_kernel_call_threads_first_call_builds_once(private_cache, monkeypatch):
+def test_kernel_call_threads_first_call_builds_once(private_cache, monkeypatch, eagle):
     k = _scale()
     deploys, real = [], eagle.deploy
     monkeypatch.setattr(eagle, "deploy", lambda *a, **kw: deploys.append(1) or real(*a, **kw))
@@ -112,11 +118,11 @@ def _binned(n):
     return binned
 
 
-def _check_binned(xp):
+def _check_binned(xp, deploy):
     kernels = {n: _binned(n) for n in (4, 9)}
     for n in (4, 9, 4):
         conn = np.arange(6, dtype=np.int32) % n
-        out = eagle.deploy(kernels[n]).run(conn=xp.asarray(conn), e=2)
+        out = deploy(kernels[n]).run(conn=xp.asarray(conn), e=2)
         want = np.zeros(n)
         np.add.at(want, conn, 1.0)
         got = out.get() if hasattr(out, "get") else out
@@ -125,9 +131,10 @@ def _check_binned(xp):
 
 
 def test_a_factory_builds_each_size_cpu(private_cache):
-    _check_binned(np)
+    _check_binned(np, hawk.deploy)
 
 
+@pytest.mark.usefixtures("eagle")
 def test_a_redefined_kernel_runs_its_new_body(private_cache):
     @hawk.kernel
     def scale(x: Scalar, a: Param, b: Param) -> Scalar:
@@ -153,7 +160,7 @@ def _device():
 
 @pytest.mark.gpu
 @pytest.mark.skipif(not _device(), reason="needs a CUDA device")
-def test_kernel_call_gpu(private_cache):
+def test_kernel_call_gpu(private_cache, eagle):
     import cupy as cp
 
     k = _scale()
@@ -170,7 +177,7 @@ def test_kernel_call_gpu(private_cache):
 
 @pytest.mark.gpu
 @pytest.mark.skipif(not _device(), reason="needs a CUDA device")
-def test_a_factory_builds_each_size_gpu(private_cache):
+def test_a_factory_builds_each_size_gpu(private_cache, eagle):
     import cupy as cp
 
-    _check_binned(cp)
+    _check_binned(cp, eagle.deploy)

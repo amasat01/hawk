@@ -54,23 +54,26 @@ def auto_leading(lane: Grid["a":A, "b":B], x: Scalar, y: Mutable["b":B]):
 
 
 def _run(bundle, name, target, ins, outs, **extent):
-    """The ``outs`` planes after one launch of ``name`` through eagle's staged plan (an ordered sum runs in stages)."""
+    """The ``outs`` planes after one launch of ``name``: through hawk's plan on the host, eagle's staged plan on the device
+    (an ordered sum runs in stages)."""
+    if target == "host":
+        planes = {k: np.asarray(v) for k, v in {**ins, **outs}.items()}
+        hawk.plan(hawk.load(bundle.directory, name)).bind(**extent, **planes).launch()
+        return {k: planes[k] for k in outs}
     import eagle
     import eagle.exec as eexec
     from eagle import _split, arrays
     from eagle import plan as eplan
+    from eagle._alloc import synchronize
+
     from hawk.artifact import plugins
 
-    by = plugins(bundle, device_loader=eagle.registry.load_manifest if target == "cuda" else None)
-    _split.link(by, bundle)
-    plan = eplan.plan(by[name], structure=eexec.DeviceKernel if target == "cuda" else eexec.HostTeam)
-    bound = {k: arrays.asarray(v, device="cuda:0") if target == "cuda" else arrays.asarray(v) for k, v in {**ins, **outs}.items()}
+    by = plugins(bundle, device_loader=eagle.registry.load_manifest)
+    plan = eplan.plan(_split.linked(by[name], "test_ordered_trailing_axes"), structure=eexec.DeviceKernel)
+    bound = {k: arrays.asarray(v, device="cuda:0") for k, v in {**ins, **outs}.items()}
     plan.bind(**extent, **bound).launch()
-    if target == "cuda":
-        from eagle._alloc import synchronize
-
-        synchronize()
-    return {k: np.asarray(bound[k].get() if target == "cuda" else bound[k]) for k in outs}
+    synchronize()
+    return {k: np.asarray(bound[k].get()) for k in outs}
 
 
 @pytest.mark.parametrize("target", TARGETS)

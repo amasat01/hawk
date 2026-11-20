@@ -66,7 +66,9 @@ import pytest
 from conftest import sidecar_of
 from test_serial_oracle import band
 
+import hawk
 from hawk import _ir
+from hawk.errors import HawkError
 
 N = 96
 K = 3
@@ -121,24 +123,38 @@ def test_the_declared_class_is_never_less_restrictive_than_the_forms(built, name
 
 @pytest.mark.parametrize("bundle_name,kernel,kw,_want", _CASES, ids=_IDS)
 def test_the_class_predicts_the_placement(built, bundle_name, kernel, kw, _want):
-    """Predicts the placement at PLAN time, on both single-node structures."""
-    import eagle.exec as eexec
+    """Predicts the placement: a split of a body that writes across samples is refused by name, any other class splits."""
+    bundle = built[bundle_name]
+    split = hawk.plan(hawk.load(bundle.directory, kernel), npartitions=K)
+    if sidecar_of(bundle, kernel)["exec_access"] == "cross_sample_write":
+        with pytest.raises(HawkError) as excinfo:
+            split.run(**kw)
+        message = str(excinfo.value)
+        assert "F-e" in message and "cross_sample_write" in message, (
+            f"the refusal must name the rule (I3): {message}"
+        )
+    else:
+        split.run(**kw)
+
+
+@pytest.mark.parametrize("bundle_name,kernel,kw,_want", _CASES, ids=_IDS)
+def test_the_class_predicts_the_placement_on_the_device_structure(built, bundle_name, kernel, kw, _want):
+    """Predicts the placement at PLAN time on the device structure."""
+    eexec = pytest.importorskip("eagle.exec")
     from eagle import plan as eplan
 
     bundle = built[bundle_name]
     sidecar = sidecar_of(bundle, kernel)
-    access = sidecar["exec_access"]
     plugin = L.host_plugin(bundle.directory, kernel, sidecar)
-    for structure in (eexec.HostTeam, eexec.DeviceKernel):
-        if access == "cross_sample_write":
-            with pytest.raises(ValueError) as excinfo:
-                eplan.plan(plugin, structure=structure, npartitions=K)
-            message = str(excinfo.value)
-            assert "F-e" in message and "cross_sample_write" in message, (
-                f"the refusal must name the rule (I3): {message}"
-            )
-        else:
-            eplan.plan(plugin, structure=structure, npartitions=K)
+    if sidecar["exec_access"] == "cross_sample_write":
+        with pytest.raises(ValueError) as excinfo:
+            eplan.plan(plugin, structure=eexec.DeviceKernel, npartitions=K)
+        message = str(excinfo.value)
+        assert "F-e" in message and "cross_sample_write" in message, (
+            f"the refusal must name the rule (I3): {message}"
+        )
+    else:
+        eplan.plan(plugin, structure=eexec.DeviceKernel, npartitions=K)
 
 
 @pytest.mark.parametrize("bundle_name,kernel,kw,_want", _CASES, ids=_IDS)
@@ -243,13 +259,9 @@ def test_the_serial_oracle_is_the_invariant_arm(built):
     kw = {"x": D.plane(N), "a": -1.25}
     oracle = O.run(bundle.directory, "vec3_scale", N, sidecar, **kw)
 
-    import eagle.exec as eexec
-    from eagle import plan as eplan
-
-    plugin = L.host_plugin(bundle.directory, "vec3_scale", sidecar)
+    loaded = hawk.load(bundle.directory, "vec3_scale")
     for npartitions in (1, 2, K, N):
-        got = eplan.plan(plugin, structure=eexec.HostTeam,
-                         npartitions=npartitions).run(**kw)
+        got = hawk.plan(loaded, hawk.HostTeam, npartitions=npartitions).run(**kw)
         assert np.asarray(got).tobytes() == np.asarray(oracle).tobytes(), (
             f"HostTeam({npartitions}) differs from the serial oracle"
         )

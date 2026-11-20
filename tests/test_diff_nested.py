@@ -164,9 +164,6 @@ def bundle64(tmp_path_factory, cache_dir):
 def _run(built, kernel, target, values: dict, dtype) -> dict:
     """One launch of ``kernel`` over ``values``; every mutable plane back as numpy,
     and every sample_sum plane as its row sums (plane plus compensation)."""
-    import eagle.exec as eexec
-    from eagle import plan as eplan
-
     xp = np
     if target == "cuda":
         import cupy as xp
@@ -178,9 +175,10 @@ def _run(built, kernel, target, values: dict, dtype) -> dict:
         if role == "mutable":
             outs[name] = bound[name] = xp.zeros(_shape(widths, name), dtype=dtype)
         elif role == "accum_out":
-            bound[name] = xp.full(-(-N // 32), np.nan, dtype=dtype)
-            if name in summed:
-                outs[name] = bound[name]
+            if name in summed:       # the host library folds the rows into the one cell and owns the compensation plane
+                outs[name] = bound[name] = xp.full(1 if target == "host" else -(-N // 32), np.nan, dtype=dtype)
+            elif target != "host":
+                bound[name] = xp.full(-(-N // 32), np.nan, dtype=dtype)
         elif role == "terminated":
             bound[name] = xp.zeros(N, dtype=bool)
         elif role == "uniform":
@@ -190,16 +188,19 @@ def _run(built, kernel, target, values: dict, dtype) -> dict:
         else:
             bound[name] = xp.asarray(np.asarray(values[name], dtype=dtype))
     if target == "host":
-        plugin, structure = L.host_plugin(built.directory, kernel.name, sidecar), eexec.HostTeam
+        bound_plan = hawk.plan(hawk.load(built.directory, kernel.name)).bind(**bound)
     else:
-        plugin, structure = (L.device_plugin(built.directory, kernel.name, sidecar),
-                             eexec.DeviceKernel)
-    eplan.plan(plugin, structure=structure).bind(**bound).launch()
+        import eagle.exec as eexec
+        from eagle import plan as eplan
+
+        plugin = L.device_plugin(built.directory, kernel.name, sidecar)
+        bound_plan = eplan.plan(plugin, structure=eexec.DeviceKernel).bind(**bound)
+    bound_plan.launch()
 
     def host(a):
         return np.asarray(a.get() if target == "cuda" else a, dtype=np.float64)
 
-    return {n: host(a) + (host(bound[n + "_comp"]) if n in summed else 0.0)
+    return {n: host(a) + (host(bound[n + "_comp"]) if n in summed and target == "cuda" else 0.0)
             for n, a in outs.items()}
 
 

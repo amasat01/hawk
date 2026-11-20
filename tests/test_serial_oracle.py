@@ -62,6 +62,8 @@ import numpy as np
 import pytest
 from conftest import sidecar_of
 
+import hawk
+
 N = 96
 
 #: How many partitions the "split" arms cut the range into. 3 is deliberate: it
@@ -83,7 +85,7 @@ def band(s: int, a, b, scalar_type: str) -> float:
 
 
 def _tuple(value):
-    # eagle.plan.Plan.run returns a dict keyed by plane name for several
+    # Plan.run returns a dict keyed by plane name for several
     # outputs; its insertion order follows arg_spec's own order, the same
     # order a plain tuple (the serial oracle's own shape) already carries,
     # so unwrapping it to a tuple of values lines the two zips up correctly.
@@ -123,13 +125,9 @@ def _oracle_run(bundle, kernel, kw):
     return O.run(bundle.directory, kernel, N, sidecar_of(bundle, kernel), **kw)
 
 
-def _eagle_host(bundle, kernel, kw, npartitions: int):
-    import eagle.exec as eexec
-    from eagle import plan as eplan
-
-    plugin = L.host_plugin(bundle.directory, kernel, sidecar_of(bundle, kernel))
-    return eplan.plan(plugin, structure=eexec.HostTeam,
-                      npartitions=npartitions).run(**kw)
+def _host_plan(bundle, kernel, kw, npartitions: int):
+    """The kernel run by a host team plan over ``npartitions`` partitions."""
+    return hawk.plan(hawk.load(bundle.directory, kernel), npartitions=npartitions).run(**kw)
 
 
 def _eagle_device(bundle, kernel, kw, npartitions: int):
@@ -160,7 +158,7 @@ def test_the_host_structure_is_bit_identical_to_the_serial_oracle(
     bundle = built[bundle_name]
     oracle = _oracle_run(bundle, kernel, kw)
     for npartitions in _partitions_for(bundle, kernel):
-        got = _eagle_host(bundle, kernel, kw, npartitions)
+        got = _host_plan(bundle, kernel, kw, npartitions)
         _assert_bit_identical(got, oracle,
                               f"{kernel} under HostTeam({npartitions})")
 

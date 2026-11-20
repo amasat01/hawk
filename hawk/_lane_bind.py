@@ -57,6 +57,17 @@ def free_labels(sidecar: dict) -> set:
             for ax in spec["axes"] if ax["extent"] is None and ax["label"] not in lane}
 
 
+def stated_extents(sidecar: dict, arrays: dict) -> dict:
+    """The runtime extents the caller stated by label in ``arrays``: the first axis of a ``Grid`` and the free labels of the
+    sinks' runtime axes. A bound plan keeps them, since a call consumes the first-axis label and later reads the lane count
+    from it."""
+    axes = lane_axes(sidecar)
+    labels = set(free_labels(sidecar))
+    if axes and axes[0][1] is None:
+        labels.add(axes[0][0])
+    return {label: arrays[label] for label in labels if label in arrays}
+
+
 def output_shape(sidecar: dict, name: str, width: int, n: int, extents: dict | None = None) -> tuple:
     """The shape to allocate for the output plane ``name`` of ``n`` lanes and
     per-lane ``width``: lane-shaped for a ``Grid`` kernel (``(width, *lane

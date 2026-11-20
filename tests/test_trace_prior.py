@@ -26,6 +26,7 @@ import numpy as np
 import pytest
 from conftest import sidecar_of
 
+import hawk
 from hawk import Mutable as _Mutable
 from hawk import Scalar as _Scalar
 from hawk import Terminated as _Terminated
@@ -67,11 +68,7 @@ def _sequential_launch(bundle, name, param, terms, *, mask=None, extra=None):
     """Bind the first term, ``rebind``+``launch`` for every later one — the
     SAME output buffer persists across all K launches, so the recurrence is
     actually observed (:mod:`test_ext_seams`'s own ``_sequential_launch``)."""
-    import eagle.exec as eexec
-    from eagle import plan as eplan
-
-    plugin = L.host_plugin(bundle.directory, name, sidecar_of(bundle, name))
-    plan = eplan.plan(plugin, structure=eexec.HostTeam)
+    plan = hawk.plan(hawk.load(bundle.directory, name), hawk.HostTeam)
     out_name, out = extra
     kw = {param: terms[0], "terminated": mask, out_name: out}
     bound = plan.bind(**kw)

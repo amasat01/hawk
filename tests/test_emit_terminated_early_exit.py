@@ -134,13 +134,7 @@ def _inputs():
 
 
 def _host(bundle, name, **kw):
-    import eagle.exec as eexec
-    from eagle import plan as eplan
-
-    assert eexec.HostTeam.tile_count(eexec.Partition.whole(N), 0) == 1, (
-        "one tile: the scattered accumulate shares lanes across samples")
-    plugin = L.host_plugin(bundle.directory, name, sidecar_of(bundle, name))
-    return eplan.plan(plugin, structure=eexec.HostTeam).run(**kw)
+    return hawk.plan(hawk.load(bundle.directory, name)).run(**kw)
 
 
 def _device(bundle, name, **kw):

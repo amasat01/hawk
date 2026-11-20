@@ -21,10 +21,9 @@ compensate the wrong plane). Every plant was then removed."""
 
 from __future__ import annotations
 
-import _deploy as L
 import numpy as np
 import pytest
-from conftest import refuse_device_row, sidecar_of
+from conftest import refuse_device_row
 
 import hawk
 from hawk import Mutable, Scalar, Terminated, Vector
@@ -84,11 +83,7 @@ _TERMS = [np.array(t) for t in
 
 
 def _sequential_launch(bundle, name, terms, *, mask=None, extra=()):
-    import eagle.exec as eexec
-    from eagle import plan as eplan
-
-    plugin = L.host_plugin(bundle.directory, name, sidecar_of(bundle, name))
-    plan = eplan.plan(plugin, structure=eexec.HostTeam)
+    plan = hawk.plan(hawk.load(bundle.directory, name), hawk.HostTeam)
     kw = {"term": np.tile(terms[0][:, None], (1, N))}
     if mask is not None:
         kw["terminated"] = mask

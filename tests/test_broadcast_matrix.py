@@ -24,10 +24,8 @@ import math
 import numpy as np
 import pytest
 
-import eagle
 import hawk
 import hawk.math as hm
-from eagle import diff as ediff
 from hawk import Grid, HawkError, Matrix, Scalar, Vector
 from hawk import _broadcast as B
 from hawk.diff import jvp, vjp
@@ -113,6 +111,8 @@ def test_forward_matches_broadcast_to_through_every_door(run_cache, cache_dir, r
     m, x = rng.standard_normal(shape), rng.random(LANE)
     want = _scal(m, x)
     np.testing.assert_allclose(np.asarray(mscal(m, x, a=A)), want, rtol=1e-13)
+    import eagle
+
     plan = eagle.deploy(mscal, targets=("host",), cache_dir=cache_dir)
     np.testing.assert_allclose(np.asarray(plan.run(M=m, x=x, out=np.zeros(LANE), a=A)), want, rtol=1e-13)
     out = np.zeros(LANE)
@@ -152,11 +152,11 @@ def test_a_shape_that_does_not_broadcast_names_both_shapes(run_cache, rng):
 def test_a_compact_plane_of_the_wrong_row_count_is_refused_at_bind(run_cache, cache_dir, rng):
     kept = B.kept_axes((R, R, A, 1, NC), (R, R), mscal.lane_space, A)
     var = B.twin(mscal, {"M": kept})
-    plan = eagle.deploy(var, targets=("host",), cache_dir=cache_dir)
-    with pytest.raises(ValueError, match=r"binds compact as \(4, 18\) at n=72; got shape \(3, 18\)"):
+    plan = hawk.deploy(var, cache_dir=cache_dir)
+    with pytest.raises(HawkError, match=r"bound compact as \(4, 18\) at n_samples=72, got shape \(3, 18\)"):
         plan.bind(M=np.zeros((3, A * NC)), x=rng.random(LANE), out=np.zeros(LANE), a=A)
     for columns in (A * NC - 1, A * NC + 1, A * NB * NC):     # short, long, the lane count
-        with pytest.raises(ValueError, match=rf"binds compact as \(4, 18\) at n=72; got shape \(4, {columns}\)"):
+        with pytest.raises(HawkError, match=rf"bound compact as \(4, 18\) at n_samples=72, got shape \(4, {columns}\)"):
             plan.bind(M=np.zeros((R * R, columns)), x=rng.random(LANE), out=np.zeros(LANE), a=A)
     plan.bind(M=np.zeros((R * R, A * NC)), x=rng.random(LANE), out=np.zeros(LANE), a=A)   # the right count binds
 
@@ -272,6 +272,9 @@ def test_recorded_reverse_with_a_broadcast_matrix(run_cache, cache_dir, rng):
     shape = SHAPES[0]
     m, x, g = rng.standard_normal(shape), rng.random(LANE), rng.standard_normal(LANE)
     kept = B.kept_axes(shape, (R, R), mscal.lane_space, A)
+    import eagle
+    from eagle import diff as ediff
+
     plan = eagle.deploy(B.twin(mscal, {"M": kept}), targets=("host",), cache_dir=cache_dir)
     bound = plan.bind(M=B.compact("M", m, kept, (R, R), "test"), x=x, out=np.zeros(LANE), a=A)
     graph = eagle.Graph(record=True).add(bound).build()
@@ -287,6 +290,8 @@ def test_recorded_reverse_with_a_broadcast_matrix(run_cache, cache_dir, rng):
 def test_device_forward_and_vjp(cache_dir, rng, kernel, rows):
     cp = pytest.importorskip("cupy")
     m, v, g = rng.standard_normal((rows, rows, A, 1, NC)), rng.standard_normal((rows, *LANE)), rng.standard_normal(LANE)
+    import eagle
+
     plan = eagle.deploy(kernel, cache_dir=cache_dir)
     out = cp.asnumpy(plan(cp.asarray(m), cp.asarray(v), a=A))
     np.testing.assert_allclose(out, np.einsum("rcabk,cabk->abk", _full(m, rows), v), rtol=1e-12, atol=1e-12)

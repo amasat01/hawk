@@ -27,6 +27,7 @@ import threading
 
 import numpy as np
 import pytest
+from conftest import deploy_for
 
 import hawk
 import hawk.math as m
@@ -174,10 +175,8 @@ def _cast_reference(planes):
 
 
 def _deploy(cache, target):
-    import eagle
-
     targets = ("host",) if target == "host" else ("host", "cuda")
-    return eagle.deploy([ops_i32, ops_u32, casts], cache_dir=str(cache), targets=targets)
+    return deploy_for([ops_i32, ops_u32, casts], str(cache), targets)
 
 
 @pytest.fixture(scope="module")
@@ -346,11 +345,8 @@ def test_an_integer_plane_gets_no_tape_column():
 
 @pytest.mark.parametrize("target", TARGETS)
 def test_the_gradient_through_a_cast_matches_a_central_difference(tmp_path, target):
-    import eagle
-
     targets = ("host",) if target == "host" else ("host", "cuda")
-    primal, rev = eagle.deploy([scaled, Kernel("scaled_vjp", vjp(scaled))],
-                               cache_dir=str(tmp_path), targets=targets)
+    primal, rev = deploy_for([scaled, Kernel("scaled_vjp", vjp(scaled))], str(tmp_path), targets)
     rng = np.random.default_rng(11)
     n = rng.integers(-5, 6, 16).astype(np.int32)
     x = rng.uniform(0.1, 0.3, 16)          # 3x stays inside one integer step
@@ -369,7 +365,7 @@ def test_the_gradient_through_a_cast_matches_a_central_difference(tmp_path, targ
 
 
 # --------------------------------------------------------------------------- #
-# Sidecar labels and eagle's allocation.
+# Sidecar labels and the plan's allocation.
 # --------------------------------------------------------------------------- #
 @hawk.kernel(steps=1)
 def finishing(dt: Param, t_final: Scalar, terminated: Terminated, t: Mutable[Scalar]):
@@ -403,8 +399,8 @@ def test_the_reserved_counters_are_uint32():
     assert side["arg_dtypes"][mix] == "uint32"
 
 
-def test_eagle_reads_the_label_and_allocates_to_match(host_plans):
-    assert host_plans[2].plugin.arg_dtypes["to_u"] == "uint32"
+def test_the_plan_reads_the_label_and_allocates_to_match(host_plans):
+    assert host_plans[2].kernel.sidecar["arg_dtypes"]["to_u"] == "uint32"
     got = host_plans[2].run(**_cast_inputs())
     assert {k: v.dtype for k, v in got.items()} == {
         "to_i": np.int32, "to_u": np.uint32, "back": np.float64, "wrap_u": np.uint32,

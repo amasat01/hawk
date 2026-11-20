@@ -19,8 +19,6 @@ from hawk.diff import jvp
 from hawk import _ir
 from hawk.trace.kernel import Kernel
 
-eagle = pytest.importorskip("eagle")
-
 FAR = 1 << 40           # an index no table reaches: computed in 64 bits, clamped exactly
 
 
@@ -51,13 +49,23 @@ def private_cache(tmp_path, monkeypatch):
     monkeypatch.setenv("HAWK_CACHE_DIR", str(tmp_path / "cache"))
 
 
+def _deploy_and_run(kernel, target: str, dtype: str, planes: dict) -> dict:
+    """``kernel`` deployed for ``target`` and launched once over ``planes``, which hold the result in place: hawk's verbs on
+    the host, eagle on the device. Returns the planes as the launch saw them (device arrays on the device)."""
+    if target == "host":
+        hawk.deploy(kernel, scalar_type=dtype).run(**planes)
+        return planes
+    eagle = pytest.importorskip("eagle")
+    planes = {k: eagle.arrays.asarray(v, device="cuda:0") for k, v in planes.items()}
+    eagle.deploy(kernel, scalar_type=dtype, targets=(target,))(**planes)
+    return planes
+
+
 def _pick(target: str, dtype: str, length: int, where: np.ndarray, flag: np.ndarray) -> tuple:
     table = (np.arange(length) % 1021).astype(dtype) + np.asarray(0.5, dtype)
     planes = {"table": table, "where": where.astype(np.int32), "flag": flag.astype(dtype),
               "y": np.zeros(where.size, dtype)}
-    if target == "cuda":
-        planes = {k: eagle.arrays.asarray(v, device="cuda:0") for k, v in planes.items()}
-    eagle.deploy(pick, scalar_type=dtype, targets=(target,))(**planes)
+    planes = _deploy_and_run(pick, target, dtype, planes)
     held = planes["y"]
     if not isinstance(held, np.ndarray):
         held = held.get()
@@ -99,9 +107,7 @@ def _window(target: str) -> None:
     table = np.random.default_rng(3).uniform(-1.0, 1.0, length)
     where = np.arange(-8, length + 8).astype(np.int32)           # in-range lanes and lanes past both edges
     planes = {"table": table, "where": where, "y": np.zeros(where.size)}
-    if target == "cuda":
-        planes = {k: eagle.arrays.asarray(v, device="cuda:0") for k, v in planes.items()}
-    eagle.deploy(window, scalar_type="float64", targets=(target,))(**planes)
+    planes = _deploy_and_run(window, target, "float64", planes)
     held = planes["y"]
     held = held if isinstance(held, np.ndarray) else np.asarray(held.get())
     reads = [table[np.clip(where + k, 0, length - 1)] for k in (-4, -3, -2, -1, 0, 1)]
@@ -149,9 +155,7 @@ def _member_lane(target: str, n: int) -> tuple:
     x = np.arange(n, dtype="float64") * 0.25
     theta = np.arange(3 * n, dtype="float64") + 0.5      # member m's lanes at theta[3m : 3m + 3]
     planes = {"x": x, "theta": theta, "y": np.zeros(n)}
-    if target == "cuda":
-        planes = {k: eagle.arrays.asarray(v, device="cuda:0") for k, v in planes.items()}
-    eagle.deploy(member_lane, scalar_type="float64", targets=(target,))(**planes)
+    planes = _deploy_and_run(member_lane, target, "float64", planes)
     got = planes["y"]
     return (got.get() if hasattr(got, "get") else np.asarray(got)), x + theta.reshape(n, 3)[:, 2]
 

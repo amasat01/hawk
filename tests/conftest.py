@@ -183,6 +183,15 @@ def _launch(bundle, name, target, planes):
     return eplan.plan(plugin, structure=eexec.DeviceKernel).bind(**planes)
 
 
+def deploy_for(kernels, cache_dir, targets):
+    """The plans of ``kernels``: hawk's own ``deploy`` for a host row, eagle's for a row that also builds the device."""
+    if "cuda" not in targets:
+        return hawk.deploy(kernels, cache_dir=cache_dir, targets=targets)
+    import eagle
+
+    return eagle.deploy(kernels, cache_dir=cache_dir, targets=targets)
+
+
 def _xp(target):
     if target == "host":
         return np

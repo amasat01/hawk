@@ -12,7 +12,6 @@ from hawk import Mutable, Param, Scalar
 from hawk import math as m
 from hawk.diff import with_derivative
 
-eagle = pytest.importorskip("eagle")
 
 
 @hawk.kernel
@@ -32,12 +31,13 @@ def test_with_derivative_values_match_the_function_and_its_derivative():
     x = np.linspace(-2.0, 2.0, 257)
     dx = np.linspace(0.5, 1.5, 257)
     y, dy = np.zeros_like(x), np.zeros_like(x)
-    k(x=x, p=3.0, y=y, dot_x=dx, dot_y=dy)
+    hawk.deploy(k).run(x=x, p=3.0, y=y, dot_x=dx, dot_y=dy)
     np.testing.assert_allclose(y, 3.0 * np.sin(x), rtol=1e-14, atol=1e-15)
     np.testing.assert_allclose(dy, 3.0 * np.cos(x) * dx, rtol=1e-14, atol=1e-15)
 
 
 def test_with_derivative_is_a_builder_step_and_allocates_what_the_call_omits():
+    eagle = pytest.importorskip("eagle")
     k = with_derivative(_g, wrt=("x",))
     x = np.linspace(-1.0, 1.0, 64)
     dx = np.ones_like(x)

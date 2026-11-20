@@ -14,10 +14,9 @@ no derivative: ``vjp`` and ``jvp`` refuse by name.
 
 from __future__ import annotations
 
-import _deploy as L
 import numpy as np
 import pytest
-from conftest import sidecar_of
+from conftest import _launch
 
 import hawk
 from hawk import HawkError, Index, Int32, Mutable, Scalar, UInt32, kernel
@@ -58,23 +57,11 @@ def bundle(tmp_path_factory, cache_dir):
                         mode="float64", targets=("cuda", "host"), cache_dir=cache_dir)
 
 
-def _launch(bundle, name, target, planes):
-    import eagle.exec as eexec
-    from eagle import plan as eplan
-
-    sidecar = sidecar_of(bundle, name)
-    if target == "host":
-        plugin, structure = L.host_plugin(bundle.directory, name, sidecar), eexec.HostTeam
-    else:
-        plugin, structure = L.device_plugin(bundle.directory, name, sidecar), eexec.DeviceKernel
-    eplan.plan(plugin, structure=structure).bind(**planes).launch()
-
-
 @pytest.mark.parametrize("name, dtype", [("mark", np.uint32), ("mark_signed", np.int32)])
 def test_many_lanes_into_one_word_equal_bitwise_or_at_on_the_host(bundle, name, dtype):
     word, bit = _inputs(dtype)
     mask = np.zeros(WORDS, dtype)
-    _launch(bundle, name, "host", {"word": word, "bit": bit, "mask": mask})
+    _launch(bundle, name, "host", {"word": word, "bit": bit, "mask": mask}).launch()
     assert mask.tobytes() == _oracle(word, bit, dtype).tobytes()
     assert mask[0] == np.uint32(0xFFFFFFFF).astype(dtype)      # word 0 saw every bit
 
@@ -83,7 +70,7 @@ def test_an_or_keeps_the_bits_the_caller_already_set(bundle):
     word, bit = _inputs(np.uint32)
     start = np.arange(WORDS, dtype=np.uint32) << 28
     mask = start.copy()
-    _launch(bundle, "mark", "host", {"word": word, "bit": bit, "mask": mask})
+    _launch(bundle, "mark", "host", {"word": word, "bit": bit, "mask": mask}).launch()
     assert mask.tobytes() == (_oracle(word, bit, np.uint32) | start).tobytes()
 
 
@@ -91,7 +78,7 @@ def test_a_repeated_launch_is_idempotent(bundle):
     word, bit = _inputs(np.uint32)
     mask = np.zeros(WORDS, np.uint32)
     for _ in range(3):
-        _launch(bundle, "mark", "host", {"word": word, "bit": bit, "mask": mask})
+        _launch(bundle, "mark", "host", {"word": word, "bit": bit, "mask": mask}).launch()
     assert mask.tobytes() == _oracle(word, bit, np.uint32).tobytes()
 
 
@@ -103,7 +90,7 @@ def test_the_device_equals_bitwise_or_at(bundle, name, dtype):
     word, bit = _inputs(dtype)
     mask = cp.zeros(WORDS, dtype)
     _launch(bundle, name, "cuda", {"word": cp.asarray(word), "bit": cp.asarray(bit),
-                                    "mask": mask})
+                                    "mask": mask}).launch()
     cp.cuda.Device().synchronize()
     assert mask.get().tobytes() == _oracle(word, bit, dtype).tobytes()
 

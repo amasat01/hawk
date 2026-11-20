@@ -36,6 +36,7 @@ import _oracle as O
 import numpy as np
 import pytest
 from _unit_sidecar import finish_mask
+from conftest import _launch, _xp
 
 import hawk
 import hawk.math as M
@@ -183,28 +184,17 @@ def fused(tmp_path_factory, cache_dir):
 def _fused_run(bundle, target, words):
     """``walker`` launched once per word of ``words`` (trips per launch);
     returns the branch counts after the last launch, and the classes."""
-    import _deploy as L
-    import eagle.exec as eexec
-    from eagle import plan as eplan
-
-    sidecar = _sidecar(bundle, "walker")
-    if target == "host":
-        plugin, structure, xp = (L.host_plugin(bundle.directory, "walker", sidecar),
-                                 eexec.HostTeam, np)
-    else:
-        import cupy as xp
-
-        plugin, structure = (L.device_plugin(bundle.directory, "walker", sidecar),
-                             eexec.DeviceKernel)
+    xp = _xp(target)
     rng = np.random.default_rng(12)
     k = rng.integers(0, K, N).astype(np.int32)
     mix = xp.zeros(K, dtype=xp.uint32)
     word = xp.zeros(1, dtype=xp.int64)
-    bound = eplan.plan(plugin, structure=structure).bind(
-        k=xp.asarray(k), bs=xp.asarray(rng.uniform(0.5, 1.0, (K, N))),
-        terminated=xp.zeros(N, dtype=bool), x=xp.zeros(N),
-        finished_count=xp.zeros(1, dtype=xp.uint32),
-        fused_steps=word, dispatch0_mix=mix)
+    planes = {"k": xp.asarray(k), "bs": xp.asarray(rng.uniform(0.5, 1.0, (K, N))),
+              "terminated": xp.zeros(N, dtype=bool), "x": xp.zeros(N),
+              "fused_steps": word, "dispatch0_mix": mix}
+    if target != "host":          # the host library keeps its own finished counter
+        planes["finished_count"] = xp.zeros(1, dtype=xp.uint32)
+    bound = _launch(bundle, "walker", target, planes)
     for w in words:
         word[0] = w
         bound.launch()

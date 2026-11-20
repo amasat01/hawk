@@ -38,13 +38,13 @@ from __future__ import annotations
 
 import ctypes
 
-import _deploy as L
 import _deployable as D
 import numpy as np
 import pytest
 from _device_file import device_artifact
-from conftest import refuse_device_row, sidecar_of
+from conftest import refuse_device_row
 
+import hawk
 from hawk.artifact import build_bundle
 
 #: The layout array's positional index of ``sizeof(aether::idx_t)``.
@@ -140,12 +140,7 @@ def test_the_parameter_block_is_not_shifted_at_the_default_width(built):
     """The executable half: a body whose ``nsamples`` role sat at the wrong
     width would read the parameter after it (or the triple) as its sample
     count. Running it is what says the block lines up."""
-    import eagle.exec as eexec
-    from eagle import plan as eplan
-
     n = 16
     x = np.arange(n, dtype=float) + 1.0
-    plugin = L.host_plugin(built["fraction"].directory, "fraction",
-                           sidecar_of(built["fraction"], "fraction"))
-    got = eplan.plan(plugin, structure=eexec.HostTeam).run(x=x)
+    got = hawk.plan(hawk.load(built["fraction"].directory, "fraction")).run(x=x)
     np.testing.assert_allclose(got, D.ref_fraction(x, n))

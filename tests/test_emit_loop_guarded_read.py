@@ -13,7 +13,6 @@ state, which never leaves the loop."""
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 import hawk
 import hawk.math as m
@@ -69,21 +68,17 @@ def _kernel(carried: bool):
 
 
 def _run(kernel, cache_dir):
-    import eagle.plan
     rng = np.random.default_rng(3)
     planes = {"lane": np.arange(LANES, dtype=np.int32), "a": rng.random(LANES * STEPS) + 0.5,
               "kind": np.tile([0.0, 1.0, 2.0, 3.0], ROWS),
               "mode": np.arange(ROWS, dtype=float),
               "scale_t": rng.random(ROWS) + 1.0,
               "out": np.zeros((3, LANES))}
-    plan = eagle.plan.auto([kernel], targets=("host",), cache_dir=cache_dir,
-                           scalar_type="float64")[0]
-    plan.run(**planes)
+    hawk.deploy(kernel, cache_dir=cache_dir).run(**planes)
     return planes["out"]
 
 
 def test_a_loop_arm_reading_a_value_also_read_after_the_loop_builds_and_agrees(cache_dir):
-    pytest.importorskip("eagle")
     got = _run(_kernel(False), cache_dir)
     np.testing.assert_array_equal(got, _run(_kernel(True), cache_dir))
     assert np.all(np.isfinite(got))

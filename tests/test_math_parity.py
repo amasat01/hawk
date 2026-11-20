@@ -34,6 +34,7 @@ import math
 import numpy as np
 import pytest
 from _eval import c_round
+from conftest import deploy_for
 
 import hawk
 import hawk.math as m
@@ -237,12 +238,9 @@ def _run_all(plans, xp) -> dict:
 
 
 def _deploy(monkeypatch, cache_dir, profile=None, targets=None):
-    import eagle
-
     if profile is not None:
         monkeypatch.setenv("HAWK_HOST_PROFILE", profile)
-    return eagle.deploy([unary_all, binary_all, ternary_all, *MAT_KERNELS],
-                        cache_dir=cache_dir, targets=targets)
+    return deploy_for([unary_all, binary_all, ternary_all, *MAT_KERNELS], cache_dir, targets)
 
 
 @pytest.fixture(scope="module")
@@ -330,13 +328,10 @@ def test_domain_edges_are_in_the_corpus():
 
 @pytest.mark.parametrize("target", ["host", pytest.param("cuda", marks=pytest.mark.gpu)])
 def test_rank1_operands_map_component_wise(tmp_path, target):
-    import eagle
-
     rng = np.random.default_rng(3)
     v = rng.uniform(-2, 2, (3, 9))
     lo = rng.uniform(0.3, 0.9, 9)
-    plan = eagle.deploy(rank1_lifted, cache_dir=str(tmp_path),
-                        targets=("host",) if target == "host" else ("host", "cuda"))
+    plan = deploy_for(rank1_lifted, str(tmp_path), ("host",) if target == "host" else ("host", "cuda"))
     if target == "host":
         result = plan.run(v=v, lo=lo)
         y, z = result["y"], result["z"]
@@ -562,7 +557,7 @@ def _run_matrix(plans, xp) -> dict:
     prefixes = ["mat"] * 6 + ["mixed"]
     for plan, inputs, prefix in zip(plans, _mat_inputs(), prefixes):
         got = plan.run(**{k: xp.asarray(v) for k, v in inputs.items()})
-        names = [nm for role, nm in plan.plugin.arg_spec if role == "mutable"]
+        names = [nm for role, nm in plan.kernel.arg_spec if role == "mutable"]
         got = got if isinstance(got, dict) else {names[0]: got}
         for nm in names:
             g = got[nm]
@@ -684,12 +679,9 @@ def _fd_point():
 
 
 def _target_runner(target, tmp_path):
-    import eagle
-
     targets = ("host",) if target == "host" else ("host", "cuda")
-    plans = eagle.deploy([smooth, Kernel("smooth_jvp", jvp(smooth)),
-                          Kernel("smooth_vjp", vjp(smooth))],
-                         cache_dir=str(tmp_path), targets=targets)
+    plans = deploy_for([smooth, Kernel("smooth_jvp", jvp(smooth)), Kernel("smooth_vjp", vjp(smooth))],
+                            str(tmp_path), targets)
     if target == "host":
         return plans, (lambda a: a), (lambda a: np.asarray(a))
     import cupy as cp
@@ -817,19 +809,17 @@ def _outputs(plan, got) -> dict:
     several outputs, a bare single output wrapped under its own name."""
     if isinstance(got, dict):
         return dict(got)
-    names = [nm for role, nm in plan.plugin.arg_spec if role == "mutable"]
+    names = [nm for role, nm in plan.kernel.arg_spec if role == "mutable"]
     return {names[0]: got}
 
 
 @pytest.mark.parametrize("target", ["host", pytest.param("cuda", marks=pytest.mark.gpu)])
 def test_matrix_forward_and_reverse_match_a_central_difference(tmp_path, target):
-    import eagle
-
     targets = ("host",) if target == "host" else ("host", "cuda")
-    primal, fwd, rev = eagle.deploy(
+    primal, fwd, rev = deploy_for(
         [smooth_mat, Kernel("smooth_mat_jvp", jvp(smooth_mat)),
          Kernel("smooth_mat_vjp", vjp(smooth_mat))],
-        cache_dir=str(tmp_path), targets=targets)
+        str(tmp_path), targets)
     if target == "host":
         put, get = (lambda a: a), np.asarray
     else:

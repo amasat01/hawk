@@ -434,3 +434,36 @@ def test_banded_unpack_of_banded_pack_returns_the_float32_exact_values_in_their_
     back = hawk.banded_unpack(cells)
     assert back.dtype == np.float64 and back.shape == shape
     np.testing.assert_array_equal(back, values)
+
+
+def _mix_after(plan_dir, words, preload):
+    """The mix plane of the one-trip-per-word walker after one launch per word, over a plane preloaded with ``preload``."""
+    from test_dispatch_mix_and_guard import K
+    from test_dispatch_mix_and_guard import N as lanes
+
+    rng = np.random.default_rng(12)
+    classes = rng.integers(0, K, lanes).astype(np.int32)
+    mix = np.full(K, preload, dtype=np.uint32)
+    word = np.zeros(1, dtype=np.int64)
+    bound = hawk.plan(hawk.load(plan_dir, "walker")).bind(
+        k=classes, bs=rng.uniform(0.5, 1.0, (K, lanes)), terminated=np.zeros(lanes, dtype=bool), x=np.zeros(lanes),
+        finished_count=np.zeros(1, dtype=np.uint32), fused_steps=word, dispatch0_mix=mix)
+    for w in words:
+        word[0] = w
+        bound.launch()
+    return mix, np.bincount(classes, minlength=K)
+
+
+@pytest.fixture(scope="module")
+def walker_dir(tmp_path_factory, cache_dir):
+    from test_dispatch_mix_and_guard import walker
+
+    return build_bundle([walker], tmp_path_factory.mktemp("walker_mix"), targets=("host",), cache_dir=cache_dir).directory
+
+
+@pytest.mark.parametrize("preload", [0, 5])
+def test_the_mix_plane_adds_what_every_launch_counted_to_its_preload(walker_dir, preload):
+    one, hist = _mix_after(walker_dir, [7], preload)
+    seven, _ = _mix_after(walker_dir, [1] * 7, preload)
+    np.testing.assert_array_equal(one, preload + 7 * hist)       # oracle: the classes' bincount, once per trip
+    np.testing.assert_array_equal(seven, one)

@@ -28,6 +28,7 @@ import pytest
 from _eval import evaluate
 from conftest import sidecar_of
 
+import hawk
 from hawk import Mutable, Scalar, Terminated, Vector
 from hawk.artifact import build_bundle as _build_bundle
 from hawk.diff import jvp, vjp
@@ -274,13 +275,8 @@ def _e2e_bundle(tmp_path_factory, cache_dir):
 
 
 def test_an_inherited_kind_kernel_runs_end_to_end_on_host(_e2e_bundle):
-    import eagle.exec as eexec
-    from eagle import plan as eplan
-
-    plugin = L.host_plugin(_e2e_bundle.directory, "inherited_kernel",
-                           sidecar_of(_e2e_bundle, "inherited_kernel"))
     x, scale, bias, terminated = _e2e_inputs()
-    y = np.asarray(eplan.plan(plugin, structure=eexec.HostTeam).run(
+    y = np.asarray(hawk.plan(hawk.load(_e2e_bundle.directory, "inherited_kernel")).run(
         x=x, terminated=terminated, scale=scale, bias=bias))
     want = x * scale + bias
     half = _E2E_N // 2

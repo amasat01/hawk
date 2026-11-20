@@ -117,8 +117,8 @@ def _launch_cells(kernel, target, tmp_path, planes, out, runs=3):
 
     bundle = build_bundle([kernel], tmp_path / target, mode="banded", targets=(target,), host_profile="native")
     by = plugins(bundle, device_loader=eagle.registry.load_manifest if target == "cuda" else None)
-    _split.link(by, bundle)
-    plan = eplan.plan(by[kernel.name], structure=eexec.DeviceKernel if target == "cuda" else eexec.HostTeam)
+    linked = _split.linked(by[kernel.name], "test_banded_ordered")
+    plan = eplan.plan(linked, structure=eexec.DeviceKernel if target == "cuda" else eexec.HostTeam)
     cells = []
     for _ in range(runs):
         bound = {k: eagle.banded_pack(arrays.asarray(v)) if v.dtype.kind == "f" else arrays.asarray(v)
@@ -181,8 +181,8 @@ def test_a_banded_warp_sum_is_the_same_cells_every_run_and_close_to_the_exact_do
     # the warp (team) form on a banded build, asked for through the build's own wide_form; the plan runs the plugin it wrote
     bundle = build_bundle([W.matvec_in], tmp_path / "banded", targets=("cuda",), mode="banded", cache_dir=cache_dir, wide_form="team")
     by_name = hawk.artifact.plugins(bundle, device_loader=load_manifest)
-    _split.link(by_name, bundle)             # the stages attach to the plugin only through the link eagle.deploy makes for its own build
-    plan = eagle.plan.auto(by_name[W.matvec_in.name])
+    # the stages attach to the plugin only through the link eagle.deploy makes for its own build
+    plan = eagle.plan.auto(_split.linked(by_name[W.matvec_in.name], "test_banded_ordered"))
     runs = []
     for _ in range(3):
         planes = {k: arrays.asarray(eagle.banded_pack(arrays.asarray(v)), device="cuda:0")

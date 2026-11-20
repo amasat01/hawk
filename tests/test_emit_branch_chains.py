@@ -61,16 +61,16 @@ def _hoisted_want(p):
 
 
 def _run(kernel, planes, out_shape, cache_dir, target):
-    import eagle.plan
     sink = np.zeros(out_shape)
     args = {**{k: v for k, v in planes.items() if k in {n for _, n in kernel.arg_spec}}, "out": sink}
     if target == "cuda":
         import cupy as cp
 
+        eplan = pytest.importorskip("eagle.plan")
         dev = {k: cp.asarray(v) for k, v in args.items()}
-        eagle.plan.auto([kernel], targets=("cuda",), cache_dir=cache_dir, scalar_type="float64")[0].run(**dev)
+        eplan.auto([kernel], targets=("cuda",), cache_dir=cache_dir, scalar_type="float64")[0].run(**dev)
         return dev["out"].get()
-    eagle.plan.auto([kernel], targets=("host",), cache_dir=cache_dir, scalar_type="float64")[0].run(**args)
+    hawk.deploy(kernel, targets=("host",), cache_dir=cache_dir).run(**args)
     return sink
 
 
@@ -79,7 +79,6 @@ TARGETS = [pytest.param("host", id="host"), pytest.param("cuda", marks=pytest.ma
 
 @pytest.mark.parametrize("target", TARGETS)
 def test_a_hoisted_value_read_in_one_arm_of_a_loop_switch_builds_and_agrees(cache_dir, target):
-    pytest.importorskip("eagle")
     p = _planes()
     got = _run(_hoisted_arm(), p, (3, LANES), cache_dir, target)
     np.testing.assert_allclose(got, _hoisted_want(p), rtol=1e-12)
@@ -120,7 +119,6 @@ def _helper_condition():
 
 @pytest.mark.parametrize("target", TARGETS)
 def test_a_branch_condition_calling_a_plain_helper_that_branches_builds_and_agrees(cache_dir, target):
-    pytest.importorskip("eagle")
     x = np.linspace(-2.0, 2.5, 41)
     got = _run(_helper_condition(), {"x": x}, (41,), cache_dir, target)
     want = np.where(x > 1.0, np.exp(x), np.where(x > 0.0, np.sin(x), np.cos(x)))
@@ -148,7 +146,6 @@ def _two_names():
 
 @pytest.mark.parametrize("target", TARGETS)
 def test_a_scalar_chain_over_two_names_keeps_its_values(cache_dir, target):
-    pytest.importorskip("eagle")
     x = np.linspace(-2.0, 2.5, 41)
     got = _run(_two_names(), {"x": x}, (2, 41), cache_dir, target)
     a = np.where(x > 1.0, np.exp(x), np.where(x > 0.0, np.sin(x), np.cos(x)))

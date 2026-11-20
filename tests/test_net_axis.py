@@ -14,11 +14,10 @@ replays bitwise."""
 
 from __future__ import annotations
 
-import _deploy as L
 import _net_axis_kernels as N
 import numpy as np
 import pytest
-from conftest import _xp, sidecar_of
+from conftest import _launch, _xp, sidecar_of
 
 from hawk import Kernel
 from hawk.artifact import build_bundle
@@ -74,16 +73,7 @@ def _oracle(w, x, y, mask):
 
 
 def _plan(bundles, name, target, planes, k):
-    import eagle.exec as eexec
-    from eagle import plan as eplan
-
-    bundle = bundles[name]
-    sidecar = sidecar_of(bundle, name)
-    if target == "host":
-        plugin, structure = L.host_plugin(bundle.directory, name, sidecar), eexec.HostTeam
-    else:
-        plugin, structure = L.device_plugin(bundle.directory, name, sidecar), eexec.DeviceKernel
-    return eplan.plan(plugin, structure=structure).bind(net=k, **planes)
+    return _launch(bundles[name], name, target, {"net": k, **planes})
 
 
 def _planes(target, w, x, y, mask):

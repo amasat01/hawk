@@ -132,13 +132,9 @@ def bundles(tmp_path_factory):
 
 
 def _run(bundle):
-    import eagle.exec as eexec
-    from eagle import plan as eplan
-
     inp = _inputs()
     x, v, k = inp["x"].copy(), inp["v"].copy(), np.zeros(N)
-    plugin = L.host_plugin(bundle.directory, "osc_step", sidecar_of(bundle, "osc_step"))
-    step = eplan.plan(plugin, structure=eexec.HostTeam).bind(
+    step = hawk.plan(hawk.load(bundle.directory, "osc_step")).bind(
         omega=inp["omega"], zeta=inp["zeta"], dt=DT, terminated=inp["terminated"],
         x=x, v=v, k=k)
     for _ in range(STEPS):

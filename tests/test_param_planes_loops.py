@@ -111,9 +111,6 @@ def _summed(built, kernel) -> set:
 
 
 def _run(built, kernel, target, values, dtype):
-    import eagle.exec as eexec
-    from eagle import plan as eplan
-
     xp = np
     if target == "cuda":
         import cupy as xp
@@ -123,9 +120,10 @@ def _run(built, kernel, target, values, dtype):
         if role == "mutable":
             outs[name] = bound[name] = xp.zeros(N, dtype=dtype)
         elif role == "accum_out":
-            bound[name] = xp.full(-(-N // 32), np.nan, dtype=dtype)
-            if name in summed:
-                outs[name] = bound[name]
+            if name in summed:       # the host library folds the rows into the one cell and owns the compensation plane
+                outs[name] = bound[name] = xp.full(1 if target == "host" else -(-N // 32), np.nan, dtype=dtype)
+            elif target != "host":
+                bound[name] = xp.full(-(-N // 32), np.nan, dtype=dtype)
         elif role == "uniform":
             bound[name] = float(values[name])
         elif role == "lookup":
@@ -134,18 +132,20 @@ def _run(built, kernel, target, values, dtype):
             bound[name] = xp.asarray(np.asarray(values[name], dtype=dtype))
     sidecar = sidecar_of(built, kernel.name)
     if target == "host":
-        import eagle.exec as eexec
-        plugin, structure = L.host_plugin(built.directory, kernel.name, sidecar), eexec.HostTeam
+        bound_plan = hawk.plan(hawk.load(built.directory, kernel.name)).bind(**bound)
     else:
-        plugin, structure = (L.device_plugin(built.directory, kernel.name, sidecar),
-                             eexec.DeviceKernel)
-    eplan.plan(plugin, structure=structure).bind(**bound).launch()
+        import eagle.exec as eexec
+        from eagle import plan as eplan
+
+        plugin = L.device_plugin(built.directory, kernel.name, sidecar)
+        bound_plan = eplan.plan(plugin, structure=eexec.DeviceKernel).bind(**bound)
+    bound_plan.launch()
 
     def host(a):
         return np.asarray(a.get() if target == "cuda" else a, dtype=np.float64)
 
     # a sample_sum plane comes back as its row sums: the plane plus its compensation
-    return {n: host(a) + (host(bound[n + "_comp"]) if n in summed else 0.0)
+    return {n: host(a) + (host(bound[n + "_comp"]) if n in summed and target == "cuda" else 0.0)
             for n, a in outs.items()}
 
 

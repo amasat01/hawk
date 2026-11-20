@@ -27,6 +27,7 @@ import pytest
 from _eval import evaluate
 from conftest import sidecar_of
 
+import hawk
 from hawk import Index, Kernel, Mutable, Scalar, Table, Terminated, kernel
 from hawk.diff import jvp, vjp
 from hawk import _ir
@@ -105,6 +106,13 @@ def _diagnostic_bundle(tmp_path, cache_dir, *, targets):
                         targets=targets, cache_dir=cache_dir)
 
 
+def _run_on_host(bundle, name, **planes):
+    """``name`` run on the host over the planes it declares: a derivative binds what its body reads, and a run refuses
+    any other name."""
+    declared = {plane for _, plane in sidecar_of(bundle, name)["arg_spec"]}
+    return hawk.plan(hawk.load(bundle.directory, name)).run(**{k: v for k, v in planes.items() if k in declared})
+
+
 def _mask():
     x = np.arange(N, dtype=float) + 1.0
     terminated = np.zeros(N, dtype=bool)
@@ -116,22 +124,13 @@ def test_compiled_host_vjp_and_jvp_zero_the_terminated_half(tmp_path, cache_dir)
     bundle = _diagnostic_bundle(tmp_path, cache_dir, targets=("host",))
     x, terminated = _mask()
 
-    plugin = L.host_plugin(bundle.directory, "diagnostic_vjp",
-                           sidecar_of(bundle, "diagnostic_vjp"))
-    import eagle.exec as eexec
-    from eagle import plan as eplan
-
     bar_y = np.full(N, 2.0)
-    bar_x = eplan.plan(plugin, structure=eexec.HostTeam).run(
-        x=x, terminated=terminated, bar_y=bar_y)
+    bar_x = _run_on_host(bundle, "diagnostic_vjp", x=x, terminated=terminated, bar_y=bar_y)
     np.testing.assert_array_equal(bar_x[:N // 2], bar_y[:N // 2])
     np.testing.assert_array_equal(bar_x[N // 2:], np.zeros(N - N // 2))
 
-    plugin = L.host_plugin(bundle.directory, "diagnostic_jvp",
-                           sidecar_of(bundle, "diagnostic_jvp"))
     dot_x = np.full(N, 0.4)
-    dot_y = eplan.plan(plugin, structure=eexec.HostTeam).run(
-        x=x, terminated=terminated, dot_x=dot_x)
+    dot_y = _run_on_host(bundle, "diagnostic_jvp", x=x, terminated=terminated, dot_x=dot_x)
     np.testing.assert_array_equal(dot_y[:N // 2], dot_x[:N // 2])
     np.testing.assert_array_equal(dot_y[N // 2:], np.zeros(N - N // 2))
 
@@ -186,12 +185,7 @@ def _finishing_bundle(tmp_path, cache_dir, targets):
 
 
 def _check_finishing(bundle, target):
-    import eagle.exec as eexec
-    from eagle import plan as eplan
-
     x, terminated = _mask()
-    structure = eexec.HostTeam if target == "host" else eexec.DeviceKernel
-    plugin_of = L.host_plugin if target == "host" else L.device_plugin
     for name, seed_name, out_seed in (("finishing_vjp", "bar_y", 2.0),
                                       ("finishing_jvp", "dot_x", 0.4)):
         sidecar = sidecar_of(bundle, name)
@@ -199,9 +193,14 @@ def _check_finishing(bundle, target):
         assert ["lookup", "finished_count"] not in sidecar["arg_spec"]
         mask = terminated.copy()
         seed = np.full(N, out_seed)
-        got = eplan.plan(plugin_of(bundle.directory, name, sidecar),
-                         structure=structure).run(
-            x=x, terminated=mask, **{seed_name: seed})
+        if target == "host":
+            got = _run_on_host(bundle, name, x=x, terminated=mask, **{seed_name: seed})
+        else:
+            import eagle.exec as eexec
+            from eagle import plan as eplan
+
+            got = eplan.plan(L.device_plugin(bundle.directory, name, sidecar),
+                             structure=eexec.DeviceKernel).run(x=x, terminated=mask, **{seed_name: seed})
         got = np.asarray(got.get() if hasattr(got, "get") else got)
         np.testing.assert_array_equal(got[:N // 2], seed[:N // 2])
         np.testing.assert_array_equal(got[N // 2:], np.zeros(N - N // 2))

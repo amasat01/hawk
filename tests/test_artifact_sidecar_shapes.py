@@ -101,7 +101,9 @@ import _deployable as D
 import numpy as np
 import pytest
 from conftest import sidecar_of
+import hawk
 from hawk import _ir
+from hawk.errors import HawkError
 
 N = 8
 
@@ -259,14 +261,8 @@ def test_eagles_own_bind_door_now_refuses_a_wrong_vec_in_width(built):
     ``mutable`` plane protects an INPUT one too — exactly the gap
     ``Plan.bind``'s own docstring names ("that gap belongs to the producer's
     sidecar, and is being closed there")."""
-    import eagle.exec as eexec
-    from eagle import plan as eplan
-
-    bundle = built["vec3"]
-    plugin = L.host_plugin(bundle.directory, "vec3_scale",
-                           sidecar_of(bundle, "vec3_scale"))
-    p = eplan.plan(plugin, structure=eexec.HostTeam)
-    with pytest.raises(ValueError, match=r"vec_in 'x'"):
+    p = hawk.plan(hawk.load(built["vec3"].directory, "vec3_scale"))
+    with pytest.raises(HawkError, match=r"'x'"):
         p.bind(x=np.zeros((5, N)), y=np.zeros((3, N)), a=2.0)
     # the correctly-shaped plane binds and runs, so the row above is a real
     # refusal and not a door that rejects every call.

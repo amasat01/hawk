@@ -28,11 +28,10 @@ Rows (host; the ``cuda`` arm of each compiled row is marked ``gpu``):
 
 from __future__ import annotations
 
-import _deploy as L
 import numpy as np
 import pytest
 from _unit_sidecar import finish_mask
-from conftest import sidecar_of
+from conftest import _launch, _xp, sidecar_of
 
 import hawk
 from hawk import Index, Mutable, Param, Scalar, Terminated, Vector, kernel
@@ -139,18 +138,8 @@ class _Run:
 
     def __init__(self, bundle, name, which, target, *, twin_width=None,
                  window=W_BIG, tape_on=1, timed=False):
-        import eagle.exec as eexec
-        from eagle import plan as eplan
-
         sidecar = sidecar_of(bundle, name)
-        if target == "host":
-            plugin, structure, xp = (L.host_plugin(bundle.directory, name, sidecar),
-                                     eexec.HostTeam, np)
-        else:
-            import cupy as cp
-
-            plugin, structure, xp = (L.device_plugin(bundle.directory, name, sidecar),
-                                     eexec.DeviceKernel, cp)
+        xp = _xp(target)
         self.xp = xp
         self.planes = _initial(which, xp)
         self.planes["terminated"] = xp.zeros(N, dtype=bool)
@@ -168,9 +157,7 @@ class _Run:
         if sidecar.get("finish", {}).get("steps") == "auto":
             extra["fused_steps"] = xp.zeros(1, dtype=xp.int64)
         self.extra = extra
-        self.bound = eplan.plan(plugin, structure=structure).bind(
-            finished_count=self.counter, **uniforms,
-            **self.planes, **extra)
+        self.bound = _launch(bundle, name, target, {"finished_count": self.counter, **uniforms, **self.planes, **extra})
 
     def launch(self, k=None):
         if k is not None:

@@ -362,12 +362,16 @@ BIG = {"unsorted": knon_c, "sorted": ksrt_c, "uniform": kone_c}
 BIG_AUTO = {"unsorted": knon_a, "sorted": ksrt_a, "uniform": kone_a}
 
 
-def _plan(kernel, target, mode, tmp_path, cache_dir):
+def _plan(kernel, target, mode, tmp_path, cache_dir, *, captured=False):
+    """The plan of ``kernel``: hawk's on the host, eagle's on the device, and eagle's on the host too when the row
+    captures the launch in a graph (``captured``), which hawk's verbs do not reach."""
+    bundle = build_bundle([kernel], tmp_path, mode=mode, targets=("cuda", "host"),
+                          cache_dir=cache_dir)
+    if target == "host" and not captured:
+        return hawk.plan(hawk.load(bundle.directory, kernel.name))
     import eagle.exec as eexec
     from eagle import plan as eplan
 
-    bundle = build_bundle([kernel], tmp_path, mode=mode, targets=("cuda", "host"),
-                          cache_dir=cache_dir)
     sidecar = sidecar_of(bundle, kernel.name)
     if target == "host":
         plugin, structure = L.host_plugin(bundle.directory, kernel.name, sidecar), eexec.HostTeam
@@ -423,7 +427,7 @@ def test_replays_into_one_sink_keep_the_companion_across_launches(target, kernel
     R = 100
     xp = np if target == "host" else __import__("cupy")
     key, x, planes = _big_planes("unsorted", "float64", xp)
-    plan = _plan(kernel, target, "float64", tmp_path, cache_dir)
+    plan = _plan(kernel, target, "float64", tmp_path, cache_dir, captured=True)
     bound = plan.bind(x=planes["x"], key=planes["key"], acc=planes["acc"])
     graph = eagle.Graph().add(bound).build()
     graph.launch(R)
@@ -462,7 +466,7 @@ def test_the_owned_companion_is_not_returned_and_not_asked_for(target, tmp_path,
     plan = _plan(ksrt_a, target, "float64", tmp_path, cache_dir)
     got = plan.run(x=planes["x"], seg=planes["seg"], acc=planes["acc"])
     assert not isinstance(got, dict) and got.shape == (NB,)
-    assert ("accum_out", "acc_c") in plan.plugin.arg_spec
+    assert ("accum_out", "acc_c") in _ir.arg_spec(ksrt_a.walk)
     made = plan.run(x=planes["x"], seg=planes["seg"])      # the run makes the target too
     for out in (got, made):
         out = np.asarray(out.get() if hasattr(out, "get") else out)[:NB]

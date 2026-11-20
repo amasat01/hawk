@@ -640,3 +640,11 @@ def test_sample_position_in_a_segmented_unit_is_refused(tmp_path, cache_dir):
 
     with pytest.raises(HawkError, match="launch slot.*segmented"):
         build_bundle([seg], tmp_path, targets=("host",), cache_dir=cache_dir)
+
+
+def test_the_exec_targets_of_a_sidecar_are_in_one_order_whatever_order_the_targets_were_asked():
+    """Device before host, the order the targets are named in, for an emit of either order (no compiler runs)."""
+    import _kernels as K
+
+    asked = [hawk.artifact.emit_source(K.drag, targets=t).sidecar["exec_targets"] for t in (("host", "cuda"), ("cuda", "host"))]
+    assert asked == [["device", "host"], ["device", "host"]]

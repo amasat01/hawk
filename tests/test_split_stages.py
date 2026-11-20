@@ -188,6 +188,14 @@ def test_a_stored_and_read_vector_sum_reuses_its_cell(tmp_path, cache_dir, n):
     v = np.stack([x, x * x, 2.0 * x])
     np.testing.assert_allclose(tot, v.sum(axis=1), rtol=1e-12, atol=0)
     np.testing.assert_allclose(z, v / v.sum(axis=1, keepdims=True), rtol=1e-12, atol=0)
+
+
+@pytest.mark.parametrize("n", (1, 33, 1000))
+def test_a_stored_and_read_vector_sum_is_eagles_ordered_bits(tmp_path, cache_dir, n):
+    bundle = _bundle([stored_vec], tmp_path, "float64", cache_dir)
+    x = _x(n, "float64")
+    tot, z = np.zeros(3), np.full((3, n), np.nan)
+    runtime.run(runtime.load(bundle.directory, "stored_vec"), x=x, tot=tot, z=z)
     eplan = pytest.importorskip("eagle.plan")
     want = eplan.auto(stored_vec).run(x=x)
     assert z.tobytes() == np.asarray(want["z"], dtype=np.float64).reshape(z.shape).tobytes()

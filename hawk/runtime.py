@@ -100,6 +100,8 @@ class _Arguments(NamedTuple):
     uniforms: dict
     #: ``{name: the caller's writable counter array}``, filled after each launch.
     counters: dict
+    #: ``{label: extent}`` of the runtime axes the caller stated by label; a rebind states them again.
+    extents: dict
 
 
 class HostKernel:
@@ -188,6 +190,7 @@ class HostKernel:
         sidecar = self.declared
         spec = self.bind_spec
         arrays = _shared_shapes_checked(sidecar, arrays)
+        stated = _lane_bind.stated_extents(sidecar, arrays)
         arrays, lane_n = _lane_bind.bind(sidecar, spec, arrays, n_samples, _PER_SAMPLE_ROLES)
         plain, axes = split_marks(arrays, layout)
         choice = LayoutChoice(layout, axes)
@@ -204,7 +207,7 @@ class HostKernel:
             choice = LayoutChoice(layout, axes)
         declared = _stage_names(self) if sidecar.get("stages") else {name for _, name in spec} | set(sidecar.get("cells") or ())
         _refuse_unbound_names(self, arrays, declared)
-        return self._checked(arrays, n_samples, layout, keep=keep)
+        return self._checked(arrays, n_samples, layout, keep=keep)._replace(extents=stated)
 
     def output_names(self) -> tuple:
         """The names of the output planes a caller sees, in slot order: the sinks the library does not make, a cell by its own
@@ -277,7 +280,7 @@ class HostKernel:
                 uniforms[name] = self._uniform_bytes(name, arrays[name])
             else:
                 planes[name] = self._plane_view(role, name, arrays[name], choice)
-        return _Arguments(n_samples, given, planes, uniforms, counters)
+        return _Arguments(n_samples, given, planes, uniforms, counters, {})
 
 
     def _one_step(self):
@@ -407,10 +410,10 @@ class HostKernel:
                 "every sample, so it runs over every sample (no base= or count=)")
 
     def _fill_counters(self, counted: dict, counters: dict) -> None:
-        """Write the plan's finished count and branch counters (``counted``, :meth:`BoundPlan.counters`) into the arrays the
-        caller bound for them."""
+        """Add what the last launch counted (``counted``, :meth:`BoundPlan.counters`) to the arrays the caller bound for the
+        finished count and the branch counters: a cell holds its value before the launch plus what the launch counted."""
         if self._FINISHED in counters and counted["finished"] is not None:
-            counters[self._FINISHED][0] = counted["finished"]
+            counters[self._FINISHED][0] += counted["finished"]
         offset = 0
         for entry in self.declared.get("dispatch", ()):
             if entry.get("mix") is None:
@@ -418,7 +421,7 @@ class HostKernel:
             width = int(entry["K"])
             if entry["mix"] in counters:
                 for i, value in enumerate(counted["mix"][offset : offset + width]):
-                    counters[entry["mix"]][i] = value
+                    counters[entry["mix"]][i] += value
             offset += width
 
     def _own_cell_planes(self, planes: dict) -> list:
@@ -517,18 +520,23 @@ class BoundPlan:
         return tiles
 
     def counters(self) -> dict:
-        """The library's counters of the plan at the time of the call: ``finished`` and ``steps`` (``None`` when the kernel has none) and ``mix``."""
+        """The library's counters of the plan: ``finished`` and ``steps`` (``None`` when the kernel has none) and ``mix``.
+
+        A counter array the caller bound holds its value before a launch plus what that launch counted."""
         return through_door(self._door.plan_counters, self._plan)
 
     def rebind(self, **planes) -> BoundPlan:
         """Replace the named planes (and uniforms) with new values, every other bound value staying, and return this plan.
+        An extent stated by label at bind (``e=``) stays too; a rebind may state it again, and a value that contradicts a bound
+        plane is refused by name.
 
         The same checks as :meth:`hawk.plans.Plan.bind` run over the whole set; the sample count cannot change.
         """
         n_samples, layout = self._stated
         for name, value in planes.items():
             _broadcast.guard_rebind(self._kernel.declared, name, self._arguments.given.get(name), value)
-        arguments = self._kernel.arguments({**self._arguments.given, **planes}, n_samples, layout, keep=True)
+        held = self._arguments
+        arguments = self._kernel.arguments({**held.given, **held.extents, **planes}, n_samples, layout, keep=True)
         if arguments.n_samples != self._n:
             raise HawkError(f"{self._kernel.path.name}: rebind cannot change the sample count, bound for {self._n}, "
                             f"got {arguments.n_samples}; bind a new plan")

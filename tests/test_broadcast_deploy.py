@@ -25,9 +25,7 @@ import math
 import numpy as np
 import pytest
 
-import eagle
 import hawk
-from eagle import diff as ediff
 from hawk import Grid, HawkError, Scalar, Vector
 from hawk import _broadcast as B
 from hawk.diff import vjp
@@ -59,6 +57,8 @@ def run_cache(tmp_path, monkeypatch):
 
 @pytest.fixture(scope="module")
 def plans(cache_dir):
+    """The three kernels deployed through eagle's plan, which routes a broadcast input by itself."""
+    eagle = pytest.importorskip("eagle")
     return {k.name: eagle.deploy(k, targets=("host",), cache_dir=cache_dir)
             for k in (daffine, dcube, dmix)}
 
@@ -132,6 +132,7 @@ def test_twin_plan_memoised_per_pattern(plans, rng):
 # 3. the plan's build options reach the twin
 
 def test_deploy_options_reach_the_twin(tmp_path, rng):
+    eagle = pytest.importorskip("eagle")
     cache = str(tmp_path / "opts")
     plan = eagle.deploy(daffine, targets=("host",), cache_dir=cache, scalar_type="float32")
     x = rng.random((A, 1, NC)).astype(np.float32)
@@ -166,6 +167,7 @@ def test_bind_then_rebind_the_compact_buffer_only(plans, rng):
 # 5. a captured graph swaps the compact buffer
 
 def test_graph_swaps_a_same_shape_buffer_and_refuses_any_other(plans, rng):
+    eagle = pytest.importorskip("eagle")
     plan = plans["daffine"]
     out = np.zeros(LANE)
     bound = plan.bind(x=rng.random((A, 1, NC)), out=out, a=A)
@@ -186,6 +188,7 @@ def test_graph_swaps_a_same_shape_buffer_and_refuses_any_other(plans, rng):
 # 6. a loaded artifact and a prebuilt plugin refuse by name
 
 def test_prebuilt_plugin_refuses_a_broadcast_shape_naming_the_twin(plans, rng):
+    eagle = pytest.importorskip("eagle")
     prebuilt = eagle.plan.auto(plans["daffine"].plugin)
     with pytest.raises(ValueError, match=r"lane shape \(3, 1, 6\).*contradicts.*binds through the hawk kernel"):
         prebuilt.run(x=rng.random((A, 1, NC)), out=np.zeros(LANE), a=A)
@@ -221,6 +224,9 @@ def test_incompatible_shape_names_both_shapes_through_deploy(plans, rng):
 # 8. the reverse of a broadcast input through a recorded graph
 
 def _reverse(plan, name, value, cot, head=()):
+    eagle = pytest.importorskip("eagle")
+    from eagle import diff as ediff
+
     uniform = not head and np.size(value) == 1
     bound = plan.bind(**{name: float(np.ravel(value)[0]) if uniform else value},
                       out=np.zeros(LANE), a=A)
@@ -274,6 +280,7 @@ def test_a_derivative_plan_routes_a_broadcast_input_as_the_hawk_door_does(rng, r
 @pytest.mark.gpu
 def test_deploy_run_broadcast_on_the_device(cache_dir, rng):
     cp = pytest.importorskip("cupy")
+    eagle = pytest.importorskip("eagle")
     plan = eagle.deploy(daffine, cache_dir=cache_dir)
     x = rng.random((A, 1, NC))
     got = plan(cp.asarray(x), a=A)

@@ -401,7 +401,9 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str, steps: int | st
         "schema_version": _contracts.MAX_SCHEMA_VERSION,
         "pattern": "pure",
         "aether_abi": _contracts.AETHER_ABI_VERSION,
-        "exec_targets": list(exec_targets),
+        # one fixed order, that of ENTRY_KINDS (device before host), whatever order the targets were asked in: the sidecar of one
+        # kernel is then one document for a build and for an emit of the same kernel
+        "exec_targets": sorted(exec_targets, key=ENTRY_KINDS.index),
         "exec_access": walk.access.cls,
         # exec_op is required iff exec_access == 'mapreduce', forbidden
         # otherwise; sits beside its sibling keys, not appended.
