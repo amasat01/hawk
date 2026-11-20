@@ -9,7 +9,10 @@ hawk binds the planes by the rules of :meth:`hawk.plans.Plan.bind` and states ho
 samples. The model is a :class:`~hawk.plans.Plan`, a kernel (deployed first) or a list of them run as one step, in order,
 over one namespace of planes: a name is one plane in every plan that declares it.
 
-Not offered yet: recording a run and reversing it.
+A run can be recorded (``record=True``) and reversed (:func:`hawk.reverse`): the library keeps the states the reverse
+needs and runs the vjp of the step backwards over them. The taping twin and the vjp of the step are units of the kernel's own
+library, named by the ``derived`` records of its sidecar (:func:`hawk.deploy` with ``record=True`` builds them). Not offered yet:
+``events="refine"``.
 """
 
 from __future__ import annotations
@@ -17,16 +20,22 @@ from __future__ import annotations
 import time
 import weakref
 from dataclasses import dataclass
+from types import MappingProxyType
 
 import _osprey
 
 from . import ospreys
 from .errors import HawkError
+from ._plane_layout import describe
 from .plans import Plan, bind_for_run, deploy
 from .runtime import BoundPlan, HostKernel, through_door
 from .targets import host_target
 
-__all__ = ["ActiveSet", "RunReport", "Runner", "SimResult", "simulate", "until_done"]
+__all__ = ["ActiveSet", "RunRecord", "RunReport", "Runner", "SimResult", "simulate", "until_done"]
+
+#: The door's choice of how a recorded run is reversed, by the word the caller states.
+_STEPS_REVERSE = MappingProxyType({"per_step": _osprey.EG_STEPS_REVERSE_PER_STEP,
+                                   "fused": _osprey.EG_STEPS_REVERSE_FUSED, "auto": _osprey.EG_STEPS_REVERSE_AUTO})
 
 
 class ActiveSet:
@@ -157,13 +166,19 @@ class Runner:
     """A loop that runs bound plans until every sample is done or ``max_steps`` is reached: what :func:`until_done` returns.
 
     The library owns the loop; the planes stay the caller's memory, written in place. A counter array the caller bound
-    (``finished_count``) receives what each :meth:`run` finished.
+    (``finished_count``) receives what each :meth:`run` finished. A runner made with ``record=True`` keeps what the last run
+    needs for :meth:`reverse`.
     """
 
-    def __init__(self, plans: list[Plan], bounds: list[BoundPlan], max_steps: int, active: ActiveSet | None) -> None:
-        """Make the library's runner over ``bounds``, the plans of one step in order, bound from ``plans``."""
+    def __init__(self, plans: list[Plan], bounds: list[BoundPlan], max_steps: int, active: ActiveSet | None, *,
+                 layout: str | None = None, record: bool = False, window: int | None = None,
+                 memory_budget: int | None = None, steps_reverse: str = "per_step") -> None:
+        """Make the library's runner over ``bounds``, the plans of one step in order, bound from ``plans``; ``layout`` is the
+        call's, which a reverse reads its planes by; ``record``, ``window``, ``memory_budget`` and ``steps_reverse`` are those
+        of :func:`until_done`."""
         self._plans = plans
         self._bounds = bounds
+        self._layout = layout
         self._door = ospreys.serving(host_target().id).runtime_door()
         self._counted = [{"finished": 0, "steps": None, "mix": ()} for _ in bounds]
         options = {}
@@ -172,6 +187,20 @@ class Runner:
             if active.reorder is not None:
                 options["flags"] = _osprey.EG_RUN_REORDER
                 options["reorder_theta"] = float(active.reorder)
+        if record:
+            options["flags"] = options.get("flags", 0) | _osprey.EG_RUN_RECORD
+        options["window"] = window or 0
+        options["memory_budget"] = memory_budget or 0
+        options["steps_reverse"] = _STEPS_REVERSE[steps_reverse]
+        #: the derived units a recording takes, held for as long as the runner lives
+        self._derived = []
+        if record:
+            kernel = plans[0].kernel
+            self._derived = kernel.derived_units(kernel.derived_roles(steps_reverse))
+            options["window"] = window or kernel.recorded_window()   # the twin keeps the window it was built with
+            options["derived_roles"] = [role for role, _ in self._derived]
+            options["derived_units"] = [unit for _, unit in self._derived]
+        self._recorded = record
         self._handle = through_door(self._door.runner_new, [bound.handle for bound in bounds], max_steps, **options)
         #: the handle in a list the finalizer frees without holding this object
         self._handles = [self._handle]
@@ -212,6 +241,53 @@ class Runner:
         """The library's figures of the loop: its ``mode`` and, where the loop has one, the launch it resolved."""
         return through_door(self._door.runner_figures, self._handle)
 
+    @property
+    def record(self) -> RunRecord | None:
+        """The :class:`RunRecord` of the last run of a runner made with ``record=True``, else ``None``."""
+        return RunRecord(self) if self._recorded else None
+
+    def reverse(self, cotangents: dict) -> dict:
+        """The gradients of the last run, given the cotangents ``{state plane name: array}`` of the final state.
+
+        A cotangent has the layout of the state plane it belongs to. The result maps each plane the step's vjp differentiates
+        with respect to (its ``wrt``) to its gradient: an array like the plane for a per-sample plane, in sample order, and a
+        0-d array, the sum over samples, for a shared parameter. A runner that was not made with ``record=True``, or that has
+        not run, is refused by the library by name.
+        """
+        if not self._recorded:
+            raise HawkError("Runner.reverse: this runner records nothing; make it with record=True")
+        import numpy as np
+
+        kernel = self._plans[0].kernel
+        names = kernel.gradient_names()
+        roles = {name: role for role, name in kernel.bind_spec}
+        given = self.planes
+        unknown = sorted((set(cotangents) | set(names)) - set(roles))
+        if unknown:
+            raise HawkError(f"Runner.reverse: {unknown} are not planes of the kernel {kernel.sidecar['kernel']!r}")
+        seeds = {name: kernel.plane_view(name, value, self._layout) for name, value in cotangents.items()}
+        gradients, grad_views = {}, {}
+        for name in names:
+            if roles[name] == "uniform":
+                gradients[name] = np.zeros(1, dtype=kernel.declared["arg_dtypes"][name])
+                grad_views[name] = gradients[name]
+                gradients[name] = gradients[name].reshape(())
+            else:
+                gradients[name] = np.zeros(tuple(describe(given[name]).shape), dtype=kernel.declared["arg_dtypes"][name])
+                grad_views[name] = kernel.plane_view(name, gradients[name], self._layout)
+        door, wrapped = self._door, []
+        try:
+            sides = []
+            for views in (seeds, grad_views):
+                planes = [through_door(door.plane_wrap, view) for view in views.values()]
+                wrapped += planes
+                sides.append(([kernel.slot(name) for name in views], planes))
+            through_door(door.reverse, self._handle, *sides)
+        finally:
+            for plane in wrapped:
+                door.plane_free(plane)
+        return gradients
+
     def close(self) -> None:
         """Free the library's runner and plans at once. Closing twice is harmless."""
         self._finalizer()
@@ -219,9 +295,20 @@ class Runner:
             bound.close()
 
 
-def _plans_of(model) -> list[Plan]:
+class RunRecord:
+    """What the library keeps of a recorded runner's last run, the thing :func:`hawk.reverse` differentiates.
+
+    ``runner`` is the :class:`Runner` it belongs to; reversing after the runner is closed is refused.
+    """
+
+    def __init__(self, runner: Runner) -> None:
+        """Hold the runner the record belongs to."""
+        self.runner = runner
+
+
+def _plans_of(model, record: bool = False, window: int | None = None) -> list[Plan]:
     """The plans of ``model`` in order: a :class:`~hawk.plans.Plan` as it is, a kernel deployed with the others in one
-    bundle."""
+    bundle (recordable, with ``window`` steps, when ``record``)."""
     items = list(model) if isinstance(model, (list, tuple)) else [model]
     if not items:
         raise HawkError("the model is empty; pass a plan, a kernel, or a list of them")
@@ -229,7 +316,7 @@ def _plans_of(model) -> list[Plan]:
         if isinstance(item, HostKernel):
             raise HawkError("the model is a loaded kernel; plan it first (hawk.plan(loaded)) or pass the kernel itself")
     kernels = [item for item in items if not isinstance(item, Plan)]
-    deployed = iter(deploy(kernels) if kernels else ())
+    deployed = iter(deploy(kernels, record=record, window=window if record else None) if kernels else ())
     return [item if isinstance(item, Plan) else next(deployed) for item in items]
 
 
@@ -254,23 +341,43 @@ def _bind_model(plans: list[Plan], planes: dict, n_samples, layout) -> list[Boun
     return bounds
 
 
+def _recording_options(record, window, memory_budget, steps_reverse) -> None:
+    """Refuse an option of a recorded run that is not of its kind, by name."""
+    if not isinstance(record, bool):
+        raise HawkError(f"record= is True or False, got {record!r}")
+    for name, value in (("window", window), ("memory_budget", memory_budget)):
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 1):
+            raise HawkError(f"{name}= is a positive whole number or None (the library's choice), got {value!r}")
+    if steps_reverse not in _STEPS_REVERSE:
+        raise HawkError(f"steps_reverse= is one of {sorted(_STEPS_REVERSE)}, got {steps_reverse!r}")
+
+
 def until_done(model, *, max_steps: int, active: ActiveSet | None = None, n_samples: int | None = None,
-               layout: str | None = None, **planes) -> Runner:
+               layout: str | None = None, record: bool = False, window: int | None = None,
+               memory_budget: int | None = None, steps_reverse: str = "per_step", **planes) -> Runner:
     """Bind ``model`` and make the loop that runs it until every sample is done; ``.run()`` of the result runs it.
 
     ``model`` is a plan, a kernel or a list of them run as one step in order (see the module). ``planes`` are bound by
     the rules of :meth:`hawk.plans.Plan.bind`, except the finished counter and the active set, which the library makes; an
     omitted ``terminated`` mask starts all-false and an omitted output is made, zeroed. ``max_steps`` caps the steps a
-    sample may take. ``active`` states the compaction of a kernel built under ``Guard(active_set=True)``. A run cannot be
-    recorded for a reverse pass yet.
+    sample may take. ``active`` states the compaction of a kernel built under ``Guard(active_set=True)``.
+
+    ``record=True`` keeps what :func:`hawk.reverse` needs of each run, for a model of one plan built recordable
+    (``hawk.deploy(..., record=True)``; a kernel passed here is deployed so). ``window`` is the steps between kept states, which
+    the build fixes: ``None`` is the window built, and another is refused by the library by name. ``memory_budget`` is the bytes
+    the record may hold (``None``: the library's choice), over which the reverse runs the samples in passes; both are refused
+    without ``record``. ``steps_reverse`` is ``"per_step"``, ``"fused"`` (one K-step unit for K steps, for a kernel taking a fixed
+    K, built with window K) or ``"auto"`` (the library picks from the kernel's measured table).
     """
+    _recording_options(record, window, memory_budget, steps_reverse)
     if active is not None and (active.mask is not None or active.positions is not None):
         raise HawkError("until_done: a runner makes its own active set; pass ActiveSet(every=, reorder=), or bind "
                         "ActiveSet(mask=...).planes(kernel) to a plain plan")
-    plans = _plans_of(model)
+    plans = _plans_of(model, record, window)
     bounds = _bind_model(plans, planes, n_samples, layout)
     try:
-        return Runner(plans, bounds, max_steps, active)
+        return Runner(plans, bounds, max_steps, active, layout=layout, record=record, window=window,
+                      memory_budget=memory_budget, steps_reverse=steps_reverse)
     except BaseException:
         for bound in bounds:
             bound.close()
@@ -278,7 +385,7 @@ def until_done(model, *, max_steps: int, active: ActiveSet | None = None, n_samp
 
 
 #: The names a result states itself; a state plane of one of them is reached through ``state``.
-_RESULT_FIELDS = ("state", "report", "n", "finished", "done", "steps", "status", "wall_s")
+_RESULT_FIELDS = ("state", "report", "record", "n", "finished", "done", "steps", "status", "wall_s")
 
 
 @dataclass(frozen=True)
@@ -287,11 +394,13 @@ class SimResult:
 
     A state plane is an attribute of the result by its name (``result.x``) and an item of ``state``. ``finished`` samples
     of ``n``, ``steps`` the loop ran, ``wall_s`` seconds; ``status`` is ``"done"``, or ``"max_steps"`` when the cap is
-    reached first (a result, not an error).
+    reached first (a result, not an error). ``record`` is the :class:`RunRecord` of a run made with ``record=True``, else
+    ``None``.
     """
 
     state: dict
     report: RunReport
+    record: RunRecord | None = None
 
     def __getattr__(self, name: str):
         """A state plane by its name."""
@@ -332,21 +441,27 @@ class SimResult:
 
 
 def simulate(model, *, max_steps: int, active: ActiveSet | None = None, n_samples: int | None = None,
-             layout: str | None = None, **planes) -> SimResult:
+             layout: str | None = None, record: bool = False, window: int | None = None,
+             memory_budget: int | None = None, steps_reverse: str = "per_step", **planes) -> SimResult:
     """Run ``model`` until every sample is done or ``max_steps`` is reached and return the state.
 
-    The model, the planes and ``active`` are those of :func:`until_done`. The state is every output plane of the model, the
-    caller's own array where it bound one and a zeroed one where it left one out. A run cannot be recorded for a reverse
-    pass yet.
+    The model, the planes, ``active`` and the recording options are those of :func:`until_done`. The state is every output
+    plane of the model, the caller's own array where it bound one and a zeroed one where it left one out. With
+    ``record=True`` the result's ``record`` goes to :func:`hawk.reverse` and keeps the library's runner alive until the
+    result is collected.
     """
-    runner = until_done(model, max_steps=max_steps, active=active, n_samples=n_samples, layout=layout, **planes)
+    runner = until_done(model, max_steps=max_steps, active=active, n_samples=n_samples, layout=layout, record=record,
+                        window=window, memory_budget=memory_budget, steps_reverse=steps_reverse, **planes)
     try:
         report = runner.run()
         bound = runner.planes
         state = {name: bound[name] for name in runner.outputs if name in bound}
-    finally:
+    except BaseException:
         runner.close()
+        raise
     clash = sorted(set(state) & set(_RESULT_FIELDS))
+    if clash or not record:
+        runner.close()
     if clash:
         raise HawkError(f"hawk.simulate: the planes {clash} are names of the result; read them from the arrays you bound")
-    return SimResult(state=state, report=report)
+    return SimResult(state=state, report=report, record=runner.record)

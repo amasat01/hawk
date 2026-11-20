@@ -78,6 +78,15 @@ __all__ = ["BoundPlan", "HostKernel", "check_scatter_status", "dispatch_costs", 
 _ACTIVE_SET_PLANES = ("active_map", "active_count")
 
 
+#: The door's role code of each derived unit a recorded run takes, by the word the sidecar's ``derived`` records state it.
+_DERIVED_ROLE_CODES = MappingProxyType({
+    "tape": _osprey.EG_DERIVED_TAPE,
+    "tape_fused": _osprey.EG_DERIVED_TAPE_FUSED,
+    "step_vjp": _osprey.EG_DERIVED_STEP_VJP,
+    "fused_vjp": _osprey.EG_DERIVED_FUSED_VJP,
+})
+
+
 #: The struct format a uniform's value is packed with, by the wire dtype the sidecar states for it.
 _UNIFORM_FORMAT = MappingProxyType({"float64": "<d", "float32": "<f", "int64": "<q", "int32": "<i", "uint32": "<I", "bool": "<?"})
 
@@ -164,6 +173,48 @@ class HostKernel:
         self.active_set = (() if self.declared.get("launch", {}).get("index_set") is not None
                            else tuple(name for name in _ACTIVE_SET_PLANES if name in self._slot_named))
         self._one_step_word = None
+
+    def derived_roles(self, steps_reverse: str = "per_step") -> list:
+        """The words of the derived units a recorded run of this kernel takes, in the order :meth:`derived_units` loads them: the
+        taping twin (the K-step one when the kernel takes other than one step per launch), the step vjp, and the K-step vjp for
+        ``steps_reverse="fused"`` or, when the build has one, for ``"auto"`` (the library then chooses between the two)."""
+        twin = "tape" if self.sidecar.get("finish", {}).get("steps") == 1 else "tape_fused"
+        built = {record["role"] for record in self.sidecar.get("derived") or ()}
+        many = steps_reverse == "fused" or (steps_reverse == "auto" and "fused_vjp" in built)
+        return [twin, "step_vjp", *(["fused_vjp"] if many else [])]
+
+    def _derived_records(self, roles) -> list:
+        """The sidecar's ``derived`` records of ``roles``, in order; a role the build did not record is refused by name."""
+        recorded = {record["role"]: record for record in self.sidecar.get("derived") or ()}
+        missing = [role for role in roles if role not in recorded]
+        if missing:
+            raise HawkError(f"{self.path.name}: its build records no derived unit for {missing}, which a recorded run takes; "
+                            "the kernel's library must hold the taping twin and the vjp of its step, listed in the sidecar's "
+                            "'derived'")
+        return [recorded[role] for role in roles]
+
+    def recorded_window(self) -> int:
+        """The steps between the states a recorded run of this kernel keeps: the window its taping twin was built with, which the
+        library takes as the one window of a recorded run."""
+        (twin,) = self._derived_records(self.derived_roles()[:1])
+        return int(twin["window"])
+
+    def derived_units(self, roles) -> list:
+        """The units of ``roles`` (words of :meth:`derived_roles`) as ``(door role code, loaded unit)`` pairs, in order.
+
+        The units are the ones the sidecar's ``derived`` list names, ``{"role", "kernel", "digest"}`` each, loaded from this
+        kernel's own library: the door takes a derived unit only from the library of its primal.
+        """
+        return [(_DERIVED_ROLE_CODES[role], _load_unit(self._door, self.path, record))
+                for role, record in zip(roles, self._derived_records(roles))]
+
+    def gradient_names(self) -> tuple:
+        """The planes a recorded run's reverse differentiates with respect to: the ``wrt`` of the step vjp's own sidecar that are
+        planes of the kernel."""
+        (record,) = self._derived_records(["step_vjp"])
+        vjp = json.loads((self.path.parent / f"{record['kernel']}.json").read_text())
+        # the start copy of a time plane (a ``wrt`` of a time-stepped kernel) is no plane: its gradient joins the time plane's
+        return tuple(name for name in vjp["derivative"]["wrt"] if name in self._slot_named)
 
     def _group_members(self, sidecar: dict) -> list:
         """The sidecars of the other units of the segmented dispatch group this unit is a branch of: its other branches and
@@ -428,6 +479,16 @@ class HostKernel:
         if payload:
             value = value.reshape(payload + (value.shape[-1],))
         return value
+
+    def slot(self, name: str) -> int:
+        """The index of the plane ``name`` in the unit's slot table, which the library binds by."""
+        return self._slot_named[name]
+
+    def plane_view(self, name: str, value, layout: str | None = None) -> object:
+        """``value`` as the plane the unit's slot ``name`` takes, by the rules of a bind (the table in the module docstring):
+        the caller's memory, never a copy. ``layout`` is that of :func:`run`."""
+        role = next(role for role, plane in self.bind_spec if plane == name)
+        return self._plane_view(role, name, value, LayoutChoice(layout, {}))
 
     def refuse_partial_stages(self, partial: bool) -> None:
         """Refuse a launch over part of the range of a kernel that reads a value reduced over every sample."""

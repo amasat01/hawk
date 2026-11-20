@@ -93,7 +93,7 @@ The declarations a kernel is written in, and the top-level functions. Each has i
 
 ## Running a model until it is done
 
-`hawk.until_done` binds a plan, a kernel or a list of them run as one step and makes the loop that runs every sample to done; `hawk.simulate` runs it and returns the state. `hawk.ActiveSet` states how a runner compacts a kernel built over an active set, or makes the map and count that a plain launch of such a kernel runs.
+`hawk.until_done` binds a plan, a kernel or a list of them run as one step and makes the loop that runs every sample to done; `hawk.simulate` runs it and returns the state. `hawk.ActiveSet` states how a runner compacts a kernel built over an active set, or makes the map and count that a plain launch of such a kernel runs. With `record=True` (and optionally `window=`, `memory_budget=` and `steps_reverse=`) a run keeps what its reverse pass needs, for a kernel built with `hawk.deploy(kernel, record=True)`, and `hawk.reverse` takes the `record` of the runner or of the result and returns the gradients of the cotangents you give, by plane name.
 
 ```{eval-rst}
 .. autosummary::
@@ -102,11 +102,12 @@ The declarations a kernel is written in, and the top-level functions. Each has i
    hawk.until_done
    hawk.simulate
    hawk.ActiveSet
+   hawk.reverse
 ```
 
 ## Recording launches into a graph
 
-A graph records bound plans once and replays them; `hawk.reverse` takes the record of a recorded run.
+A graph records bound plans once and replays them. `hawk.reverse` over a recorded graph is refused by name.
 
 ```{eval-rst}
 .. autosummary::
@@ -114,5 +115,4 @@ A graph records bound plans once and replays them; `hawk.reverse` takes the reco
 
    hawk.Graph
    hawk.GraphPipeline
-   hawk.reverse
 ```

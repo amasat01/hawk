@@ -21,6 +21,8 @@ Rows (host; the ``cuda`` arm is marked ``gpu``):
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 from conftest import _launch, _xp, refuse_device_row, sidecar_of
@@ -173,10 +175,14 @@ def test_host_rows_equal_device_rows_within_the_contract(built, n):
     host, _ = _run(bundle, "host", n, mode)
     dev, _ = _run(bundle, "cuda", n, mode)
     for name, t in _terms(n, mode).items():
-        scale = np.abs(_per_row(t)).sum(1)
-        h = host[name].astype(np.float64) + host[name + "_comp"]
-        d = dev[name].astype(np.float64) + dev[name + "_comp"]
-        assert np.all(np.abs(h - d) <= 2 * TOL[mode] * scale + 1e-300), name
+        # The host library folds the rows into one cell and hands back no companion plane, so the two are compared as totals:
+        # the device total is its rows (value plus companion) added in float64, the host total is its cell. Each is within
+        # TOL * sum|term| of the exact sum (a row is within TOL * its own scale, and the row scales add up to the total's), so
+        # the two are within twice that of each other: the bound is the contract's, not fitted to a run.
+        scale = np.abs(t).sum()
+        h = float(host[name][0])
+        d = float(np.sum(dev[name].astype(np.float64) + dev[name + "_comp"]))
+        assert abs(h - d) <= 2 * TOL[mode] * scale + 1e-300, name
 
 
 def test_sidecar_lists_the_cells(built):
@@ -309,21 +315,37 @@ def _awkward(n):
 @pytest.mark.parametrize("name", ("fold1", "fold2", "foldv"))
 @pytest.mark.parametrize("n", (1, 33, 1000, 4099))
 def test_the_device_combine_on_awkward_values_equals_the_host_twin(folded, name, n):
-    """Fast2Sum with an integer magnitude pick on the device, Knuth's two-sum on the host: the same rows, NaN and Inf
-    rows included (the sign of a zero residual is the one thing the forms may disagree on, so zeros compare by value)."""
+    """Fast2Sum with an integer magnitude pick on the device, Knuth's two-sum on the host: the same total, NaN and Inf
+    decided the same way, and a finite total within the sum contract of the device's (the host keeps one cell, no rows)."""
     x = _awkward(n)
     cols = FOLDS[name][1]
     rows = -(-n // 32)
-    got = {}
-    for target in ("host", "cuda"):
-        xp = _xp(target)
-        data = np.vstack([x] * 6) if name == "foldv" else x
-        planes = {c + s: xp.full(rows, np.nan) for c in cols for s in ("", "_comp")}
-        planes["v" if name == "foldv" else "x"] = xp.asarray(data)
-        _launch(folded[None], name, target, planes).launch()
-        got[target] = {k: np.array(a.get() if hasattr(a, "get") else a) for k, a in planes.items() if k not in ("x", "v")}
-    for k, host in got["host"].items():
-        np.testing.assert_array_equal(got["cuda"][k], host, err_msg=k)
+    data = np.vstack([x] * 6) if name == "foldv" else x
+    key = "v" if name == "foldv" else "x"
+    # the device keeps one (sum, companion) row per 32 samples
+    dev_planes = {c + s: _xp("cuda").full(rows, np.nan) for c in cols for s in ("", "_comp")}
+    dev_planes[key] = _xp("cuda").asarray(data)
+    _launch(folded[None], name, "cuda", dev_planes).launch()
+    device = {k: np.array(a.get() if hasattr(a, "get") else a) for k, a in dev_planes.items() if k != key}
+    # the host library folds the rows into one cell and keeps no companion plane: the cells of a vector sum are bound as one
+    # cell of six values, a scalar sum by its name
+    host_planes = {"t": np.full(6, np.nan)} if name == "foldv" else {c: np.full(1, np.nan) for c in cols}
+    host_planes[key] = data
+    _launch(folded[None], name, "host", host_planes).launch()
+    host = {f"t_{k}": host_planes["t"][k] for k in range(6)} if name == "foldv" else {c: host_planes[c][0] for c in cols}
+    terms = {"fold1": {"s": x}, "fold2": {"s": x, "c": x * x}, "foldv": {f"t_{k}": data[k] for k in range(6)}}[name]
+    for c in cols:
+        rows_sum = device[c]
+        if not np.isfinite(np.sum(rows_sum)):
+            # a NaN or an Inf in any row decides the total the same way in every order of the additions, so the host cell
+            # must be the one the plain float64 addition of the device rows gives (a row's companion is not read: it is NaN
+            # beside an Inf sum)
+            np.testing.assert_array_equal(host[c], np.sum(rows_sum), err_msg=c)
+        else:
+            # finite: each total is within TOL * sum|x| of the exact sum, so the two are within twice that of each other
+            total = math.fsum(rows_sum) + math.fsum(device[c + "_comp"])
+            bound = 2 * TOL["float64"] * float(np.abs(terms[c]).sum())
+            assert abs(float(host[c]) - total) <= bound + 1e-300, c
 
 
 def test_a_sum_and_a_plane_named_like_its_companion_collide_by_name():

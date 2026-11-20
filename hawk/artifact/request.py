@@ -11,6 +11,8 @@ positions in the dump come from :func:`hawk._ir.dump_numbers`."""
 
 from __future__ import annotations
 
+from types import MappingProxyType
+
 from .. import _ir
 from ..errors import HawkError
 from ..ext import PLAIN, DEFAULT_GUARD, DATA_ONLY, DEFAULT_KIND
@@ -115,22 +117,14 @@ def sinks_of(kernel) -> list:
     return out
 
 
-def request(kernel, *, name: str, scalar: str, kind, targets, settings, position: dict, machines: dict,
-            sizes=None, exports_block: bool = True) -> dict:
-    """The request of ``kernel`` for ``targets`` as a dict: ``name`` the unit name wanted, ``scalar`` the scalar mode's name,
-    ``kind`` the kind the kernel is built under, ``settings`` the :class:`hawk.build_settings.Settings` of the build, ``position``
-    the handle of each node (:func:`hawk._ir.dump_numbers`), ``machines`` ``{target: the machine answer of its OSPREY}`` and ``sizes`` the layout sizes a test states. The texts carry the
-    self-check block of a library unless ``exports_block`` is false, which a build asks: its units are linked with the text of the
-    set, which carries the block once."""
-    kind = kind if kind is not None else DEFAULT_KIND
-    members = getattr(kernel, "members", None)
-    if members and hasattr(members[0], "sinks"):
-        body = {"Chain": [_member(m, m.name, position) for m in members]}
-    else:
-        body = {"Plain": _member(kernel, name, position)}
-    rows = {t: TARGETS[t] for t in targets}
-    out = {"v": 1, "name": name, "scalar": _camel(scalar), "targets": [row.target for row in rows.values()], "kind": _kind(kind),
-           "body": body}
+#: The request's spelling of each role of a derived unit.
+_ROLE_WORDS = MappingProxyType({"tape": "Tape", "tape_fused": "TapeFused", "step_vjp": "StepVjp", "fused_vjp": "FusedVjp"})
+
+
+def _part(kernel, *, settings, sizes, position: dict) -> dict:
+    """The members of a kernel's request that belong to the kernel alone, which a derived kernel states for itself as well: its
+    single step, group, planes, build settings, steps, lane space, sink axes, shared planes and broadcast pattern."""
+    out = {}
     one = getattr(kernel, "one_step", None)
     if one is not None:
         out["one_step"] = _member(one, one.name, position)
@@ -167,7 +161,37 @@ def request(kernel, *, name: str, scalar: str, kind, targets, settings, position
                  for n in (plane, *(t for t, p in kernel.tangents.items() if p == plane)) if n in bound]
     if broadcast:
         out["broadcast"] = broadcast
+    return out
+
+
+def request(kernel, *, name: str, scalar: str, kind, targets, settings, position: dict, machines: dict,
+            sizes=None, exports_block: bool = True, derived=()) -> dict:
+    """The request of ``kernel`` for ``targets`` as a dict: ``name`` the unit name wanted, ``scalar`` the scalar mode's name,
+    ``kind`` the kind the kernel is built under, ``settings`` the :class:`hawk.build_settings.Settings` of the build, ``position``
+    the handle of each node (:func:`hawk._ir.dump_numbers`), ``machines`` ``{target: the machine answer of its OSPREY}`` and ``sizes`` the layout sizes a test states. The texts carry the
+    self-check block of a library unit unless ``exports_block`` is false, which a build asks: its units are linked with the text of the
+    set, which carries the block once. ``derived`` are the :class:`hawk.diff.recording.DerivedUnit` built with ``kernel`` in one
+    library, each stated by its own kernel members and its facts."""
+    kind = kind if kind is not None else DEFAULT_KIND
+    members = getattr(kernel, "members", None)
+    if members and hasattr(members[0], "sinks"):
+        body = {"Chain": [_member(m, m.name, position) for m in members]}
+    else:
+        body = {"Plain": _member(kernel, name, position)}
+    rows = {t: TARGETS[t] for t in targets}
+    out = {"v": 1, "name": name, "scalar": _camel(scalar), "targets": [row.target for row in rows.values()], "kind": _kind(kind),
+           "body": body}
+    out |= _part(kernel, settings=settings, sizes=sizes, position=position)
+    if derived:
+        out["derived"] = [_derived_entry(unit, kind=kind, settings=settings, sizes=sizes, position=position) for unit in derived]
     out["machine"] = {row.target: machines[t] for t, row in rows.items()}
     if not exports_block:
         out["exports_block"] = False
     return out
+
+
+def _derived_entry(unit, *, kind, settings, sizes, position: dict) -> dict:
+    """One entry of the request's ``derived`` list: the unit's own body and kernel members, its role and its facts."""
+    entry = {"member": _member(unit.kernel, unit.kernel.name, position), "role": _ROLE_WORDS[unit.role], "kind": _kind(kind)}
+    entry |= _part(unit.kernel, settings=settings, sizes=sizes, position=position)
+    return entry | {key: value for key, value in unit.facts.items() if value is not None}

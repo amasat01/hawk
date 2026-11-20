@@ -16,6 +16,7 @@ import weakref
 
 from . import ospreys
 from .errors import HawkError
+from .runner import RunRecord
 from .runtime import BoundPlan, through_door
 from .targets import host_target
 
@@ -147,11 +148,14 @@ class Graph(GraphPipeline):
 def reverse(record, cotangents: dict) -> dict:
     """Reverse a recorded run: the gradients of ``cotangents`` (by plane name) through ``record``.
 
-    Refused by name in this build: the library reverses the record of a runner built with its derivative units, and a recorded
-    graph (``graph.record``) has no reverse in the library yet. :func:`until_done` makes no recorded runner in this build.
+    ``record`` is the ``record`` of a runner made by :func:`hawk.until_done` or of a result of :func:`hawk.simulate`, with
+    ``record=True``: see :meth:`hawk.runner.Runner.reverse`. A recorded graph (``graph.record``) is refused by name: the
+    library reverses a runner's record and has no reverse over a graph's yet.
     """
+    if isinstance(record, RunRecord):
+        return record.runner.reverse(cotangents)
     if isinstance(record, GraphRecord):
         raise HawkError("hawk.reverse over a recorded graph: the library reverses a runner's record and has no reverse over "
                         "a graph's yet; it lands with a later library addition")
-    raise HawkError(f"hawk.reverse takes a graph's record, got {type(record).__name__}: a runner built by hawk.until_done "
-                    "keeps no record in this build (it takes no derivative units)")
+    raise HawkError(f"hawk.reverse takes the record of a run made with record=True, got {type(record).__name__}: "
+                    "hawk.until_done(..., record=True).record or hawk.simulate(..., record=True).record")

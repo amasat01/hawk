@@ -178,13 +178,18 @@ def plan(loaded: HostKernel, structure: Structure = HostTeam, *, npartitions: in
     return Plan(loaded, structure, npartitions, partitions)
 
 
-def deploy(kernels, *, targets=None, scalar_type: str = "float64", cache_dir=None, contraction=None):
+def deploy(kernels, *, targets=None, scalar_type: str = "float64", cache_dir=None, contraction=None, record: bool = False,
+           window: int | None = None):
     """Build one kernel, or a list of them as one bundle, and return its :class:`Plan`, or a tuple of plans in order.
 
     A repeat deploy of an unchanged kernel compiles nothing (the build is cached under ``cache_dir``, default
     :func:`hawk.artifact.default_cache_dir`). ``targets`` defaults to the host; a device target is refused. ``scalar_type`` is
     ``"float64"`` or ``"float32"``; ``"banded"`` is a device type and is refused on the host. The plan runs under
     :data:`HostTeam` and takes no ``structure=``: :func:`plan` over a loaded kernel is the call that states one.
+
+    ``record=True`` builds every kernel recordable (:func:`hawk.until_done`, :func:`hawk.reverse`): in the same library as the
+    taping twin that keeps ``window`` steps (default 16) and the vjp of its step. A recorded run takes that window, so it is
+    built in; ``window`` without ``record`` is refused.
     """
     from .artifact import build_bundle, build_key, default_cache_dir
     from .build_settings import BuildSettings
@@ -195,10 +200,13 @@ def deploy(kernels, *, targets=None, scalar_type: str = "float64", cache_dir=Non
     if scalar_type == "banded":
         raise HawkError("scalar_type='banded' is a device type; the host runs float64 or float32")
     root = Path(cache_dir) if cache_dir else default_cache_dir()
-    key = build_key(kernels, targets=ids, mode=scalar_type)
+    if window is not None and not record:
+        raise HawkError("deploy: window= is the steps a recorded run keeps, so it goes with record=True")
+    asked = (16 if window is None else window) if record else None
+    key = build_key(kernels, targets=ids, mode=scalar_type, record=asked)
     directory = root / "deploy" / hashlib.sha256(key.encode()).hexdigest()
     bundle = build_bundle(kernels, directory, mode=scalar_type, targets=ids, cache_dir=cache_dir,
-                          settings=BuildSettings(contraction=contraction))
+                          settings=BuildSettings(contraction=contraction), record=asked)
     built = {artifact.name for artifact in bundle.artifacts}
     plans = []
     for kernel in kernels:

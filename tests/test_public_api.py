@@ -91,7 +91,7 @@ _EXPECTED_MANIFEST = {
         "DeviceKernel", "HostSerial", "HostTeam", "Partition", "Plan", "asarray", "banded_pack", "banded_unpack", "deploy",
         "plan", "synchronize", "to_numpy",
     ],
-    "hawk.runner": ["ActiveSet", "RunReport", "Runner", "SimResult", "simulate", "until_done"],
+    "hawk.runner": ["ActiveSet", "RunRecord", "RunReport", "Runner", "SimResult", "simulate", "until_done"],
     "hawk.graph": ["Graph", "GraphPipeline", "GraphRecord", "reverse"],
     "hawk.ext": [
         "ATOMIC", "DEFAULT_GUARD", "DEFAULT_KIND", "Guard", "IndexSet",

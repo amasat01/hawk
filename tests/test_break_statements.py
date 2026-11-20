@@ -18,7 +18,6 @@ by hand (``m.where`` on the condition, then the bare break). Rows:
 * **Targets** (B7, B8): the C unit compiles strict c99, passes MISRA and
   computes the host's bits; the CUDA source compiles; the device values are a
   gpu-marked row.
-* **Render baseline** (B9) is ``tests/test_render_baseline.py``, unchanged.
 """
 
 from __future__ import annotations

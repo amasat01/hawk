@@ -140,5 +140,5 @@ def test_a_graph_keeps_a_record_only_when_asked_and_reverse_refuses_it_by_name(l
     assert isinstance(recorded.record, hawk.graph.GraphRecord) and recorded.record.graph is recorded
     with pytest.raises(HawkError, match="over a recorded graph"):
         hawk.reverse(recorded.record, {"y": np.ones(N)})
-    with pytest.raises(HawkError, match="keeps no record"):
+    with pytest.raises(HawkError, match="takes the record of a run made with record=True"):
         hawk.reverse(object(), {"y": np.ones(N)})

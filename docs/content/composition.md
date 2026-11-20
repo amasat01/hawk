@@ -8,7 +8,7 @@ None of that knows what your problem is about.
 
 So a domain is a set of kernels, not a patch to hawk. When a domain needs something the vocabulary lacks, the fix is a
 generic primitive that every domain then has, or a refusal that names the limit. There is no domain special case in the
-engine, and a kernel without the new feature keeps emitting the same text (`tests/test_render_baseline.py` pins it).
+engine, and a kernel without the new feature keeps emitting the same text.
 
 The [domain pages](domains) are the test. Each one is written against the existing vocabulary, and the places where it
 stretched it are listed with the primitive that closed them on [Why RAPTOR is built this way](https://amasat01.github.io/why.html).

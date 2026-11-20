@@ -267,13 +267,15 @@ def reset(cache_dir=None) -> None:
         osprey.state("reset", root)
 
 
-def build_key(kernels, *, targets, mode: str = "float64", options: Mapping | None = None, opt_level: str = "") -> str:
+def build_key(kernels, *, targets, mode: str = "float64", options: Mapping | None = None, opt_level: str = "",
+              record: int | None = None) -> str:
     """One opaque text naming everything a build of ``kernels`` for ``targets`` is made of.
 
     Per kernel: its name, the text of its traced nodes, the request the lowering is asked (declarations, kind, sinks, settings)
     and its derivative tag; per target: the ``key`` the serving OSPREY states for the machine, which covers the level and the options
     as it resolves them (a default stated and a default left out are one key); and ``mode``. Equal requests give equal texts, and a change in any of these gives another. A caller that has choices of its
-    own (a folder name, say) hashes this text together with them.
+    own (a folder name, say) hashes this text together with them. ``record`` is the window of :func:`build_bundle`'s, whose derived
+    units are part of what is built.
     """
     options = _user_options(options, False, None, "", "")
     kernels, targets = list(kernels), _target_ids(targets)
@@ -285,7 +287,8 @@ def build_key(kernels, *, targets, mode: str = "float64", options: Mapping | Non
     cfg = _resolved_settings(None, targets)
     machines = _machines(targets, options, opt_level, default_cache_dir())
     keyed = {t: {"key": machines[t]["key"]} for t in targets}
-    plans = _plans(kernels, names, kinds, mode=mode, targets=targets, settings=cfg, machines=keyed, sizes=None)
+    plans = _plans(kernels, names, kinds, mode=mode, targets=targets, settings=cfg, machines=keyed, sizes=None,
+                   recordings=_recordings(kernels, record))
     derivative = _per_kernel_derivative(kernels, names, None)
     return hashlib.sha256(json.dumps([plans, derivative], sort_keys=True, default=repr).encode()).hexdigest()
 
@@ -301,19 +304,21 @@ def _machines(targets, options, opt_level: str, root: Path) -> dict:
             for t in targets}
 
 
-def _plans(kernels, names, kinds, *, mode, targets, settings, machines, sizes, exports_block: bool = False) -> list:
+def _plans(kernels, names, kinds, *, mode, targets, settings, machines, sizes, exports_block: bool = False, recordings=None) -> list:
     """``(request, dump, dialects)`` of each kernel: the request the lowering is asked, the text of the nodes it names and the
     text of their dialects (empty: the lowering context declares the dialect kinds itself). A build asks for texts without the
-    self-check block, which the text of its set carries once; a text that is compiled alone (:func:`emit_source`) asks for it."""
+    self-check block, which the text of its set carries once; a text that is compiled alone (:func:`emit_source`) asks for it.
+    ``recordings`` is the derived units of each kernel (:func:`hawk.diff.recording.recording`), which its request states and its
+    answer holds beside its own units."""
     out = []
-    for kernel, name, kind in zip(kernels, names, kinds):
-        roots = _request.sinks_of(kernel)
+    for kernel, name, kind, derived in zip(kernels, names, kinds, recordings or [()] * len(kernels)):
+        roots = _request.sinks_of(kernel) + [sink for unit in derived for sink in _request.sinks_of(unit.kernel)]
         # the lowering loads the text into an empty context, where a node's handle is its position in the text: so the roots
         # are copied into one first, and the request names the copies' numbers
         copies = _ir.adopt(_ir.new_context(), roots)
         position = dict(zip(roots, _ir.dump_numbers(copies)))
         request = _request.request(kernel, name=name, scalar=mode, kind=kind, targets=targets, settings=settings, position=position,
-                                   machines=machines, sizes=sizes, exports_block=exports_block)
+                                   machines=machines, sizes=sizes, exports_block=exports_block, derived=derived)
         out.append((request, _ir.dump_text(copies), ""))
     return out
 
@@ -400,13 +405,14 @@ def _built(answer: dict) -> tuple:
     return SimpleNamespace(key=answer["key"], hit=answer["hit"], seconds=answer["seconds"]), answer["artifact"], answer["source"], answer["format"]
 
 
-def _draft(kernel, unit, family, answers, *, mode, targets, machines, derivative, block, records=None) -> _Draft:
+def _draft(kernel, unit, family, answers, *, mode, targets, machines, derivative, block, records=None, derived=None) -> _Draft:
     """Assemble the unit CONTENT of one answered unit from what each target's OSPREY built for it.
 
     Everything here is a pure function of the answers; nothing is written, which lets the publish step lay the files down at once.
     ``unit`` is the unit's record in the lowering answer, ``family`` the records of every unit the answer holds for ``kernel``,
     ``answers`` ``{target: its build answer}``. The sidecar is the unit's record and the kernel's own declarations, with the
-    figures each OSPREY gave and the machine it stated, written as given.
+    figures each OSPREY gave and the machine it stated, written as given. ``derived`` is the list a recordable kernel's sidecar holds
+    (:func:`_owners`).
     """
     name = unit["meta"]["name"]
     entries, files = {}, []
@@ -420,6 +426,8 @@ def _draft(kernel, unit, family, answers, *, mode, targets, machines, derivative
         entries[target] = (built[0], f"{name}.so", *built[2:]) if TARGETS[target].host_entry else built
     meta = _sidecar(kernel, unit, family, mode=mode, targets=targets, machines=machines, derivative=derivative, block=block,
                     records=records, built=answers)
+    if derived:
+        meta = {**meta, "derived": derived}
     blob = text_blob(json.dumps(meta, indent=2) + "\n")
     files.append(UnitFile(f"{name}.json", digest_bytes(blob), blob=blob))
     return _Draft(name, kernel.name, unit["meta"], meta, f"{name}.json", entries, tuple(files))
@@ -688,7 +696,8 @@ def _emitted(kernel, name, mode, kind, targets, does, instead, settings, options
     return answer, written[0], kind, machines
 
 
-def _lowered(kernels, names, kind, *, mode, targets, cfg, options, opt_level, root: Path, sizes, tools_needed: bool) -> tuple:
+def _lowered(kernels, names, kind, *, mode, targets, cfg, options, opt_level, root: Path, sizes, tools_needed: bool,
+             recordings=None) -> tuple:
     """``(kinds, machines, answers)`` of a set of kernels: each target's machine and each kernel's lowering answer, with every refusal
     the lowering makes. ``tools_needed`` refuses a machine that lacks its tools before anything is lowered; a caller that compiles
     nothing does not ask."""
@@ -696,7 +705,8 @@ def _lowered(kernels, names, kind, *, mode, targets, cfg, options, opt_level, ro
     kind = _resolve_bundle_kind(names, kernels, kind)
     kinds = [_member_kind(k, kind, explicit) for k in kernels]
     machines = _machines(targets, options, opt_level, root)
-    plans = _plans(kernels, names, kinds, mode=mode, targets=targets, settings=cfg, machines=machines, sizes=sizes)
+    plans = _plans(kernels, names, kinds, mode=mode, targets=targets, settings=cfg, machines=machines, sizes=sizes,
+                   recordings=recordings)
     if tools_needed:
         _require_tools(machines)
     answers = [_lower(plan, targets) for plan in plans]
@@ -725,6 +735,43 @@ def _build_units(families, *, targets, machines, options, defines, opt_level, bl
             future.exception()
     done = iter(f.result() for f in futures)
     return [[{call[0]: next(done) for call in unit} for unit in family] for family in calls]
+
+
+def _recordings(kernels, window) -> list:
+    """The derived units of each kernel for a build asked to record with ``window`` steps (none when it is not asked)."""
+    if window is None:
+        return [()] * len(kernels)
+    if isinstance(window, bool) or not isinstance(window, int) or window < 1:
+        raise HawkError(f"record= is a window of steps, a positive whole number, got {window!r}")
+    from ..diff.recording import recording
+
+    return [recording(k, window) for k in kernels]
+
+
+#: The roles of a derived unit that is a vjp of its primal, which its sidecar tags as that primal's derivative.
+_VJP_ROLES = ("step_vjp", "fused_vjp")
+
+
+def _owners(kernel, derivative, answer, recorded) -> list:
+    """``(kernel, derivative block, derived list)`` of each written unit of an answer, in order: the units of ``kernel`` itself and
+    then each derived unit, whose own kernel declares it. The primal's derived list names every derived unit with the digest the
+    answer states for it; a vjp is tagged the derivative of ``kernel``."""
+    written = [unit["meta"] for unit in answer["units"] if unit["texts"]]
+    by_name = {unit.kernel.name: unit for unit in recorded}
+    listed = [{"role": unit.role, "kernel": unit.kernel.name,
+               "digest": next(m["digest"] for m in written if m["name"] == unit.kernel.name),
+               **({} if unit.window is None else {"window": unit.window})} for unit in recorded]
+    out = []
+    for meta in written:
+        unit = by_name.get(meta["name"])
+        if unit is None:
+            out.append((kernel, derivative, listed or None if meta["name"] == kernel.name else None))
+        elif unit.role in _VJP_ROLES:
+            block = _per_kernel_derivative([kernel, unit.kernel], [kernel.name, unit.kernel.name], {unit.kernel.name: kernel.name})[1]
+            out.append((unit.kernel, block, None))
+        else:
+            out.append((unit.kernel, None, None))
+    return out
 
 
 # -- The public entry points. ----------------------------------------------- #
@@ -843,8 +890,13 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
                  literal_table: bool = False, embedded_profile=None, options: Mapping | None = None,
                  emit_form: str | None = None, linalg_form: str | None = None, wide_form: str | None = None,
                  launch_bounds: tuple[int, int] | None = None,
-                 settings: BuildSettings | None = None) -> Bundle:
+                 settings: BuildSettings | None = None, record: int | None = None) -> Bundle:
     """Build every kernel into ``directory`` and write ONE ``manifest.json`` over them.
+
+    ``record`` is a window of steps (a positive whole number): every kernel is then built recordable, in the same library as the
+    taping twin that keeps that many steps and the vjp of its step (and of its ``K`` steps), and its sidecar's ``derived`` lists
+    them, each with its ``role``, ``kernel`` name and ``digest`` (a twin also states its ``window``). See
+    :func:`hawk.diff.recording.recording`.
 
     An ``emit_form``/``linalg_form``/``wide_form``/``launch_bounds`` left unset is the value of ``settings`` (a
     :class:`hawk.build_settings.BuildSettings`; the default: ``"auto"``, no bound); an explicit argument wins. ``emit_form`` is how a
@@ -881,14 +933,17 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
                              launch_bounds=launch_bounds)
     block = None if cfg.launch_bounds is None else cfg.launch_bounds[0]
     per_kernel_derivative = _per_kernel_derivative(kernels, names, derivative)
+    recordings = _recordings(kernels, record)
     root = Path(cache_dir) if cache_dir else default_cache_dir()
     kinds, machines, answers = _lowered(kernels, names, kind, mode=mode, targets=targets, cfg=cfg, options=options, opt_level=opt_level,
-                                        root=root, sizes=layout_sizes_override, tools_needed=True)
+                                        root=root, sizes=layout_sizes_override, tools_needed=True, recordings=recordings)
     built = _build_units(answers, targets=targets, machines=machines, options=options, defines=defines, opt_level=opt_level,
                          block=block, kinds=kinds, root=root)
-    families = [[_draft(k, unit, answer["units"], got, mode=mode, targets=targets, machines=machines, derivative=d, block=block, records=answer)
-                 for unit, got in zip((u for u in answer["units"] if u["texts"]), family)]
-                for k, answer, family, d in zip(kernels, answers, built, per_kernel_derivative)]
+    families = [[_draft(own, unit, answer["units"], got, mode=mode, targets=targets, machines=machines, derivative=own_derivative,
+                        block=block, records=answer, derived=listed)
+                 for (own, own_derivative, listed), unit, got in zip(_owners(k, d, answer, recorded),
+                                                                     (u for u in answer["units"] if u["texts"]), family)]
+                for k, answer, family, d, recorded in zip(kernels, answers, built, per_kernel_derivative, recordings)]
     drafts = [d for family in families for d in family]
     library = _link_set(drafts, answers, [got for family in built for got in family], targets=targets, stem=name or "units",
                         exports=layout_sizes_override, root=root)
