@@ -61,3 +61,30 @@ def test_an_ordered_sum_over_a_leading_axis_has_the_right_values():
     """RED BY RULING, the reminder: implement an ordered sum over any axes; until then the build is refused."""
     got, want = values(two_axes, "a", (3, 4))
     np.testing.assert_allclose(got, want)
+
+
+def test_the_sidecar_states_the_axes_the_library_states_for_a_slot_in_the_form_of_a_declared_sink(tmp_path, cache_dir, monkeypatch):
+    """The unit record of the lowering answer names axes by slot, label and extent (-1: a runtime one); the sidecar holds them as a
+    declared sink's axes (payload, then ``{label, extent}`` each, ``None`` for a runtime extent), and a declared sink keeps its own."""
+    import copy
+
+    import hawk.artifact.bundle as bundle_module
+    from hawk import Mutable
+    from hawk.artifact import build_bundle
+
+    @kernel
+    def stated(x: Scalar, y: Mutable[Scalar]):
+        y = x + 1.0
+
+    real = bundle_module.sidecar_of_unit
+
+    def with_stated_axes(k, unit, **rest):
+        unit = copy.deepcopy(unit)      # the compiled unit stays as the library made it: only what hawk reads is stated here
+        slot = [s["name"] for s in unit["meta"]["body"]["slots"]].index("y")
+        unit["meta"]["launch"]["plane_axes"] = [{"slot": slot, "labels": ["a", "b"], "extents": [2, -1]}]
+        return real(k, unit, **rest)
+
+    monkeypatch.setattr(bundle_module, "sidecar_of_unit", with_stated_axes)
+    built = build_bundle([stated], tmp_path, targets=("host",), cache_dir=cache_dir)
+    axes = built.artifacts[0].sidecar["plane_axes"]
+    assert axes == {"y": {"payload": [], "axes": [{"label": "a", "extent": 2}, {"label": "b", "extent": None}]}}

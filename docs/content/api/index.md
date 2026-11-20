@@ -107,7 +107,9 @@ The declarations a kernel is written in, and the top-level functions. Each has i
 
 ## Recording launches into a graph
 
-A graph records bound plans once and replays them. `hawk.reverse` over a recorded graph is refused by name.
+A graph records launches, conditionals and forks once and replays them as one; Python is never recorded. Write one by hand (`g.add(bound)`, `with g.parallel() as p`, `with p.branch() as b`) or with `@hawk.Graph.builder`, which runs a function once: a kernel call inside it is recorded and returns its output arrays, and `g.result` declares what `g(n)` gives back after replaying `n` times. In a builder, `if`, `elif`, `else`, `while`, `for _ in range(cap)` that opens with `if not c: break`, and `match` on a one-element `int32` or `uint32` array (or a `hawk.SkipGuard`) become conditionals of the graph, read at every replay; any other condition is a Python value, decided once at build. `hawk.skippable(step, guard)` and `hawk.repeat_while(step, guard, max_iters)` are the same conditionals over a step you add by hand. Leaving a `with g.parallel()` is the join: no edge is ever declared, the library orders the branches by the planes they touch and refuses two that race, and `b.wait(array)` orders a branch after the earlier branches that write the array. `g.bind(**arrays)` takes new arrays of the same shape and dtype for a builder's parameters with no new record.
+
+`hawk.reverse(graph.record, cotangents, wrt=None)` over a graph made with `record=True` (a builder's kernel calls are built with their vjp; a plan added by hand is made with `hawk.deploy(kernel, reverse=True)`) returns the gradients of the cotangents, by plane name, through forks, conditionals and `while` loops as they ran at the last replay. `wrt` selects inputs; a plane bound by a Python number has no gradient and is refused by name (pass a one-element array). A built graph is drawn from what the library describes: `str(g)` and `g.show()`, `g.to_mermaid()`, `g.to_dot()`, `g.edges()`, `g.schedule()`, `g.node_labels()` and `g.num_nodes()`.
 
 ```{eval-rst}
 .. autosummary::
@@ -115,4 +117,7 @@ A graph records bound plans once and replays them. `hawk.reverse` over a recorde
 
    hawk.Graph
    hawk.GraphPipeline
+   hawk.SkipGuard
+   hawk.skippable
+   hawk.repeat_while
 ```

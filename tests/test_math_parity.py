@@ -766,8 +766,7 @@ def test_every_function_runs_in_a_finishing_kernel_through_simulate(target):
         put, get, simulate = (lambda v: v), np.asarray, hawk.simulate
     else:
         import cupy as cp
-        import eagle
-        put, get, simulate = cp.asarray, cp.asnumpy, eagle.simulate
+        put, get, simulate = cp.asarray, cp.asnumpy, hawk.simulate
     res = simulate(finishing_math, x=put(x), a=put(a),
                    y=put(np.zeros(64)), t=put(np.zeros(64)), max_steps=4)
     np.testing.assert_allclose(get(res.y), _finishing_reference(x, a), rtol=1e-13)
@@ -898,8 +897,7 @@ def test_a_matrix_kernel_runs_through_simulate(target):
         put, get, simulate = (lambda v: v), np.asarray, hawk.simulate
     else:
         import cupy as cp
-        import eagle
-        put, get, simulate = cp.asarray, cp.asnumpy, eagle.simulate
+        put, get, simulate = cp.asarray, cp.asnumpy, hawk.simulate
     res = simulate(finishing_mat, X=put(X), a=put(a),
                    y=put(np.zeros((6, 64))), t=put(np.zeros(64)),
                    max_steps=4)

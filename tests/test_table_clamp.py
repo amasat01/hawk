@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 import hawk
+from conftest import device_array
 from hawk import Index, Mutable, Scalar, Table
 from hawk import math as hm
 from hawk.diff import jvp
@@ -51,13 +52,14 @@ def private_cache(tmp_path, monkeypatch):
 
 def _deploy_and_run(kernel, target: str, dtype: str, planes: dict) -> dict:
     """``kernel`` deployed for ``target`` and launched once over ``planes``, which hold the result in place: hawk's verbs on
-    the host, eagle on the device. Returns the planes as the launch saw them (device arrays on the device)."""
+    the host and on the device, where the arrays live. Returns the planes as the launch saw them (device arrays on the device)."""
     if target == "host":
         hawk.deploy(kernel, scalar_type=dtype).run(**planes)
         return planes
-    eagle = pytest.importorskip("eagle")
-    planes = {k: eagle.arrays.asarray(v, device="cuda:0") for k, v in planes.items()}
-    eagle.deploy(kernel, scalar_type=dtype, targets=(target,))(**planes)
+    cupy = pytest.importorskip("cupy")
+    planes = {k: device_array(v, cupy) for k, v in planes.items()}
+    hawk.deploy(kernel, scalar_type=dtype, targets=("host", target))(**planes)
+    hawk.synchronize()
     return planes
 
 

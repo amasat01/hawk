@@ -11,7 +11,12 @@ plan (``plan(x, a=3)``, which a kernel's own call ``k(x, a=3)`` is) does so with
 per pattern, the kernel's twin (:mod:`hawk._broadcast`) and binds the caller's buffer compact. The tiles, threads and
 memory of a launch are the host library's.
 
-Only the host runtime is in this build: :data:`DeviceKernel` and a device target are refused by name.
+Where a plan runs is where its arrays live. Every array crosses by the DLPack protocol, NumPy's and any other library's, host
+memory or device memory alike, and the plan's door is that of the memory the arrays are in (:mod:`hawk._place`): the host
+library's for host memory, the device library's for device memory, one launch never mixing the two. An output the caller
+leaves out is made by that door and handed back by the same protocol: a NumPy array for host inputs, an array of the library the
+caller's own arrays come from for device inputs. A launch over device memory is queued; the one-call forms (:meth:`Plan.run`,
+calling the plan) wait before they return, and :meth:`~hawk.runtime.BoundPlan.launch` leaves it to :func:`synchronize`.
 """
 
 from __future__ import annotations
@@ -23,30 +28,24 @@ from pathlib import Path
 
 import _osprey
 
-from . import _broadcast, ospreys
+from . import _broadcast, _place, graph_builder, ospreys
 from .errors import HawkError
 from .runtime import BoundPlan, LoadedKernel, load, through_door
-from .targets import TARGETS, host_target
+from .targets import TARGETS, host_target, runs_here
 from .trace.kernel import Kernel
 
 __all__ = ["DeviceKernel", "HostSerial", "HostTeam", "Partition", "Plan", "asarray", "banded_pack", "banded_unpack", "deploy", "plan", "synchronize", "to_numpy"]
-
-#: What a refusal of anything that needs a device says.
-_NO_DEVICE = "the device runtime is not in this build"
-
-#: The DLPack device types a host array lives on: ordinary host memory and pinned host memory.
-_HOST_DEVICE_TYPES = (1, 3)
 
 
 @dataclass(frozen=True)
 class Structure:
     """How a plan launches its partitions: a marker the caller names, never a decision about hardware.
 
-    ``code`` is the host library's structure code, ``None`` for a structure this build does not run.
+    ``code`` is the door's structure code.
     """
 
     name: str
-    code: int | None
+    code: int
 
     def __repr__(self) -> str:
         return f"hawk.{self.name}"
@@ -56,8 +55,8 @@ class Structure:
 HostTeam = Structure("HostTeam", _osprey.EG_STRUCTURE_HOST_TEAM)
 #: One serial call per partition: the reference every other structure is judged against.
 HostSerial = Structure("HostSerial", _osprey.EG_STRUCTURE_HOST_SERIAL)
-#: One device launch per partition; refused by name until the device runtime is in this build.
-DeviceKernel = Structure("DeviceKernel", None)
+#: One device launch per partition, on the device library's door.
+DeviceKernel = Structure("DeviceKernel", _osprey.EG_STRUCTURE_DEVICE)
 
 
 @dataclass(frozen=True)
@@ -143,6 +142,18 @@ class Plan:
                 held = self._twins[key] = deploy(twin, **self._deployed.settings)
         return held
 
+    def _reversible(self) -> Plan:
+        """This plan when it carries the vjp of its kernel or has no kernel to take it from, else the plan of the same kernel built
+        with it, made on the first use and kept: what a graph kept for :func:`hawk.reverse` launches."""
+        deployed = self._deployed
+        if deployed is None or deployed.settings["reverse"] or deployed.settings["record"]:
+            return self
+        with self._lock:
+            held = self._twins.get("reverse")
+            if held is None:
+                held = self._twins["reverse"] = deploy(deployed.kernel, **{**deployed.settings, "reverse": True})
+        return held
+
     def bound(self, planes: dict, *, n_samples: int | None = None, layout: str | None = None, keep: bool,
               outputs: bool = False, running: bool = False, span: tuple | None = None) -> BoundPlan:
         """Check ``planes`` and bind them: the one path every run form takes (:meth:`bind`, :meth:`run`, a call of the plan,
@@ -152,7 +163,12 @@ class Plan:
         planes bind to that pattern's twin, compact. The checks are those of :meth:`~hawk.runtime.LoadedKernel.arguments`
         (``keep``, ``outputs`` and ``running`` as there); ``span=(base, count)`` launches over part of the range.
         """
+        recorder = graph_builder.current()
+        if recorder is not None and recorder.reverse and self._reversible() is not self:
+            return self._reversible().bound(planes, n_samples=n_samples, layout=layout, keep=keep, outputs=outputs,
+                                            running=running, span=span)
         deployed = self._deployed
+        place = self._place(planes)
         plan, patterns, shown = self, {}, None
         if deployed is not None:
             patterns, shown, planes = _broadcast.routed(deployed.kernel, planes, deployed.kernel.name)
@@ -160,13 +176,25 @@ class Plan:
                 plan = self._twin(patterns)
                 taken = {name for _role, name in plan.kernel.arg_spec}     # a derivative linear in an input does not take it
                 planes = {name: value for name, value in planes.items() if name in taken or name not in patterns}
-        arguments = plan.kernel.arguments(planes, n_samples, layout, keep=keep, outputs=outputs, running=running,
+        arguments = plan.kernel.arguments(planes, n_samples, layout, keep=keep, make=place, outputs=outputs, running=running,
                                           shown=shown)
         n = arguments.n_samples
         plan.kernel.refuse_partial_stages(plan._is_partial(n, span))
         route = None if deployed is None else (deployed.kernel, patterns)
-        return BoundPlan(plan.kernel, arguments, plan.structure.code, plan._ranges(n, span), n_samples=n_samples,
-                         layout=layout, broadcast=route)
+        return BoundPlan(plan.kernel, arguments, plan._structure_code(place.device), plan._ranges(n, span), place=place,
+                         n_samples=n_samples, layout=layout, broadcast=route,
+                         store=None if recorder is None else recorder.store(place.door))
+
+    def _place(self, planes: dict) -> _place.Maker:
+        """The maker, and with it the door, of the memory ``planes`` live in: the host's when none is an array. Planes in two
+        places are refused by name."""
+        found = _place.place_of(planes, self.kernel.path.name)
+        return _place.Maker.at(_place.HOST, None) if found is None else _place.Maker.at(found[0], found[1])
+
+    def _structure_code(self, device: tuple) -> int:
+        """The door's structure code of a launch over memory on ``device``: the plan's own, which a plan from :func:`deploy`
+        replaces by the device structure when its planes are in device memory."""
+        return DeviceKernel.code if self._deployed is not None and device != _place.HOST else self.structure.code
 
     def bind(self, /, *, n_samples: int | None = None, layout: str | None = None, **planes) -> BoundPlan:
         """Bind the caller's own planes by name and return the :class:`~hawk.runtime.BoundPlan` to launch.
@@ -182,10 +210,16 @@ class Plan:
 
     def _outputs(self, planes: dict, n_samples: int | None, layout: str | None) -> dict:
         """Bind ``planes``, launch once and return the outputs by name: the planes the kernel's sinks are, the ones the caller
-        left out made, zeroed, in the shape and dtype the kernel declares."""
+        left out made, zeroed, in the shape and dtype the kernel declares. Inside a graph builder the launch is recorded into
+        the graph instead, and the outputs are the arrays the recorded launches write."""
         bound = self.bound(planes, n_samples=n_samples, layout=layout, keep=False, outputs=True)
+        recorder = graph_builder.current()
+        if recorder is not None:                  # inside a builder a call is recorded, and the graph keeps the plan
+            recorder.record(bound, self.kernel.sidecar["kernel"])
+            return {name: bound.planes[name] for name in self.kernel.output_names() if name in bound.planes}
         try:
             bound.launch()
+            bound.wait()
             return {name: bound.planes[name] for name in self.kernel.output_names() if name in bound.planes}
         finally:
             bound.close()
@@ -256,7 +290,8 @@ def _filled(tree, outputs: dict):
 
 def plan(loaded: LoadedKernel, structure: Structure = HostTeam, *, npartitions: int | None = None,
          partitions=None) -> Plan:
-    """Plan a loaded kernel (:func:`hawk.load`) under ``structure``: :data:`HostTeam` (default) or :data:`HostSerial`.
+    """Plan a loaded kernel (:func:`hawk.load`) under ``structure``: :data:`HostTeam` (default), :data:`HostSerial` or, over
+    arrays in device memory, :data:`DeviceKernel`; the door refuses a structure that does not fit the memory.
 
     ``npartitions=k`` splits the range evenly into ``k`` partitions; ``partitions`` states them as
     :class:`Partition` values instead (never both). Neither: the whole range, one partition.
@@ -267,8 +302,6 @@ def plan(loaded: LoadedKernel, structure: Structure = HostTeam, *, npartitions: 
         raise HawkError(f"hawk.plan takes a loaded kernel (hawk.load), got {type(loaded).__name__}")
     if not isinstance(structure, Structure):
         raise HawkError(f"structure={structure!r} is none of hawk.HostTeam, hawk.HostSerial, hawk.DeviceKernel")
-    if structure.code is None:
-        raise HawkError(f"hawk.{structure.name}: {_NO_DEVICE}")
     if npartitions is not None and partitions is not None:
         raise HawkError("npartitions= and partitions= are two ways to partition the range; give one")
     if npartitions is not None and (not isinstance(npartitions, int) or npartitions < 1):
@@ -281,39 +314,42 @@ def plan(loaded: LoadedKernel, structure: Structure = HostTeam, *, npartitions: 
 
 
 def deploy(kernels, *, targets=None, scalar_type: str = "float64", cache_dir=None, contraction=None, record: bool = False,
-           window: int | None = None):
+           window: int | None = None, reverse: bool = False):
     """Build one kernel, or a list of them as one bundle, and return its :class:`Plan`, or a tuple of plans in order.
 
     A repeat deploy of an unchanged kernel compiles nothing (the build is cached under ``cache_dir``, default
-    :func:`hawk.artifact.default_cache_dir`). ``targets`` defaults to the host; a device target is refused. ``scalar_type`` is
-    ``"float64"`` or ``"float32"``; ``"banded"`` is a device type and is refused on the host. The plan runs under
-    :data:`HostTeam` and takes no ``structure=``: :func:`plan` over a loaded kernel is the call that states one. The plan keeps
-    the kernel and these settings: calling it runs the kernel (``k(...)`` is ``deploy(k)(...)``), and a per-lane input given
+    :func:`hawk.artifact.default_cache_dir`). ``targets`` defaults to every target whose OSPREY says it runs on this machine; a
+    stated target (or list) is exactly those, and one that does not run here is refused with its OSPREY's reason.
+    ``scalar_type`` is ``"float64"``, ``"float32"`` or, for a device target, ``"banded"``. The plan takes no ``structure=``: it
+    runs under :data:`HostTeam` over arrays in host memory and :data:`DeviceKernel` over arrays in device memory; :func:`plan`
+    over a loaded kernel is the call that states one. The plan keeps the kernel and these settings: calling it runs the kernel (``k(...)`` is ``deploy(k)(...)``), and a per-lane input given
     broadcast builds the kernel's twin for that shape, once, with the same settings.
 
     ``record=True`` builds every kernel recordable (:func:`hawk.until_done`, :func:`hawk.reverse`): in the same library as the
     taping twin that keeps ``window`` steps (default 16) and the vjp of its step. A recorded run takes that window, so it is
     built in; ``window`` without ``record`` is refused.
+
+    ``reverse=True`` builds every kernel with its vjp in the same library, which :func:`hawk.reverse` needs for a launch of the
+    kernel in a graph kept with ``record=True``; a kernel called inside a builder of such a graph is deployed so on its own.
+    It is not combined with ``record``.
     """
     from .artifact import build_bundle, build_key, default_cache_dir
     from .build_settings import BuildSettings
 
     single = not isinstance(kernels, (list, tuple))
     kernels = [kernels] if single else list(kernels)
-    ids = _host_targets(targets)
-    if scalar_type == "banded":
-        raise HawkError("scalar_type='banded' is a device type; the host runs float64 or float32")
+    ids = _targets_here(targets)
     root = Path(cache_dir) if cache_dir else default_cache_dir()
     if window is not None and not record:
         raise HawkError("deploy: window= is the steps a recorded run keeps, so it goes with record=True")
     asked = (16 if window is None else window) if record else None
     settings = {"targets": ids, "scalar_type": scalar_type, "cache_dir": cache_dir, "contraction": contraction,
-                "record": record, "window": window}
+                "record": record, "window": window, "reverse": reverse}
     primals = _primal_units(kernels, settings) or None
-    key = build_key(kernels, targets=ids, mode=scalar_type, record=asked, derivative=primals)
+    key = build_key(kernels, targets=ids, mode=scalar_type, record=asked, derivative=primals, reverse=reverse)
     directory = root / "deploy" / hashlib.sha256(key.encode()).hexdigest()
     bundle = build_bundle(kernels, directory, mode=scalar_type, targets=ids, cache_dir=cache_dir,
-                          settings=BuildSettings(contraction=contraction), record=asked, derivative=primals)
+                          settings=BuildSettings(contraction=contraction), record=asked, derivative=primals, reverse=reverse)
     built = {artifact.name for artifact in bundle.artifacts}
     plans = []
     for kernel in kernels:
@@ -337,45 +373,70 @@ def _primal_units(kernels: list, settings: dict) -> dict:
     return named
 
 
-def _host_targets(targets) -> tuple:
-    """The target ids to build: the host's when ``targets`` is ``None``; a device target is refused by name."""
+def _targets_here(targets) -> tuple:
+    """The target ids to build and run: every target whose OSPREY says it runs here when ``targets`` is ``None``, else exactly
+    the stated ones. An OSPREY that does not run here is refused with its own reason, which is carried as it states it."""
     if targets is None:
-        return (host_target().id,)
+        states = {target: runs_here(target) for target in TARGETS}
+        ids = tuple(target for target, (runs, _why) in states.items() if runs)
+        if not ids:
+            raise HawkError("no installed OSPREY runs here: " + "; ".join(f"{t}: {why}" for t, (_runs, why) in states.items()))
+        return ids
     ids = tuple(ospreys.target_id(t) for t in ([targets] if isinstance(targets, str) else targets))
     for target in ids:
-        served = TARGETS.get(target)
-        if served is not None and not served.host_entry:
-            raise HawkError(f"target {target!r}: {_NO_DEVICE}")
+        runs, why = runs_here(target)
+        if not runs:
+            raise HawkError(f"target {target!r} does not run here: {why}")
     return ids
 
 
 def to_numpy(x):
-    """``x``, an array of host memory from NumPy or any DLPack producer, as a NumPy array: the same memory, never a copy.
-    A device array is refused by name."""
+    """``x``, an array from NumPy or any DLPack producer, as a NumPy array: the same memory for host memory, never a copy; an
+    array in device memory is copied into host memory by its device's door."""
     import numpy as np
 
     if isinstance(x, np.ndarray):
         return x
     if not hasattr(x, "__dlpack__"):
         raise HawkError(f"hawk.to_numpy: {type(x).__name__} is not an array (it exports no DLPack)")
-    if x.__dlpack_device__()[0] not in _HOST_DEVICE_TYPES:
-        raise HawkError(f"hawk.to_numpy: {type(x).__name__} lives on a device; {_NO_DEVICE}")
-    return np.from_dlpack(x)
+    if _place.device_of(x) == _place.HOST:
+        return np.from_dlpack(x)
+    return through_door(_place.to_host, x)
 
 
-def asarray(x):
-    """``x`` as a NumPy array on the host: an array or DLPack producer shares its memory, a sequence or a number is copied."""
+def asarray(x, device: str | None = None):
+    """``x`` as an array. ``device=None`` gives a NumPy array on the host: an array or DLPack producer shares its memory, a
+    sequence or a number is copied.
+
+    ``device="<target>:<ordinal>"`` (``"cuda:0"``) gives the array in the memory of that device, copied by the door of the
+    OSPREY serving the target: an object that exports DLPack, which the caller's array library reads with its ``from_dlpack``.
+    An array already in that memory is returned as it is.
+    """
     import numpy as np
 
-    if hasattr(x, "__dlpack__") and not isinstance(x, np.ndarray):
-        return to_numpy(x)
-    return np.asarray(x)
+    if device is None:
+        return to_numpy(x) if hasattr(x, "__dlpack__") and not isinstance(x, np.ndarray) else np.asarray(x)
+    target, _, ordinal = device.partition(":")
+    served = TARGETS.get(target)
+    if served is None or not served.device or not (ordinal or "0").isdigit():
+        raise HawkError(f"hawk.asarray: device={device!r} is not '<target>:<ordinal>' of a device target "
+                        f"({', '.join(t.id for t in TARGETS.values() if t.device) or 'none is served'})")
+    ordinal = int(ordinal or 0)
+    here = _place.device_of(x)
+    if here not in (None, _place.HOST):
+        if through_door(_place.door_of, here) is through_door(_place.open_door, served.id, ordinal):
+            return x
+        raise HawkError(f"hawk.asarray: the array is on the DLPack device {here}, not on {device!r}")
+    return through_door(_place.to_device, np.asarray(x), served.id, ordinal)
 
 
 def synchronize() -> None:
-    """Return when every launch made so far has finished. A host launch has finished when it returns; this is the call a
-    program that also runs on a device keeps in the same place."""
-    through_door(ospreys.serving(host_target().id).runtime_door().sync)
+    """Return when every launch made so far has finished, on every door in use. A host launch has finished when it returns; a
+    launch over device memory that was queued (:meth:`~hawk.runtime.BoundPlan.launch`, :meth:`hawk.Graph.launch`) has when this
+    returns."""
+    for osprey in ospreys.found().values():
+        for door in osprey.open_doors().values():
+            through_door(door.sync)
 
 
 def banded_pack(values):

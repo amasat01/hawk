@@ -42,7 +42,6 @@ Every plant was then removed.
 
 from __future__ import annotations
 
-import _deploy as L
 import _deployable as D
 import numpy as np
 import pytest
@@ -156,15 +155,14 @@ def test_sink_policy_a_multi_writer_scatter_commits_every_term_on_the_device(bui
     """A plain ``+=`` on an ``aether::View`` loses updates under concurrency.
     65536 samples scatter ``1.0`` onto 8 lanes, so every
     lane's exact total is 8192 and a lost update shows as an integer short."""
-    import eagle.exec as eexec
-    from eagle import plan as eplan
+    import cupy as cp
 
     n, lanes = 1 << 16, 8
     x = np.ones(n)
     lane = (np.arange(n) % lanes).astype(np.int32)
     bundle = built["scatter"]
-    plugin = L.device_plugin(bundle.directory, "scatter", sidecar_of(bundle, "scatter"))
-    got = eplan.plan(plugin, structure=eexec.DeviceKernel).run(x=x, lane=lane)
+    got = hawk.plan(hawk.load(bundle.directory, "scatter"), hawk.DeviceKernel).run(x=cp.asarray(x), lane=cp.asarray(lane))
+    hawk.synchronize()
     acc = got[0] if isinstance(got, tuple) else got
     acc = np.asarray(acc.get() if hasattr(acc, "get") else acc)
     np.testing.assert_array_equal(acc[:lanes], np.full(lanes, float(n // lanes)))
@@ -183,17 +181,15 @@ def test_sink_policy_a_multi_writer_scatter_commits_every_term_on_the_device_com
     == 8192`` exactly -- a lost update under concurrency shows as an integer
     short, same as the plain row, and a target-atomic Knuth two-sum never
     loses a term at this magnitude (every term is ``1.0``, no cancellation)."""
-    import eagle.exec as eexec
-    from eagle import plan as eplan
+    import cupy as cp
 
     n, lanes = 1 << 16, 8
     x = np.ones(n)
     lane = (np.arange(n) % lanes).astype(np.int32)
     bundle = built["scatter_c_comp"]
-    plugin = L.device_plugin(bundle.directory, "scatter_c",
-                             sidecar_of(bundle, "scatter_c"))
-    result = eplan.plan(plugin, structure=eexec.DeviceKernel).run(x=x, lane=lane)
-    acc, acc_c = np.asarray(result["acc"]), np.asarray(result["acc_c"])
+    result = hawk.plan(hawk.load(bundle.directory, "scatter_c"), hawk.DeviceKernel).run(x=cp.asarray(x), lane=cp.asarray(lane))
+    hawk.synchronize()
+    acc, acc_c = result["acc"], result["acc_c"]
     acc = np.asarray(acc.get() if hasattr(acc, "get") else acc)
     acc_c = np.asarray(acc_c.get() if hasattr(acc_c, "get") else acc_c)
     total = acc[:lanes] + acc_c[:lanes]

@@ -7,6 +7,8 @@ form ``hawk.run`` is the reference a plan's launch must equal."""
 
 from __future__ import annotations
 
+import re
+
 import numpy as np
 import pytest
 from test_chain import _fan_in_oracle, fan_in
@@ -14,6 +16,7 @@ from test_chain import _fan_in_oracle, fan_in
 import hawk
 from hawk import HawkError, Mutable, Param, Scalar, Terminated, Vector
 from hawk.artifact import build_bundle
+from hawk.targets import runs_here
 
 N = 37
 
@@ -301,9 +304,10 @@ def test_a_plan_over_something_that_is_not_a_loaded_kernel_is_refused_by_name():
         hawk.plan(axpb)
 
 
-def test_the_device_structure_is_refused_by_name(loaded):
-    with pytest.raises(HawkError, match="hawk.DeviceKernel: the device runtime is not in this build"):
-        hawk.plan(loaded["axpb"], hawk.DeviceKernel)
+def test_the_device_structure_over_host_arrays_is_refused_by_the_door(loaded):
+    plan = hawk.plan(loaded["axpb"], hawk.DeviceKernel)
+    with pytest.raises(HawkError):
+        plan.bind(x=np.arange(N, dtype=np.float64), a=1.0, b=0.0, y=np.zeros(N))
 
 
 def test_a_structure_that_is_no_marker_is_refused_by_name(loaded):
@@ -356,13 +360,16 @@ def test_a_deployed_cut_chain_equals_its_uncut_oracle(cache_dir, structure):
     assert error <= 16 * np.finfo(np.float64).eps * np.max(np.abs(want))
 
 
-def test_deploy_for_a_device_target_is_refused_by_name(cache_dir):
-    with pytest.raises(HawkError, match="target 'cuda': the device runtime is not in this build"):
+def test_deploy_for_a_device_target_that_does_not_run_here_is_refused_with_the_librarys_reason(cache_dir):
+    runs, why = runs_here("cuda")
+    if runs:
+        pytest.skip("a device runs here")
+    with pytest.raises(HawkError, match=f"target 'cuda' does not run here: {re.escape(why)}"):
         hawk.deploy(axpb, targets=("cuda",), cache_dir=cache_dir)
 
 
 def test_deploy_in_the_banded_type_is_refused_on_the_host(cache_dir):
-    with pytest.raises(HawkError, match="'banded' is a device type"):
+    with pytest.raises(HawkError, match="banded runs on device execution paths"):
         hawk.deploy(axpb, scalar_type="banded", cache_dir=cache_dir)
 
 
@@ -431,8 +438,10 @@ def test_to_numpy_reads_an_array_that_exports_only_dlpack_without_a_copy():
     assert view[2] == 99.0 and np.shares_memory(view, base)
 
 
-def test_to_numpy_refuses_a_device_array_and_a_non_array_by_name():
-    with pytest.raises(HawkError, match="lives on a device; the device runtime is not in this build"):
+def test_to_numpy_refuses_an_array_on_a_device_no_library_runs_on_and_a_non_array_by_name():
+    if runs_here("cuda")[0]:
+        pytest.skip("a device runs here")
+    with pytest.raises(HawkError, match=r"no installed OSPREY runs on the DLPack device \(2, 0\)"):
         hawk.to_numpy(_OnADevice(np.arange(2.0)))
     with pytest.raises(HawkError, match="exports no DLPack"):
         hawk.to_numpy([1, 2])

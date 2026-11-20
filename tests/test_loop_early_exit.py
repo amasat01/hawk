@@ -375,13 +375,13 @@ def _host(bundle, name, **kw):
 
 
 def _device(bundle, name, outs, **kw):
-    """Run on the device; eagle returns the outputs in a dict keyed by plane
+    """Run on the device; hawk returns the outputs in a dict keyed by plane
     name (several outputs) or as the bare plane (one), so ``outs`` is read
     back by name, never by a guessed slot order."""
-    import eagle.exec as eexec
-    from eagle import plan as eplan
-    plugin = L.device_plugin(bundle.directory, name, sidecar_of(bundle, name))
-    got = eplan.plan(plugin, structure=eexec.DeviceKernel).run(**kw)
+    import cupy as cp
+
+    kw = {k: cp.asarray(v) if isinstance(v, np.ndarray) else v for k, v in kw.items()}
+    got = hawk.plan(hawk.load(bundle.directory, name), hawk.DeviceKernel).run(**kw)
     by_name = got if isinstance(got, dict) else {outs[0]: got}
     return [np.asarray(by_name[o].get() if hasattr(by_name[o], "get") else by_name[o])
             for o in outs]

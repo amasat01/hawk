@@ -362,23 +362,13 @@ BIG = {"unsorted": knon_c, "sorted": ksrt_c, "uniform": kone_c}
 BIG_AUTO = {"unsorted": knon_a, "sorted": ksrt_a, "uniform": kone_a}
 
 
-def _plan(kernel, target, mode, tmp_path, cache_dir, *, captured=False):
-    """The plan of ``kernel``: hawk's on the host, eagle's on the device, and eagle's on the host too when the row
-    captures the launch in a graph (``captured``), which hawk's verbs do not reach."""
+def _plan(kernel, target, mode, tmp_path, cache_dir):
+    """The plan of ``kernel``: under the host structure on the host, under the device structure on the device."""
     bundle = build_bundle([kernel], tmp_path, mode=mode, targets=("cuda", "host"),
                           cache_dir=cache_dir)
-    if target == "host" and not captured:
-        return hawk.plan(hawk.load(bundle.directory, kernel.name))
-    import eagle.exec as eexec
-    from eagle import plan as eplan
-
-    sidecar = sidecar_of(bundle, kernel.name)
     if target == "host":
-        plugin, structure = L.host_plugin(bundle.directory, kernel.name, sidecar), eexec.HostTeam
-    else:
-        plugin, structure = (L.device_plugin(bundle.directory, kernel.name, sidecar),
-                             eexec.DeviceKernel)
-    return eplan.plan(plugin, structure=structure)
+        return hawk.plan(hawk.load(bundle.directory, kernel.name))
+    return hawk.plan(hawk.load(bundle.directory, kernel.name), hawk.DeviceKernel)
 
 
 def _big_planes(keys, mode, xp):
@@ -422,17 +412,14 @@ def test_replays_into_one_sink_keep_the_companion_across_launches(target, kernel
     """The companion is zeroed once, at bind, and keeps the residual of the
     fold after each launch: the target alone stays within 1 of
     ``eps * sum|w|`` after 100 replays into the same sink."""
-    import eagle
-
     R = 100
     xp = np if target == "host" else __import__("cupy")
     key, x, planes = _big_planes("unsorted", "float64", xp)
-    plan = _plan(kernel, target, "float64", tmp_path, cache_dir, captured=True)
+    plan = _plan(kernel, target, "float64", tmp_path, cache_dir)
     bound = plan.bind(x=planes["x"], key=planes["key"], acc=planes["acc"])
-    graph = eagle.Graph().add(bound).build()
+    graph = hawk.Graph().add(bound).build()
     graph.launch(R)
-    if target == "cuda":
-        xp.cuda.Device().synchronize()
+    hawk.synchronize()
     got = np.asarray(planes["acc"].get() if target == "cuda" else planes["acc"])
     assert _error(got, np.tile(x.astype(np.float64), R), np.tile(key, R), NB, "float64",
                   f"{kernel.name} {R} replays {target}") <= 1.0
@@ -445,15 +432,14 @@ def test_a_captured_replay_reuses_the_owned_companion(tmp_path, cache_dir):
     recorded is the one every replay adds into, and the fold node rides
     in the capture."""
     import cupy as cp
-    import eagle
 
     key, x, planes = _big_planes("unsorted", "float64", cp)
     plan = _plan(knon_a, "cuda", "float64", tmp_path, cache_dir)
     bound = plan.bind(x=planes["x"], key=planes["key"], acc=planes["acc"])
-    graph = eagle.Graph().add(bound).build()
+    graph = hawk.Graph().add(bound).build()
     for _ in range(3):
         graph.launch()
-    cp.cuda.Device().synchronize()
+    hawk.synchronize()
     got = planes["acc"].get()
     terms = np.tile(x.astype(np.float64), 3)
     assert _error(got, terms, np.tile(key, 3), NB, "float64", "replay x3 default") <= 1.0

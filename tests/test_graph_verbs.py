@@ -130,7 +130,7 @@ def test_an_empty_graph_an_unbuilt_one_and_a_closed_one_refuse_by_name(loaded):
         graph.launch()
 
 
-def test_a_graph_keeps_a_record_only_when_asked_and_reverse_refuses_it_by_name(loaded):
+def test_a_graph_keeps_a_record_only_when_asked_and_a_launch_with_no_vjp_is_refused_by_the_library(loaded):
     x, y = np.arange(N, dtype=np.float64), np.zeros(N)
     plain = hawk.Graph().add(_axpb_bound(loaded, x, y)).build()
     assert plain.record is None
@@ -138,7 +138,7 @@ def test_a_graph_keeps_a_record_only_when_asked_and_reverse_refuses_it_by_name(l
     assert recorded.record is None                      # nothing is recorded before the build
     recorded.build().launch()
     assert isinstance(recorded.record, hawk.graph.GraphRecord) and recorded.record.graph is recorded
-    with pytest.raises(HawkError, match="over a recorded graph"):
+    with pytest.raises(HawkError, match="has no vjp"):         # the library's reason, carried
         hawk.reverse(recorded.record, {"y": np.ones(N)})
     with pytest.raises(HawkError, match="takes the record of a run made with record=True"):
         hawk.reverse(object(), {"y": np.ones(N)})

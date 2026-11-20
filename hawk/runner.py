@@ -19,19 +19,19 @@ from __future__ import annotations
 
 import time
 import weakref
+from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
+from typing import NamedTuple
 
 import _osprey
 
-from . import ospreys
 from .errors import HawkError
 from ._plane_layout import describe
 from .plans import Plan, deploy
 from .runtime import BoundPlan, LoadedKernel, through_door
-from .targets import host_target
 
-__all__ = ["ActiveSet", "RunRecord", "RunReport", "Runner", "SimResult", "simulate", "until_done"]
+__all__ = ["ActiveSet", "GradientReport", "Gradients", "RunRecord", "RunReport", "Runner", "SimResult", "simulate", "until_done"]
 
 #: The door's choice of how a recorded run is reversed, by the word the caller states.
 _STEPS_REVERSE = MappingProxyType({"per_step": _osprey.EG_STEPS_REVERSE_PER_STEP,
@@ -147,6 +147,58 @@ class RunReport:
     wall_s: float
 
 
+class GradientReport(NamedTuple):
+    """How a :class:`Gradients` was made: ``bitwise`` says, for each plane returned, whether its sums over samples are reproducible
+    bit for bit (``False`` for a plane fed by a cross-sample scatter-add, whose summing order varies from run to run), and
+    ``chunks`` the passes over the memory the library made."""
+
+    bitwise: dict
+    chunks: int = 1
+
+
+class Gradients(Mapping):
+    """The gradients of one reverse pass, read-only, by plane name: one row per sample for a per-sample plane, in sample order,
+    and a 0-d array, the sum over samples, for a shared parameter. :attr:`report` is the :class:`GradientReport`."""
+
+    __slots__ = ("_values", "report")
+
+    def __init__(self, values: dict, report: GradientReport) -> None:
+        """Hold ``values`` (``{plane name: array}``) and the ``report`` of how they were made."""
+        self._values = dict(values)
+        self.report = report
+
+    def __getitem__(self, name):
+        return self._values[name]
+
+    def __iter__(self):
+        return iter(self._values)
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+    def __repr__(self) -> str:
+        return f"<hawk.Gradients {sorted(self._values)}>"
+
+
+#: The words of ``policy=`` of a reverse and what the library does for each: it makes the sums over samples of a gradient in one
+#: deterministic compensated order, which ``"compensated"`` and ``"auto"`` ask for. ``"ordered"`` asks for a plain sum in sample
+#: order, which the library does not do.
+_POLICIES = MappingProxyType({"compensated": True, "auto": True, "ordered": False})
+
+
+def check_reverse_options(strict, policy, who: str) -> bool:
+    """``strict`` as a bool, after refusing by name a ``strict`` that is no bool and a ``policy`` the library does not do."""
+    if not isinstance(strict, bool):
+        raise HawkError(f"{who}: strict= is True or False, got {strict!r}")
+    if policy not in _POLICIES:
+        raise HawkError(f"{who}: policy={policy!r} is not one of {sorted(_POLICIES)}")
+    if not _POLICIES[policy]:
+        raise HawkError(f"{who}: policy={policy!r} asks for the sums over samples in plain sample order; the library sums them in "
+                        "one deterministic compensated order ('compensated' or 'auto'), and strict=True refuses a gradient that "
+                        "is not reproducible instead of reporting it")
+    return strict
+
+
 def _difference(latest: dict, earlier: dict) -> dict:
     """The counters a run added: ``latest`` less ``earlier`` (both as :meth:`BoundPlan.counters` answers), a counter the
     unit lacks staying ``None``."""
@@ -179,7 +231,10 @@ class Runner:
         self._plans = plans
         self._bounds = bounds
         self._layout = layout
-        self._door = ospreys.serving(host_target().id).runtime_door()
+        self._door = bounds[0].door
+        if any(bound.door is not self._door for bound in bounds):
+            raise HawkError("Runner: the plans of one model run on one door, and their planes are in more than one memory; "
+                            "bind them all in the same place")
         self._counted = [{"finished": 0, "steps": None, "mix": ()} for _ in bounds]
         options = {}
         if active is not None:
@@ -196,7 +251,7 @@ class Runner:
         self._derived = []
         if record:
             kernel = plans[0].kernel
-            self._derived = kernel.derived_units(kernel.derived_roles(steps_reverse))
+            self._derived = kernel.derived_units(kernel.derived_roles(steps_reverse), self._door)
             options["window"] = window or kernel.recorded_window()   # the twin keeps the window it was built with
             options["derived_roles"] = [role for role, _ in self._derived]
             options["derived_units"] = [unit for _, unit in self._derived]
@@ -221,6 +276,7 @@ class Runner:
         continues from where the first stopped; :meth:`reset` starts the batch over."""
         started = time.perf_counter()
         report = through_door(self._door.run, self._handle)
+        through_door(self._door.sync)
         wall = time.perf_counter() - started
         for i, bound in enumerate(self._bounds):
             latest = bound.counters()
@@ -246,14 +302,17 @@ class Runner:
         """The :class:`RunRecord` of the last run of a runner made with ``record=True``, else ``None``."""
         return RunRecord(self) if self._recorded else None
 
-    def reverse(self, cotangents: dict) -> dict:
-        """The gradients of the last run, given the cotangents ``{state plane name: array}`` of the final state.
+    def reverse(self, cotangents: dict, *, strict: bool = False) -> Gradients:
+        """The gradients of the last run, given the cotangents ``{state plane name: array}`` of the final state, as :class:`Gradients`.
 
         A cotangent has the layout of the state plane it belongs to. The result maps each plane the step's vjp differentiates
         with respect to (its ``wrt``) to its gradient: an array like the plane for a per-sample plane, in sample order, and a
         0-d array, the sum over samples, for a shared parameter. A runner that was not made with ``record=True``, or that has
-        not run, is refused by the library by name.
+        not run, is refused by the library by name. The report states, for each gradient, the library's one answer for the run:
+        its sums over samples are the canonical compensated pair, so bitwise, in the passes it states; ``strict=True`` therefore
+        refuses nothing here.
         """
+        strict = check_reverse_options(strict, "compensated", "Runner.reverse")
         if not self._recorded:
             raise HawkError("Runner.reverse: this runner records nothing; make it with record=True")
         import numpy as np
@@ -286,7 +345,9 @@ class Runner:
         finally:
             for plane in wrapped:
                 door.plane_free(plane)
-        return gradients
+        figures = self.figures()
+        return Gradients(gradients, GradientReport(dict.fromkeys(gradients, bool(figures["reverse_bitwise"])),
+                                                   max(int(figures["reverse_passes"]), 1)))
 
     def close(self) -> None:
         """Free the library's runner and plans at once. Closing twice is harmless."""

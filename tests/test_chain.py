@@ -19,7 +19,7 @@ import pytest
 import hawk
 import hawk.math as m
 from hawk import Mutable, Scalar, Vector
-from conftest import assert_within, sidecar_of
+from conftest import assert_within, device_array, sidecar_of
 from hawk.artifact import build_bundle
 from hawk.errors import HawkError
 from hawk import _ir
@@ -121,23 +121,23 @@ def _device() -> bool:
 
 
 def _to_device(planes: dict) -> dict:
-    """The host ``planes`` as eagle's device arrays."""
-    eagle = pytest.importorskip("eagle")
-    return {k: eagle.arrays.asarray(v, device="cuda:0") for k, v in planes.items()}
+    """The host ``planes`` as the device array library's arrays, copied by hawk's door."""
+    cupy = pytest.importorskip("cupy")
+    return {k: device_array(v, cupy) for k, v in planes.items()}
 
 
 def _deploy_run(kernel, where: str, dtype: str, planes: dict):
     """``kernel`` deployed for ``where`` and launched once over the planes it declares, which hold the result in place:
-    hawk's verbs on the host (a chain the host cuts into stages included), eagle on the device. Returns the deployed plan."""
+    hawk's verbs on the host (a chain the host cuts into stages included) and on the device, where the arrays live. Returns the
+    deployed plan."""
     held = {name: planes[name] for _, name in kernel.arg_spec}
     if where == "host":
         plan = hawk.deploy(kernel, scalar_type=dtype)
         plan.run(**held)
         return plan
-    import eagle
-
-    plan = eagle.deploy(kernel, scalar_type=dtype, targets=(where,))
+    plan = hawk.deploy(kernel, scalar_type=dtype, targets=("host", where))
     plan(**held)
+    hawk.synchronize()
     return plan
 
 
@@ -320,15 +320,10 @@ def _guarded_run(kernel, target, dead, group_live=None):
         loaded = hawk.load(bundle.directory, kernel.name)
         hawk.plan(loaded).bind(**planes, **hawk.ActiveSet(dead).planes(loaded)).launch()
     elif group_live is not None:
-        import eagle
-        from eagle import ActiveSet
-
-        bundle = build_bundle([kernel], pathlib.Path(group_live) / kernel.name, targets=(target,))
-        side = sidecar_of(bundle, kernel.name)
-        live = ActiveSet(terminated, group=side["launch"]["lane_space"]["group"])
-        live.compact()
-        eagle.deploy(kernel, scalar_type="float64", targets=(target,))(**planes, active_map=live.map,
-                                                                        active_count=live.count)
+        plan = hawk.deploy(kernel, scalar_type="float64", targets=("host", target))
+        made = hawk.ActiveSet(dead).planes(plan)        # the map and count of the live groups, made on the host, copied over
+        plan(**planes, **{name: device_array(value, xp) for name, value in made.items()})
+        hawk.synchronize()
     else:
         _deploy_run(kernel, target, "float64", planes)
     out = planes["out"]

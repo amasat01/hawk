@@ -32,7 +32,6 @@ import numpy as np
 import pytest
 from conftest import refuse_device_row, sidecar_of
 
-import _deploy as L
 import hawk
 import hawk.math as hm
 from hawk import Kernel, Mutable, Param, Scalar, Terminated, Vector
@@ -190,11 +189,7 @@ def _run(built, kernel, target, values: dict, dtype) -> dict:
     if target == "host":
         bound_plan = hawk.plan(hawk.load(built.directory, kernel.name)).bind(**bound)
     else:
-        import eagle.exec as eexec
-        from eagle import plan as eplan
-
-        plugin = L.device_plugin(built.directory, kernel.name, sidecar)
-        bound_plan = eplan.plan(plugin, structure=eexec.DeviceKernel).bind(**bound)
+        bound_plan = hawk.plan(hawk.load(built.directory, kernel.name), hawk.DeviceKernel).bind(**bound)
     bound_plan.launch()
 
     def host(a):

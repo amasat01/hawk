@@ -171,25 +171,23 @@ def declared(kernel, arrays: dict) -> dict:
 
 
 def _launch(bundle, name, target, planes):
-    """The plan of ``name`` bound over ``planes``: a host row through hawk's own verbs, a device row through eagle's."""
+    """The plan of ``name`` bound over ``planes``, through hawk's own verbs: under the host structure over host arrays, under the
+    device structure over device arrays (a device row also needs a device, as ``refuse_device_row`` says)."""
     if target == "host":
         return hawk.plan(hawk.load(bundle.directory, name)).bind(**planes)
     refuse_device_row()
-    import _deploy as L
-    import eagle.exec as eexec
-    from eagle import plan as eplan
-
-    plugin = L.device_plugin(bundle.directory, name, sidecar_of(bundle, name))
-    return eplan.plan(plugin, structure=eexec.DeviceKernel).bind(**planes)
+    return hawk.plan(hawk.load(bundle.directory, name), hawk.DeviceKernel).bind(**planes)
 
 
 def deploy_for(kernels, cache_dir, targets):
-    """The plans of ``kernels``: hawk's own ``deploy`` for a host row, eagle's for a row that also builds the device."""
-    if "cuda" not in targets:
-        return hawk.deploy(kernels, cache_dir=cache_dir, targets=targets)
-    import eagle
+    """The plans of ``kernels`` built for ``targets``: they run where the arrays they are given live."""
+    return hawk.deploy(kernels, cache_dir=cache_dir, targets=targets)
 
-    return eagle.deploy(kernels, cache_dir=cache_dir, targets=targets)
+
+def device_array(values, xp):
+    """``values`` (a NumPy array) in the memory ``xp`` (NumPy, or the device array library) holds its arrays in, copied by the
+    door and read by ``xp.from_dlpack``."""
+    return values if xp is np else xp.from_dlpack(hawk.asarray(values, device="cuda:0"))
 
 
 def _xp(target):

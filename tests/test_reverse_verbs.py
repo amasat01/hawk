@@ -109,6 +109,22 @@ def test_the_reverse_of_a_recorded_run_equals_the_closed_form(plan):
     assert grads["a"].shape == () and grads["x"].shape == (N,)
 
 
+def test_a_recorded_run_reports_its_gradients_bit_exact_and_strict_refuses_nothing(plan):
+    _, grads = _recorded_run(plan)
+    assert isinstance(grads, hawk.runner.Gradients)
+    assert grads.report == hawk.runner.GradientReport(bitwise=dict.fromkeys(grads, True), chunks=grads.report.chunks)
+    assert sorted(grads) == ["a", "b", "t", "x"] and grads.report.chunks >= 1
+    runner = hawk.until_done(plan, max_steps=40, record=True, **_planes())     # a record is reversed once: run again
+    runner.run()
+    strict = hawk.reverse(runner.record, {"x": G}, strict=True)
+    assert strict["x"].tobytes() == grads["x"].tobytes() and strict.report.bitwise == grads.report.bitwise
+
+
+def test_a_reverse_over_a_memory_budget_reports_the_passes_it_made(plan):
+    _, split = _recorded_run(plan, memory_budget=400)
+    assert split.report.chunks > 1
+
+
 def _objective(plan, **changes):
     """``J = sum(G * x_T)`` of a plain forward run of ``plan`` with ``changes`` to the bound values."""
     planes = _planes() | changes
@@ -340,13 +356,13 @@ def test_the_roles_a_recording_takes_follow_the_steps_of_the_kernel_and_the_reve
         plan.kernel.derived_units(plan.kernel.derived_roles("fused"))
 
 
-def test_hawk_reverse_takes_the_record_of_a_run_and_nothing_else(plan, cache_dir):
+def test_hawk_reverse_takes_the_record_of_a_run_or_of_a_graph_and_nothing_else(plan, cache_dir):
     with pytest.raises(HawkError, match="takes the record of a run made with record=True, got dict"):
         hawk.reverse({}, {"x": np.ones(N)})
     graph = hawk.Graph(record=True)
     graph.add(hawk.deploy(tail, cache_dir=cache_dir).bind(x=np.ones(N), z=np.zeros(N)))
     graph.build()
-    with pytest.raises(HawkError, match="over a recorded graph"):
+    with pytest.raises(HawkError, match="the graph was never launched"):      # the library's reason, carried
         hawk.reverse(graph.record, {"z": np.ones(N)})
 
 

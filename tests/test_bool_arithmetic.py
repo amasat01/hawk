@@ -164,17 +164,15 @@ def test_a_traced_value_in_a_python_truth_test_names_the_same_remedy():
 @pytest.mark.gpu
 @pytest.mark.parametrize("name", CASES)
 def test_the_device_returns_numpys_values_for_the_primal_and_its_derivative(name, cache_dir):
-    import eagle.plan
-    from eagle import arrays
-    from eagle._alloc import synchronize
+    import cupy as cp
 
     kernel, want, want_d = CASES[name]
     x = np.linspace(-1.0, 4.0, N)
 
     def run(k, **planes):
-        dev = {n: arrays.asarray(np.ascontiguousarray(v), device="cuda:0") for n, v in planes.items()}
-        eagle.plan.auto(k, targets=("cuda",), scalar_type="float64", cache_dir=cache_dir).bind(**dev).launch()
-        synchronize()
+        dev = {n: cp.asarray(np.ascontiguousarray(v)) for n, v in planes.items()}
+        hawk.deploy(k, targets=("host", "cuda"), scalar_type="float64", cache_dir=cache_dir).bind(**dev).launch()
+        hawk.synchronize()
         return np.asarray(dev[[n for n in planes if n.startswith(("y", "dot_y"))][0]].get())
 
     assert np.array_equal(run(kernel, x=x, y=np.zeros(N)), want(x))

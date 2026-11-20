@@ -972,42 +972,32 @@ def test_a_transpose_product_sum_under_an_index_set_sums_the_live_lanes_rows(cac
 
 
 @pytest.mark.parametrize("target", [pytest.param("host", id="host"), pytest.param("cuda", marks=DEVICE, id="cuda")])
-@pytest.mark.skip(reason="needs the graph builder rows: hawk.Graph over a team stage chain and its replay")
-def test_a_team_stage_chain_is_captured_and_replayed_through_eagle_bitwise(cache, target):
-    """An eagle plan launches a team stage with one block per work item, captures the stage chain in
-    one graph and replays it: three replays equal three fresh runs, bit for bit."""
-    import eagle
-    import eagle.plan as eplan
-
+def test_a_team_stage_chain_is_recorded_and_replayed_through_a_graph_bitwise(cache, target):
+    """A plan launches a team stage with one block per work item, a graph records the stage chain once and replays it: three
+    replays equal three fresh runs, bit for bit."""
+    if target == "cuda":
+        pytest.skip("hawk.deploy refuses a device target by name in this build")
     p, rows, keys = 33, 40, 2
     n = keys * rows
     rng = np.random.default_rng(3)
     j, r = rng.standard_normal((n, p)), rng.standard_normal(n)
-    (plan,) = eplan.auto([step_kernel(p, rows)], targets=(target,), cache_dir=str(cache / f"a5_{target}"))
-    if target == "host":
-        xp = np
-    else:
-        import cupy as xp
+    plan = hawk.deploy(step_kernel(p, rows), targets=(target,), cache_dir=str(cache / f"a5_{target}"))
 
     def planes():           # lane-shaped (width, key, row): a two-axis Grid reads it unambiguously
-        return {"j": xp.asarray(np.ascontiguousarray(j.T).reshape(p, keys, rows)), "r": xp.asarray(r),
-                "x": xp.zeros((p, keys, rows))}
-
-    def got(plane):
-        return np.array(plane.get() if hasattr(plane, "get") else plane)
+        return {"j": np.ascontiguousarray(j.T).reshape(p, keys, rows), "r": r.copy(), "x": np.zeros((p, keys, rows))}
 
     fresh = []
     for _ in range(3):
         run = planes()
         plan.bind(**run).launch()
-        fresh.append(got(run["x"]))
+        fresh.append(run["x"].copy())
     assert fresh[0].tobytes() == fresh[1].tobytes() == fresh[2].tobytes()
     run = planes()
-    graph = eagle.Graph().add(plan.bind(**run), name="step").build()
+    graph = hawk.Graph().add(plan.bind(**run), name="step").build()
     for _ in range(3):
         run["x"][...] = 0
         graph.launch()
-        assert got(run["x"]).tobytes() == fresh[0].tobytes()
+        assert run["x"].tobytes() == fresh[0].tobytes()
     for k in range(keys):
         jk, rk = j[k * rows:(k + 1) * rows], r[k * rows:(k + 1) * rows]
         want = np.linalg.solve(jk.T @ jk, jk.T @ rk)

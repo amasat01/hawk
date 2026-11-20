@@ -17,9 +17,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from .. import _ir
+from .transform import vjp as _vjp
 from .tape import APPLIED_STEPS, T0_SUFFIX, TAPE_ON, TAPE_PLANE, step_vjp, tape, taped_planes, tape_width
 
-__all__ = ["DerivedUnit", "recording"]
+__all__ = ["DerivedUnit", "graph_reverse_unit", "recording"]
 
 #: The planes a derived unit holds that no link names: the tape and its switch, the step counter, the word of fused steps and the
 #: finished counter the library owns.
@@ -119,3 +120,33 @@ def recording(kernel: Any, window: int) -> tuple:
         many = Kernel(f"{kernel.name}_fused_vjp", step_vjp(kernel, steps_reverse="fused"))
         units.append(DerivedUnit("fused_vjp", many, _vjp_facts(kernel, step, many)))
     return tuple(units)
+
+
+def graph_reverse_unit(kernel: Any) -> DerivedUnit | None:
+    """The vjp of ``kernel`` and what is stated of it, for a launch of the kernel in a graph that is reversed; ``None`` for a kernel
+    that writes no float plane (a counter, a flag) or reads none through a plane, through which no gradient flows.
+
+    The unit takes the kernel's own planes as values, the cotangent of each plane the kernel writes, and writes the gradient of
+    each float plane it reads. A value passed by number (a ``Param``) is bound by value in a launch and has no plane to write
+    its gradient to, so the vjp is taken with respect to the planes only. A kernel that reads a plane and writes it back, or a time
+    step, is a step of a recorded run and is refused by :func:`~hawk.diff.transform.vjp`'s own reasons.
+    """
+    from ..trace.kernel import Kernel
+    from .transform import _DIFFERENTIABLE
+
+    if not any(_ir.type_of(sink).dtype in _DIFFERENTIABLE for sink in kernel.sinks):
+        return None
+    role_of = {name: role for role, name in _ir.arg_spec(kernel.walk)}
+    wrt = tuple(name for name in _vjp(kernel).gradients.values() if role_of.get(name) != "uniform")
+    if not wrt:
+        return None
+    vjp = Kernel(f"{kernel.name}_vjp", _vjp(kernel, wrt=wrt))
+    links = []
+    for _, name in _ir.arg_spec(vjp.walk):
+        if name in vjp.cotangents:
+            links.append(_link(name, "PrimalSlot", "AdjointIn", vjp.cotangents[name]))
+        elif name in vjp.gradients:
+            links.append(_link(name, "PrimalSlot", "Grad", vjp.gradients[name]))
+        elif name in role_of:                      # a plane of the vjp that is no slot of the kernel (a sum's companion) is the library's
+            links.append(_link(name, "PrimalSlot", "Value", name))
+    return DerivedUnit("step_vjp", vjp, {"links": links})

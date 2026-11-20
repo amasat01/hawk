@@ -12,10 +12,13 @@ from __future__ import annotations
 
 import dataclasses
 
+import pytest
 
 import hawk
 import hawk.math as m
-from hawk import Mutable, Param, Scalar, Terminated, Vector, _ir, kernel
+from hawk import Grid, Matrix, Mutable, Param, Scalar, Terminated, Vector, _broadcast, _ir, kernel
+from hawk.diff import jvp, vjp
+from hawk.trace.kernel import Kernel
 from hawk.artifact import request
 from hawk.build_settings import default_settings
 from hawk.ext import Guard, Kind
@@ -219,3 +222,21 @@ def test_a_device_build_states_the_device_target_and_its_machine():
     got = built(axpb, targets=("cuda",))
     assert (got["targets"], got["machine"]) == (["Device"], {"Device": "M-cuda"})
     assert got["body"] == plain("axpb", [5])
+
+
+LANES = Grid["a", "b":4, "c":6]
+
+
+@kernel
+def matrix_scale(lane: LANES, M: Matrix[2, 2], x: Scalar) -> Scalar:
+    return M[0, 0] * M[1, 1] * x
+
+
+@pytest.mark.parametrize("make,planes", [
+    (lambda: Kernel("matrix_scale_vjp", vjp(matrix_scale, wrt=("M",))), {"M"}),
+    (lambda: Kernel("matrix_scale_jvp", jvp(matrix_scale, wrt=("M",))), {"M", "dot_M"}),
+])
+def test_a_derivative_of_a_broadcast_twin_states_the_pattern_of_the_matrix_it_binds(make, planes):
+    twin = _broadcast.twin(make(), {"M": (True, False, True)})
+    stated = {entry["plane"]: entry["axes"] for entry in built(twin)["broadcast"]}
+    assert stated == dict.fromkeys(planes, [True, False, True])

@@ -1,7 +1,7 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 """hawk.diff.with_derivative: ONE kernel computing a kernel's outputs and their forward-mode tangents. It is a plain
-Kernel (not a derivative), so it is a step of an eagle.Graph builder; its values match the primal and jvp run apart
+Kernel (not a derivative), so it is a step of a hawk.Graph builder; its values match the primal and jvp run apart
 within rounding (different compiled entries, so ULP, not bits)."""
 
 import numpy as np
@@ -36,20 +36,18 @@ def test_with_derivative_values_match_the_function_and_its_derivative():
     np.testing.assert_allclose(dy, 3.0 * np.cos(x) * dx, rtol=1e-14, atol=1e-15)
 
 
-@pytest.mark.skip(reason="needs the graph builder rows: hawk.Graph.builder records a kernel call")
 def test_with_derivative_is_a_builder_step_and_allocates_what_the_call_omits():
-    eagle = pytest.importorskip("eagle")
     k = with_derivative(_g, wrt=("x",))
     x = np.linspace(-1.0, 1.0, 64)
     dx = np.ones_like(x)
 
-    @eagle.Graph.builder
-    def block(g: eagle.Graph, x, dx):
+    @hawk.Graph.builder
+    def block(x, dx) -> hawk.Graph:
+        g = hawk.Graph()
         g.result = k(x=x, p=2.0, dot_x=dx)
+        return g
 
-    graph = eagle.Graph()
-    block(graph, x, dx)
-    graph.build()
+    graph = block(x, dx)
     out = graph()
     np.testing.assert_allclose(np.asarray(out["y"]), 2.0 * np.sin(x), rtol=1e-14, atol=1e-15)
     np.testing.assert_allclose(np.asarray(out["dot_y"]), 2.0 * np.cos(x), rtol=1e-14, atol=1e-15)

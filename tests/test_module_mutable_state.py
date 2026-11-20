@@ -69,6 +69,9 @@ BASELINE = {
     "trace/value.py": ("_INT_RANGE",),
 }
 ALLOWED = {
+    ("graph_builder.py", "_ACTIVE"): "the recorder of the running builder: a context variable, one value per thread or task",
+    ("graph_builder.py", "_HG"): "the runtime the rewritten builder code calls: static methods only, no state of its own",
+    ("graph_builder.py", "_MEMO"): "the compiled code of each builder function, keyed by its code object; a repeat only recompiles",
     (
         "ext/primitive.py",
         "_RULES",

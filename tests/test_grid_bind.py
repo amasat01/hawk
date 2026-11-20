@@ -263,8 +263,8 @@ def test_the_sidecar_carries_the_declared_shape(loaded):
 @pytest.mark.gpu
 def test_a_static_first_axis_runs_every_lane_on_the_device(cache_dir):
     cp = pytest.importorskip("cupy")
-    import eagle
-    plan = eagle.deploy(fixed_count, cache_dir=cache_dir)
+    plan = hawk.deploy(fixed_count, cache_dir=cache_dir)
     acc = cp.zeros(4)
     plan.bind(th=cp.arange(8.0), acc=acc).launch()
+    hawk.synchronize()
     np.testing.assert_array_equal(cp.asnumpy(acc), np.full(4, 28.0))

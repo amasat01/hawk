@@ -268,14 +268,15 @@ def reset(cache_dir=None) -> None:
 
 
 def build_key(kernels, *, targets, mode: str = "float64", options: Mapping | None = None, opt_level: str = "",
-              record: int | None = None, derivative: Mapping | None = None) -> str:
+              record: int | None = None, derivative: Mapping | None = None, reverse: bool = False) -> str:
     """One opaque text naming everything a build of ``kernels`` for ``targets`` is made of.
 
     Per kernel: its name, the text of its traced nodes, the request the lowering is asked (declarations, kind, sinks, settings)
     and its derivative tag; per target: the ``key`` the serving OSPREY states for the machine, which covers the level and the options
     as it resolves them (a default stated and a default left out are one key); and ``mode``. Equal requests give equal texts, and a change in any of these gives another. A caller that has choices of its
-    own (a folder name, say) hashes this text together with them. ``record`` and ``derivative`` are those of :func:`build_bundle`: the
-    window whose derived units are part of what is built, and the primal each derivative names.
+    own (a folder name, say) hashes this text together with them. ``record``, ``derivative`` and ``reverse`` are those of :func:`build_bundle`: the
+    window whose derived units are part of what is built, the primal each derivative names, and whether each kernel is built
+    with its vjp for a graph.
     """
     options = _user_options(options, False, None, "", "")
     kernels, targets = list(kernels), _target_ids(targets)
@@ -288,7 +289,7 @@ def build_key(kernels, *, targets, mode: str = "float64", options: Mapping | Non
     machines = _machines(targets, options, opt_level, default_cache_dir())
     keyed = {t: {"key": machines[t]["key"]} for t in targets}
     plans = _plans(kernels, names, kinds, mode=mode, targets=targets, settings=cfg, machines=keyed, sizes=None,
-                   recordings=_recordings(kernels, record))
+                   recordings=_recordings(kernels, record, reverse))
     derivative = _per_kernel_derivative(kernels, names, derivative)
     return hashlib.sha256(json.dumps([plans, derivative], sort_keys=True, default=repr).encode()).hexdigest()
 
@@ -737,8 +738,15 @@ def _build_units(families, *, targets, machines, options, defines, opt_level, bl
     return [[{call[0]: next(done) for call in unit} for unit in family] for family in calls]
 
 
-def _recordings(kernels, window) -> list:
-    """The derived units of each kernel for a build asked to record with ``window`` steps (none when it is not asked)."""
+def _recordings(kernels, window, reverse: bool = False) -> list:
+    """The derived units of each kernel for a build asked to record with ``window`` steps, or with the vjp of the kernel for a
+    graph's reverse (none when it is not asked)."""
+    if reverse:
+        if window is not None:
+            raise HawkError("a kernel is built for a recorded run (record=) or for a graph's reverse (reverse=), not both")
+        from ..diff.recording import graph_reverse_unit
+
+        return [tuple(unit for unit in (graph_reverse_unit(k),) if unit is not None) for k in kernels]
     if window is None:
         return [()] * len(kernels)
     if isinstance(window, bool) or not isinstance(window, int) or window < 1:
@@ -890,13 +898,14 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
                  literal_table: bool = False, embedded_profile=None, options: Mapping | None = None,
                  emit_form: str | None = None, linalg_form: str | None = None, wide_form: str | None = None,
                  launch_bounds: tuple[int, int] | None = None,
-                 settings: BuildSettings | None = None, record: int | None = None) -> Bundle:
+                 settings: BuildSettings | None = None, record: int | None = None, reverse: bool = False) -> Bundle:
     """Build every kernel into ``directory`` and write ONE ``manifest.json`` over them.
 
     ``record`` is a window of steps (a positive whole number): every kernel is then built recordable, in the same library as the
     taping twin that keeps that many steps and the vjp of its step (and of its ``K`` steps), and its sidecar's ``derived`` lists
     them, each with its ``role``, ``kernel`` name and ``digest`` (a twin also states its ``window``). See
-    :func:`hawk.diff.recording.recording`.
+    :func:`hawk.diff.recording.recording`. ``reverse=True`` builds every kernel with its vjp in the same library instead, the unit
+    :func:`hawk.reverse` takes for a launch of the kernel in a graph (:func:`hawk.diff.recording.graph_reverse_unit`).
 
     An ``emit_form``/``linalg_form``/``wide_form``/``launch_bounds`` left unset is the value of ``settings`` (a
     :class:`hawk.build_settings.BuildSettings`; the default: ``"auto"``, no bound); an explicit argument wins. ``emit_form`` is how a
@@ -933,7 +942,7 @@ def build_bundle(kernels, directory, *, mode: str = "float64",
                              launch_bounds=launch_bounds)
     block = None if cfg.launch_bounds is None else cfg.launch_bounds[0]
     per_kernel_derivative = _per_kernel_derivative(kernels, names, derivative)
-    recordings = _recordings(kernels, record)
+    recordings = _recordings(kernels, record, reverse)
     root = Path(cache_dir) if cache_dir else default_cache_dir()
     kinds, machines, answers = _lowered(kernels, names, kind, mode=mode, targets=targets, cfg=cfg, options=options, opt_level=opt_level,
                                         root=root, sizes=layout_sizes_override, tools_needed=True, recordings=recordings)

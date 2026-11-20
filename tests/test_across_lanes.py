@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import math
 
-import _deploy as L
 import numpy as np
 import pytest
 from _eval import evaluate
@@ -229,11 +228,7 @@ def _launch(bundle, name, target, planes, **extent):
     bundle = bundle[name]
     if target == "host":
         return hawk.plan(hawk.load(bundle.directory, name)).bind(**extent, **planes)
-    import eagle.exec as eexec
-    from eagle import plan as eplan
-
-    plugin = L.device_plugin(bundle.directory, name, sidecar_of(bundle, name))
-    return eplan.plan(plugin, structure=eexec.DeviceKernel).bind(**extent, **planes)
+    return hawk.plan(hawk.load(bundle.directory, name), hawk.DeviceKernel).bind(**extent, **planes)
 
 
 def _run(bundle, name, target, ins, outs, **extent):

@@ -232,28 +232,27 @@ def test_the_forward_derivative_reads_one_tangent_for_all_lanes():
 @pytest.mark.gpu
 def test_every_shared_type_on_the_device():
     cp = pytest.importorskip("cupy")
-    import eagle
 
     x = _lanes()
-    plan = eagle.deploy(rotate)
+    plan = hawk.deploy(rotate)
     got = plan(cp.asarray(np.ascontiguousarray(x)), cp.asarray(A22))
     np.testing.assert_allclose(cp.asnumpy(got), A22 @ x, rtol=1e-14)
     # the device contracts to FMA, so the host's bits are not its bits: the 4-cell twin is
-    cells = eagle.deploy(rotate_cells)(cp.asarray(np.ascontiguousarray(x)), cp.asarray(A22.ravel()))
+    cells = hawk.deploy(rotate_cells)(cp.asarray(np.ascontiguousarray(x)), cp.asarray(A22.ravel()))
     np.testing.assert_array_equal(cp.asnumpy(got), cp.asnumpy(cells))
 
     x6, w = _lanes(w=6), RNG.random(6)
-    got = eagle.deploy(dot_loop)(cp.asarray(np.ascontiguousarray(x6)), cp.asarray(w))
+    got = hawk.deploy(dot_loop)(cp.asarray(np.ascontiguousarray(x6)), cp.asarray(w))
     np.testing.assert_allclose(cp.asnumpy(got), w @ x6, rtol=1e-13)
-    got = eagle.deploy(dot_whole)(cp.asarray(np.ascontiguousarray(x6)), cp.asarray(w))
+    got = hawk.deploy(dot_whole)(cp.asarray(np.ascontiguousarray(x6)), cp.asarray(w))
     np.testing.assert_allclose(cp.asnumpy(got), w @ x6, rtol=1e-13)
 
     s, T = RNG.random(LANES), RNG.random((3, 4))
-    got = eagle.deploy(grid_table)(cp.asarray(s), cp.asarray(T))
+    got = hawk.deploy(grid_table)(cp.asarray(s), cp.asarray(T))
     np.testing.assert_allclose(cp.asnumpy(got), T[1, 2] * s + T[2, 3], rtol=1e-14)
 
     xs, bf, wm = RNG.random(LANES), RNG.random(512), RNG.random((24, 512))
-    got = eagle.deploy(wide_matvec)(cp.asarray(xs), cp.asarray(bf), cp.asarray(wm))
+    got = hawk.deploy(wide_matvec)(cp.asarray(xs), cp.asarray(bf), cp.asarray(wm))
     np.testing.assert_allclose(cp.asnumpy(got), (wm[3] @ bf) * xs, rtol=1e-12)
 
 

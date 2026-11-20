@@ -78,7 +78,8 @@ _FROM_STEPS = ("steps",)
 #: (:mod:`hawk.plans`, which also holds ``Partition`` and the array verbs ``asarray``, ``to_numpy``, ``synchronize``,
 #: ``banded_pack``, ``banded_unpack``). ``until_done`` and ``simulate`` run a model until its samples are done, under an
 #: ``ActiveSet`` where the kernel has one (:mod:`hawk.runner`); ``Graph`` and ``GraphPipeline`` record bound plans and
-#: replay them, and ``reverse`` differentiates a record (:mod:`hawk.graph`).
+#: replay them, ``skippable`` and ``repeat_while`` over a ``SkipGuard`` are the conditionals of a graph, and ``reverse`` differentiates a
+#: record (:mod:`hawk.graph`).
 _TOP_LEVEL_DOORS = {"build": ("artifact", "build_bundle"),
                     "load": ("runtime", "load"),
                     "run": ("runtime", "run"),
@@ -97,6 +98,9 @@ _TOP_LEVEL_DOORS = {"build": ("artifact", "build_bundle"),
                     "Graph": ("graph", "Graph"),
                     "GraphPipeline": ("graph", "GraphPipeline"),
                     "reverse": ("graph", "reverse"),
+                    "SkipGuard": ("graph", "SkipGuard"),
+                    "skippable": ("graph", "skippable"),
+                    "repeat_while": ("graph", "repeat_while"),
                     "until_done": ("runner", "until_done"),
                     "simulate": ("runner", "simulate"),
                     "samples_first": ("_plane_layout", "samples_first"),

@@ -783,16 +783,15 @@ def reference_digest(name: str, dtype: str, n: int, planes: dict, want_dir=None)
 
 def run_device(name: str, dtype: str, n: int, *, cache_dir, repeats: int = 5, seed: int = 7, exact: bool = True,
                want_dir=None) -> dict:
-    """Run corpus entry ``name`` over ``n`` lanes on the device through eagle: ``{"out", "want", "ns"}``, the plane the
+    """Run corpus entry ``name`` over ``n`` lanes on the device through hawk's own verbs: ``{"out", "want", "ns"}``, the plane the
     kernel wrote, the reference (``None`` unless ``exact``: the data are then reals no reference rounds as the device does)
     and the median nanoseconds a lane takes to launch."""
     import statistics
     import time
 
-    import eagle.plan
-    from eagle import arrays
-    from eagle._alloc import synchronize
+    import cupy as cp
 
+    synchronize = hawk.synchronize
     entry, real = CORPUS[name], np.float32 if dtype == "float32" else np.float64
     planes = entry.planes(np.random.default_rng(seed), real, n, exact)
     want = want_sha = None
@@ -803,23 +802,20 @@ def run_device(name: str, dtype: str, n: int, *, cache_dir, repeats: int = 5, se
         want_sha = reference_digest(name, dtype, n, planes, want_dir)
 
     def up(a):
-        return arrays.asarray(np.ascontiguousarray(a), device="cuda:0")
+        return cp.from_dlpack(hawk.asarray(np.ascontiguousarray(a), device="cuda:0"))
 
     def bind():
         kw = {k: up(v) for k, v in planes.items()}
         kw[entry.out] = up(np.zeros(entry.shape(n), real))
-        if entry.kernel.group > 1:      # the group map comes from the runtime's ActiveSet, which checks the group it was made for
-            from eagle import ActiveSet
-
-            live = ActiveSet(kw["terminated"], group=entry.kernel.group)
-            live.compact()
-            kw["active_map"], kw["active_count"] = live.map, live.count
+        if entry.kernel.group > 1:      # the group map comes from the ActiveSet, which reads the group the kernel was built for
+            made = hawk.ActiveSet(planes["terminated"]).planes(plan)
+            kw.update({k: up(v) for k, v in made.items()})
         return kw, plan.bind(**kw)
 
     if entry.segmented:
         out, ns = _run_segmented(entry, dtype, planes, n, cache_dir, repeats, up)
         return {"out": out, "want": want, "want_sha": want_sha, "ns": ns}
-    plan = eagle.plan.auto(entry.kernel, targets=("cuda",), scalar_type=dtype, cache_dir=str(cache_dir))
+    plan = hawk.deploy(entry.kernel, targets=("host", "cuda"), scalar_type=dtype, cache_dir=str(cache_dir))
     stepping = "terminated" in planes        # a stepping kernel leaves its lanes finished: every timed launch starts afresh
     kw, bound = bind()
     bound.launch()
@@ -872,11 +868,9 @@ def _prebuild(cache) -> None:
     (a build is nvcc, a subprocess: threads overlap them, and the compile of the 0.7.2 wheel is not served from a disk cache)."""
     from concurrent.futures import ThreadPoolExecutor
 
-    import eagle.plan
-
     def build_one(job):
         entry, mode = job
-        eagle.plan.auto(CORPUS[entry].kernel, targets=("cuda",), scalar_type=mode, cache_dir=str(cache))
+        hawk.deploy(CORPUS[entry].kernel, targets=("host", "cuda"), scalar_type=mode, cache_dir=str(cache))
         if CORPUS[entry].segmented:     # the door builds the branch units on its first run: a short one builds them here, beside the rest
             run_device(entry, mode, 256, cache_dir=cache, repeats=1)
 

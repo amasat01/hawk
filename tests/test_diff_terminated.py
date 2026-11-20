@@ -20,7 +20,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import _deploy as L
 import _deployable as D
 import numpy as np
 import pytest
@@ -140,25 +139,20 @@ def test_compiled_device_vjp_and_jvp_zero_the_terminated_half(tmp_path, cache_di
     bundle = _diagnostic_bundle(tmp_path, cache_dir, targets=("cuda", "host"))
     x, terminated = _mask()
 
-    import eagle.exec as eexec
-    from eagle import plan as eplan
+    import cupy as cp
 
     def _get(a):
-        return np.asarray(a.get() if hasattr(a, "get") else a)
+        return cp.asnumpy(a)
 
-    plugin = L.device_plugin(bundle.directory, "diagnostic_vjp",
-                             sidecar_of(bundle, "diagnostic_vjp"))
+    plan = hawk.plan(hawk.load(bundle.directory, "diagnostic_vjp"), hawk.DeviceKernel)
     bar_y = np.full(N, 2.0)
-    bar_x = _get(eplan.plan(plugin, structure=eexec.DeviceKernel).run(
-        x=x, terminated=terminated, bar_y=bar_y))
+    bar_x = _get(plan.run(x=cp.asarray(x), terminated=cp.asarray(terminated), bar_y=cp.asarray(bar_y)))
     np.testing.assert_array_equal(bar_x[:N // 2], bar_y[:N // 2])
     np.testing.assert_array_equal(bar_x[N // 2:], np.zeros(N - N // 2))
 
-    plugin = L.device_plugin(bundle.directory, "diagnostic_jvp",
-                             sidecar_of(bundle, "diagnostic_jvp"))
+    plan = hawk.plan(hawk.load(bundle.directory, "diagnostic_jvp"), hawk.DeviceKernel)
     dot_x = np.full(N, 0.4)
-    dot_y = _get(eplan.plan(plugin, structure=eexec.DeviceKernel).run(
-        x=x, terminated=terminated, dot_x=dot_x))
+    dot_y = _get(plan.run(x=cp.asarray(x), terminated=cp.asarray(terminated), dot_x=cp.asarray(dot_x)))
     np.testing.assert_array_equal(dot_y[:N // 2], dot_x[:N // 2])
     np.testing.assert_array_equal(dot_y[N // 2:], np.zeros(N - N // 2))
 
@@ -196,11 +190,10 @@ def _check_finishing(bundle, target):
         if target == "host":
             got = _run_on_host(bundle, name, x=x, terminated=mask, **{seed_name: seed})
         else:
-            import eagle.exec as eexec
-            from eagle import plan as eplan
+            import cupy as cp
 
-            got = eplan.plan(L.device_plugin(bundle.directory, name, sidecar),
-                             structure=eexec.DeviceKernel).run(x=x, terminated=mask, **{seed_name: seed})
+            got = hawk.plan(hawk.load(bundle.directory, name), hawk.DeviceKernel).run(
+                x=cp.asarray(x), terminated=cp.asarray(mask), **{seed_name: cp.asarray(seed)})
         got = np.asarray(got.get() if hasattr(got, "get") else got)
         np.testing.assert_array_equal(got[:N // 2], seed[:N // 2])
         np.testing.assert_array_equal(got[N // 2:], np.zeros(N - N // 2))

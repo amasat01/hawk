@@ -261,9 +261,6 @@ def _ij(k):
 
 def _run_device(bundles, tag, name, live=None):
     import cupy as cp
-    import _deploy as L
-    import eagle.exec as eexec
-    from eagle import plan as eplan
 
     mode, built = bundles
     bundle, k = built[tag, name]
@@ -273,9 +270,8 @@ def _run_device(bundles, tag, name, live=None):
     if live is not None:
         planes["active_map"] = cp.asarray(live)
         planes["active_count"] = cp.asarray(np.array([len(live)], np.uint32))
-    plugin = L.device_plugin(bundle.directory, k.name, sidecar_of(bundle, k.name))
-    eplan.plan(plugin, structure=eexec.DeviceKernel).bind(**extent, **planes).launch()
-    cp.cuda.Device().synchronize()
+    hawk.plan(hawk.load(bundle.directory, k.name), hawk.DeviceKernel).bind(**extent, **planes).launch()
+    hawk.synchronize()
     return {key: planes[key].get() for key in outs}
 
 
@@ -346,18 +342,14 @@ def test_a_compacted_output_is_written_in_launch_order_on_the_host(pack_bundle):
 
 @pytest.mark.gpu
 def test_a_compacted_output_is_written_in_launch_order_on_the_device(pack_bundle):
-    import _deploy as L
     import cupy as cp
-    import eagle.exec as eexec
-    from eagle import plan as eplan
 
     x = np.linspace(1.0, 2.0, N)
     packed = cp.zeros(len(MAP) + 3)
     planes = {"x": cp.asarray(x), "packed": packed, "active_map": cp.asarray(MAP),
               "active_count": cp.asarray(np.array([len(MAP)], np.uint32))}
-    plugin = L.device_plugin(pack_bundle.directory, "_pack", sidecar_of(pack_bundle, "_pack"))
-    eplan.plan(plugin, structure=eexec.DeviceKernel).bind(**planes).launch()
-    cp.cuda.Device().synchronize()
+    hawk.plan(hawk.load(pack_bundle.directory, "_pack"), hawk.DeviceKernel).bind(**planes).launch()
+    hawk.synchronize()
     np.testing.assert_array_equal(packed.get()[:len(MAP)], x[MAP] * 2.0)
 
 
@@ -610,19 +602,15 @@ def test_the_design_pattern_matches_numpy_on_the_host(pattern_bundles, name):
 @pytest.mark.gpu
 @pytest.mark.parametrize("name", list(PATTERNS))
 def test_the_design_pattern_matches_numpy_on_the_device(pattern_bundles, name):
-    import _deploy as L
     import cupy as cp
-    import eagle.exec as eexec
-    from eagle import plan as eplan
 
     mode, built = pattern_bundles
     bundle, k = built[name]
     n, ins, outs = _pattern_inputs(name, mode)
     outs = outs(0)
     planes = {key: cp.asarray(v) for key, v in {**ins, **outs}.items()}
-    plugin = L.device_plugin(bundle.directory, k.name, sidecar_of(bundle, k.name))
-    eplan.plan(plugin, structure=eexec.DeviceKernel).bind(**planes).launch()
-    cp.cuda.Device().synchronize()
+    hawk.plan(hawk.load(bundle.directory, k.name), hawk.DeviceKernel).bind(**planes).launch()
+    hawk.synchronize()
     got = planes[next(iter(outs))].get()
     np.testing.assert_allclose(got, _pattern_want(name, ins), rtol=1e-5 if mode == "float32" else 1e-13)
 

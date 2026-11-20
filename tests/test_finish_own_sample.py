@@ -29,7 +29,6 @@ Rows:
 
 from __future__ import annotations
 
-import _deploy as L
 import numpy as np
 import pytest
 from conftest import sidecar_of
@@ -216,15 +215,13 @@ def _reference(t_final, x, v, mask):
 
 
 def _runner(bundle, name, target):
-    """``(plan, array module)`` of ``name``: hawk's plan on the host, eagle's on the device."""
+    """``(plan, array module)`` of ``name``: hawk's plan under the host structure on the host, under the device structure on the
+    device."""
     if target == "host":
         return hawk.plan(hawk.load(bundle.directory, name)), np
-    import eagle.exec as eexec
     import cupy as cp
-    from eagle import plan as eplan
 
-    plugin = L.device_plugin(bundle.directory, name, sidecar_of(bundle, name))
-    return eplan.plan(plugin, structure=eexec.DeviceKernel), cp
+    return hawk.plan(hawk.load(bundle.directory, name), hawk.DeviceKernel), cp
 
 
 def _step_until_done(bundle, target, preset=None):

@@ -29,6 +29,7 @@ import hawk.artifact
 import hawk.diff
 import hawk.ext
 import hawk.graph
+import hawk.graph_builder
 import hawk.math
 import hawk.plans
 import hawk.runner
@@ -44,6 +45,7 @@ _SURFACES = {
     "hawk.plans": hawk.plans,
     "hawk.runner": hawk.runner,
     "hawk.graph": hawk.graph,
+    "hawk.graph_builder": hawk.graph_builder,
     "hawk.ext": hawk.ext,
     "hawk.diff": hawk.diff,
     "hawk.artifact": hawk.artifact,
@@ -56,11 +58,11 @@ _SURFACES = {
 _EXPECTED_MANIFEST = {
     "hawk": [
         "ActiveSet", "DeviceKernel", "Graph", "GraphPipeline", "Grid", "HawkError", "HostSerial", "HostTeam", "Index", "Int32", "Kernel", "Matrix", "Meta", "Mutable",
-        "Param", "Partition", "Quantity", "Quat", "RawBlock", "Scalar", "Sorted",
+        "Param", "Partition", "Quantity", "Quat", "RawBlock", "Scalar", "SkipGuard", "Sorted",
         "Staged", "Table", "Terminated", "ToolchainAbsent", "UInt32", "Value", "Vector", "Wide",
         "WideOut", "__version__", "asarray", "banded_pack", "banded_unpack", "build", "chain", "deploy", "geometry",
-        "kernel", "load", "max", "mean", "min", "plan", "primitive", "raw_device", "resolve_dispatch", "reverse", "run",
-        "sample_position", "samples_first", "samples_last", "scatter", "simulate", "steps", "sum", "synchronize",
+        "kernel", "load", "max", "mean", "min", "plan", "primitive", "raw_device", "repeat_while", "resolve_dispatch", "reverse", "run",
+        "sample_position", "samples_first", "samples_last", "scatter", "simulate", "skippable", "steps", "sum", "synchronize",
         "to_numpy", "until_done",
     ],
     "hawk.trace": [],
@@ -85,14 +87,15 @@ _EXPECTED_MANIFEST = {
         "vec", "vsum", "where",
     ],
     "hawk.runtime": [
-        "BoundPlan", "LoadedKernel", "check_scatter_status", "dispatch_costs", "load", "run", "steps_reverse_table",
+        "BoundPlan", "LoadedKernel", "PlaneStore", "check_scatter_status", "dispatch_costs", "load", "run", "steps_reverse_table",
     ],
     "hawk.plans": [
         "DeviceKernel", "HostSerial", "HostTeam", "Partition", "Plan", "asarray", "banded_pack", "banded_unpack", "deploy",
         "plan", "synchronize", "to_numpy",
     ],
-    "hawk.runner": ["ActiveSet", "RunRecord", "RunReport", "Runner", "SimResult", "simulate", "until_done"],
-    "hawk.graph": ["Graph", "GraphPipeline", "GraphRecord", "reverse"],
+    "hawk.graph_builder": ["Recorder", "attach", "current", "make_builder"],
+    "hawk.runner": ["ActiveSet", "GradientReport", "Gradients", "RunRecord", "RunReport", "Runner", "SimResult", "simulate", "until_done"],
+    "hawk.graph": ["Edge", "Graph", "GraphPipeline", "GraphRecord", "RepeatWhile", "SkipGuard", "Skippable", "repeat_while", "reverse", "skippable"],
     "hawk.ext": [
         "ATOMIC", "DEFAULT_GUARD", "DEFAULT_KIND", "Guard", "IndexSet",
         "KernelKind", "Kind", "Output", "PLAIN", "PrimitiveDef",
@@ -138,7 +141,7 @@ def test_the_public_manifest_is_exactly_this():
 _TOP_LEVEL_DOOR_NAMES = frozenset({
     "build", "load", "run", "primitive", "plan", "deploy", "Partition", "HostTeam", "HostSerial", "DeviceKernel", "asarray",
     "to_numpy", "synchronize", "banded_pack", "banded_unpack", "ActiveSet", "until_done", "simulate", "Graph",
-    "GraphPipeline", "reverse"})
+    "GraphPipeline", "reverse", "SkipGuard", "skippable", "repeat_while"})
 
 #: The reductions named twice ON PURPOSE: ``hawk.<op>`` reduces across lanes
 #: (``over=``), ``hawk.math.<op>`` within one value (``np.sum`` over its own

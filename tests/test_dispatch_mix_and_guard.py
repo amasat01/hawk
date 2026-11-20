@@ -122,19 +122,15 @@ def test_the_mix_is_the_bincount_of_the_live_classes_on_the_host(built):
 
 @pytest.mark.gpu
 def test_the_mix_is_the_bincount_of_the_live_classes_on_the_device(built):
-    import _deploy as L
     import cupy as cp
-    import eagle.exec as eexec
-    from eagle import plan as eplan
 
     rng = np.random.default_rng(3)
     k, bs, stopped = _inputs(rng)
     mix = cp.zeros(K, dtype=cp.uint32)
-    plugin = L.device_plugin(built["local"].directory, "mix_auto",
-                             _sidecar(built["local"], "mix_auto"))
-    eplan.plan(plugin, structure=eexec.DeviceKernel).bind(
+    hawk.plan(hawk.load(built["local"].directory, "mix_auto"), hawk.DeviceKernel).bind(
         k=cp.asarray(k), bs=cp.asarray(bs), terminated=cp.asarray(stopped),
         y=cp.zeros(N), dispatch0_mix=mix).launch()
+    hawk.synchronize()
     want = np.bincount(np.clip(k, 0, K - 1)[~stopped], minlength=K)
     np.testing.assert_array_equal(cp.asnumpy(mix), want)
 

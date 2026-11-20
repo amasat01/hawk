@@ -190,9 +190,14 @@ def twin(kernel, patterns: dict):
 
 
 def _derived_twin(kernel, patterns: dict):
-    """The derivative ``kernel`` over the twin of its primal."""
+    """The derivative ``kernel`` over the twin of its primal, stating the pattern of every plane of the primal it still binds, so
+    its request and sidecar say the compact planes it reads as the primal's do."""
     derived = kernel.sinks
-    return type(kernel)(kernel.name, derived.rebuild(twin(derived.source, patterns)))
+    primal = twin(derived.source, patterns)
+    out = type(kernel)(kernel.name, derived.rebuild(primal))
+    bound = {name for _role, name in _ir.arg_spec(out.walk)}
+    out.broadcast = {name: kept for name, kept in primal.broadcast.items() if name in bound}
+    return out
 
 
 def _build(kernel, patterns: dict):

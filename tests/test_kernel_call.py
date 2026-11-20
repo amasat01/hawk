@@ -19,12 +19,6 @@ from hawk.artifact import cache_stats
 
 
 @pytest.fixture
-def eagle():
-    """eagle, the array library the device rows hand their results through: a row that needs it is skipped without it."""
-    return pytest.importorskip("eagle")
-
-
-@pytest.fixture
 def private_cache(tmp_path, monkeypatch):
     monkeypatch.setenv("HAWK_CACHE_DIR", str(tmp_path / "cache"))
     return tmp_path / "cache"
@@ -211,24 +205,23 @@ def _device():
 
 @pytest.mark.gpu
 @pytest.mark.skipif(not _device(), reason="needs a CUDA device")
-def test_kernel_call_gpu(private_cache, eagle):
+def test_kernel_call_gpu(private_cache):
     import cupy as cp
 
     k = _scale()
     x = cp.arange(8.0)
     y = k(x, 2.0, 1.0)
-    assert isinstance(y, (cp.ndarray, eagle.Array))     # eagle hands the result back as its own array unless returns= asks for cupy's
-    y = cp.asarray(y)
+    assert isinstance(y, cp.ndarray)        # an output made for device inputs is read back by the library the inputs come from
     cp.testing.assert_array_equal(y, 2.0 * x + 1.0)
     first = _tool_runs()
-    twin = cp.asarray(eagle.deploy(k).run(x=x, a=2.0, b=1.0))
+    twin = hawk.deploy(k).run(x=x, a=2.0, b=1.0)
     cp.testing.assert_array_equal(twin, y)
     assert _tool_runs() == first
 
 
 @pytest.mark.gpu
 @pytest.mark.skipif(not _device(), reason="needs a CUDA device")
-def test_a_factory_builds_each_size_gpu(private_cache, eagle):
+def test_a_factory_builds_each_size_gpu(private_cache):
     import cupy as cp
 
-    _check_binned(cp, eagle.deploy)
+    _check_binned(cp, hawk.deploy)

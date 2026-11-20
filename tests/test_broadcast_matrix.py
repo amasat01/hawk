@@ -4,7 +4,7 @@
 """A per-lane ``Matrix`` input of a ``Grid`` kernel may be given broadcast.
 
 The twin of its pattern reads the caller's compact ``(rows*cols, m)`` plane with
-``At`` at the flat index over the axes the matrix varies along; eagle binds that
+``At`` at the flat index over the axes the matrix varies along; the library binds that
 plane by its own column count (sidecar ``gather_mats``), not the lane count.
 
 * **Values** against ``np.broadcast_to`` for every pattern, a rolled ``M @ v``
@@ -267,19 +267,21 @@ def test_no_lane_writes_outside_its_kept_index(run_cache, rng):
 
 # 5. recorded reverse over a twin plan
 
-@pytest.mark.skip(reason="needs the graph builder rows: hawk.Graph over a recording and hawk.reverse")
 def test_recorded_reverse_with_a_broadcast_matrix(run_cache, cache_dir, rng):
     shape = SHAPES[0]
     m, x, g = rng.standard_normal(shape), rng.random(LANE), rng.standard_normal(LANE)
     kept = B.kept_axes(shape, (R, R), mscal.lane_space, A)
-    import eagle
-    from eagle import diff as ediff
+    plan = hawk.deploy(B.twin(mscal, {"M": kept}), targets=("host",), cache_dir=cache_dir)
 
-    plan = eagle.deploy(B.twin(mscal, {"M": kept}), targets=("host",), cache_dir=cache_dir)
-    bound = plan.bind(M=B.compact("M", m, kept, (R, R), "test"), x=x, out=np.zeros(LANE), a=A)
-    graph = eagle.Graph(record=True).add(bound).build()
-    graph.launch().synchronize()
-    got = np.asarray(ediff.reverse(graph.record, {"out": g.reshape(-1)})["M"])
+    @hawk.Graph.builder
+    def run(compact, x, out) -> hawk.Graph:
+        graph = hawk.Graph(record=True)
+        graph.add(plan.bind(M=compact, x=x, out=out, a=A))
+        return graph
+
+    graph = run(B.compact("M", m, kept, (R, R), "test"), x, np.zeros(LANE))
+    graph()
+    got = np.asarray(hawk.reverse(graph.record, {"out": g.reshape(-1)})["M"])
     np.testing.assert_allclose(got.reshape(shape), _fsum(_adjoint(m, x, g), shape), rtol=1e-12, atol=1e-13)
 
 
@@ -290,9 +292,8 @@ def test_recorded_reverse_with_a_broadcast_matrix(run_cache, cache_dir, rng):
 def test_device_forward_and_vjp(cache_dir, rng, kernel, rows):
     cp = pytest.importorskip("cupy")
     m, v, g = rng.standard_normal((rows, rows, A, 1, NC)), rng.standard_normal((rows, *LANE)), rng.standard_normal(LANE)
-    import eagle
 
-    plan = eagle.deploy(kernel, cache_dir=cache_dir)
+    plan = hawk.deploy(kernel, cache_dir=cache_dir)
     out = cp.asnumpy(plan(cp.asarray(m), cp.asarray(v), a=A))
     np.testing.assert_allclose(out, np.einsum("rcabk,cabk->abk", _full(m, rows), v), rtol=1e-12, atol=1e-12)
     got = cp.asnumpy(Kernel(kernel.name + "_vjp_dev", vjp(kernel, wrt=("M",)))(

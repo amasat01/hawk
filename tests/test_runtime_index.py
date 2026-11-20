@@ -183,16 +183,13 @@ def test_a_runtime_store_host_run_equals_the_interpreter(host, width):
 def _on_device(kernel, cache_dir, **planes):
     """The kernel on the GPU: the arrays go over as given, the output comes back."""
     import cupy as cp
-    import eagle
-    import eagle.plan
 
-    plan = eagle.plan.auto([kernel], targets=("cuda",), cache_dir=cache_dir,
-                           scalar_type="float64")[0]
+    plan = hawk.deploy([kernel], targets=("host", "cuda"), cache_dir=cache_dir, scalar_type="float64")[0]
     arrays = {k: cp.asarray(v) for k, v in planes.items()}
-    graph = eagle.Graph()
+    graph = hawk.Graph()
     graph.add(plan.bind(**arrays), name="n")
     graph.build().launch()
-    cp.cuda.runtime.deviceSynchronize()
+    hawk.synchronize()
     return {k: cp.asnumpy(v) for k, v in arrays.items()}
 
 

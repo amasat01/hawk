@@ -15,7 +15,7 @@ loaded artifact has no source, so it refuses by name.
   buffer, never another pattern.
 * **Reverse** of a broadcast input is the sum over the axes it does not vary along,
   compensated: the direct call of the derivative against ``math.fsum`` closed forms.
-  The same through a recorded graph is the graph builder's rows (left, listed with the run).
+  The same through a recorded graph: a builder that calls the plan, reversed by ``hawk.reverse``.
 """
 
 from __future__ import annotations
@@ -200,24 +200,26 @@ def test_rebind_of_a_number_and_of_a_one_cell_array_keep_their_kinds(plans, rng)
 # 5. a captured graph swaps the compact buffer
 
 
-@pytest.mark.skip(reason="needs the graph builder rows: hawk.Graph.bind and hawk.reverse over a graph record")
 def test_graph_swaps_a_same_shape_buffer_and_refuses_any_other(plans, rng):
-    eagle = pytest.importorskip("eagle")
     plan = plans["daffine"]
+
+    @hawk.Graph.builder
+    def affine(x, out) -> hawk.Graph:
+        g = hawk.Graph()
+        plan(x, a=A, out=out)
+        g.result = out
+        return g
+
     out = np.zeros(LANE)
-    bound = plan.bind(x=rng.random((A, 1, NC)), out=out, a=A)
-    x0 = bound._planes["x"]                 # the compact view the graph holds
-    assert x0.shape == (A * NC,)
-    graph = eagle.Graph().add(bound).build()
-    graph.launch().synchronize()
-    np.testing.assert_array_equal(out, 2.0 * _full(x0.reshape(A, 1, NC)) + 1.0)
-    x1 = rng.random(A * NC)
-    graph._rebind([(x0, x1)])
-    graph.launch().synchronize()
-    np.testing.assert_array_equal(out, 2.0 * _full(x1.reshape(A, 1, NC)) + 1.0)
-    for other in (rng.random(NC), rng.random((A, 1, NC))):
-        with pytest.raises(ValueError, match="call the builder again"):
-            graph._rebind([(x1, other)])
+    x0 = rng.random((A, 1, NC))
+    graph = affine(x0, out)
+    np.testing.assert_array_equal(graph(), 2.0 * _full(x0) + 1.0)
+    x1 = rng.random((A, 1, NC))
+    graph.bind(x=x1)
+    np.testing.assert_array_equal(graph(), 2.0 * _full(x1) + 1.0)
+    for other in (rng.random(NC), rng.random((A, 2, NC)), x1.astype(np.float32)):
+        with pytest.raises(HawkError, match="must keep its shape and dtype"):
+            graph.bind(x=other)
 
 
 # 6. a plan over a loaded artifact refuses by name
@@ -269,39 +271,50 @@ def test_incompatible_shape_names_both_shapes_through_deploy(plans, rng):
 
 # 8. the reverse of a broadcast input through a recorded graph
 
-def _reverse(plan, name, value, cot, head=()):
-    eagle = pytest.importorskip("eagle")
-    from eagle import diff as ediff
+def _reverse(plan, name, value, cot, wrt=None):
+    """The gradient of ``name`` through a builder that calls ``plan`` once, recorded for reverse and replayed once."""
+    @hawk.Graph.builder
+    def run(value, out) -> hawk.Graph:
+        g = hawk.Graph(record=True)
+        plan(out=out, a=A, **{name: value})
+        return g
 
-    uniform = not head and np.size(value) == 1
-    bound = plan.bind(**{name: float(np.ravel(value)[0]) if uniform else value},
-                      out=np.zeros(LANE), a=A)
-    graph = eagle.Graph(record=True).add(bound).build()
-    graph.launch().synchronize()
-    return np.asarray(ediff.reverse(graph.record, {"out": cot.reshape(-1)})[name])
+    graph = run(value, np.zeros(LANE))
+    graph()
+    return np.asarray(hawk.reverse(graph.record, {"out": cot.reshape(-1)}, wrt=wrt)[name])
 
 
-@pytest.mark.skip(reason="needs the graph builder rows: hawk.Graph.bind and hawk.reverse over a graph record")
-@pytest.mark.parametrize("shape", [(A, 1, NC), (NC,), (), (A, NB, 1)])
+def test_a_dense_input_is_reversed_through_a_recorded_graph(plans, rng):
+    x, g = rng.random(LANE) + 0.5, rng.random(LANE) - 0.5
+    np.testing.assert_allclose(_reverse(plans["dcube"], "x", x, g).reshape(LANE), 3.0 * x**2 * g, rtol=1e-12, atol=1e-13)
+
+
+@pytest.mark.parametrize("shape", [(A, 1, NC), (NC,), (1,), (A, NB, 1)])
 def test_recorded_reverse_sums_the_broadcast_axes(plans, rng, shape):
     x, g = rng.random(shape) + 0.5, rng.random(LANE) - 0.5
     got = _reverse(plans["dcube"], "x", x, g)
     want = _summed(3.0 * _full(x) ** 2 * g, np.shape(x))
-    assert got.shape == np.shape(x) or got.size == want.size
-    np.testing.assert_allclose(got.reshape(np.shape(x)), want, rtol=1e-12, atol=1e-13)
+    assert got.shape == np.shape(x)                              # the gradient has the shape of the caller's input
+    np.testing.assert_allclose(got, want, rtol=1e-12, atol=1e-13)
 
 
-@pytest.mark.skip(reason="needs the graph builder rows: hawk.Graph.bind and hawk.reverse over a graph record")
+def test_recorded_reverse_of_a_number_is_refused_by_name_and_a_one_element_array_has_a_gradient(plans, rng):
+    x, g = 0.7, rng.random(LANE) - 0.5
+    with pytest.raises(HawkError, match="wrt 'x' is bound by value, which has no gradient: pass a one-element array"):
+        _reverse(plans["dcube"], "x", x, g, wrt="x")
+    got = _reverse(plans["dcube"], "x", np.array([x]), g)
+    np.testing.assert_allclose(got, [np.sum(3.0 * x**2 * g)], rtol=1e-12)
+
+
 def test_recorded_reverse_of_a_broadcast_vector(plans, rng):
     v, g = rng.random((3, 1, NB, NC)) + 0.5, rng.random(LANE)
-    got = _reverse(plans["dmix"], "v", v, g, head=(3,))
+    got = _reverse(plans["dmix"], "v", v, g)
     lane = np.broadcast_to(v, (3, *LANE))
     parts = np.stack([lane[1] * g, lane[0] * g, 2.0 * g])
     want = np.stack([_summed(p, v.shape[1:]) for p in parts])
     np.testing.assert_allclose(got.reshape(v.shape), want, rtol=1e-12, atol=1e-13)
 
 
-@pytest.mark.skip(reason="needs the graph builder rows: hawk.Graph.bind and hawk.reverse over a graph record")
 def test_recorded_reverse_is_compensated_and_equals_the_hawk_door(plans, rng, run_cache):
     x = np.full((A, 1, NC), 1e8)
     g = (rng.random(LANE) - 0.5) * 1e-8

@@ -207,8 +207,6 @@ def test_the_host_values_are_the_interpreters_bitwise(host):
 @pytest.mark.gpu
 def test_the_device_value_equals_the_host(host):
     import cupy as cp
-    import eagle
-    import eagle.plan
 
     n = 33
     v, w, s, k = _inputs(n)
@@ -224,10 +222,10 @@ def test_the_device_value_equals_the_host(host):
         want = {name: a.copy() for name, a in outs.items()}
         rt.run(host(kernel), **ins, **want)
         built = [_derived, kernel] if kernel in (_JVP, _VJP) else [kernel]      # a derivative ships with its primal
-        plan = eagle.plan.auto(built, targets=("cuda",), scalar_type="float64")[-1]
+        plan = hawk.deploy(built, targets=("host", "cuda"), scalar_type="float64")[-1]
         arrays = {name: cp.asarray(a) for name, a in (ins | outs).items()}
         plan.bind(**arrays).launch()
-        cp.cuda.runtime.deviceSynchronize()
+        hawk.synchronize()
         for name, a in want.items():
             np.testing.assert_allclose(cp.asnumpy(arrays[name]), a, rtol=1e-14, err_msg=f"{kernel.name}.{name}")
 

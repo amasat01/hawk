@@ -643,6 +643,17 @@ def _counted(finish: dict | None, key: str) -> int | None:
     return None if value is None or value < 0 else int(value)
 
 
+def _stated_plane_axes(body: dict, launch: dict) -> dict:
+    """``{name: {payload, axes}}`` of the planes the library states named axes for in the unit's launch record, in the form
+    :func:`_plane_axes` gives a declared sink: the unit that lists the stages states the kept axes of the wide output of a stage that
+    runs one block per key, so such an output is made in the shape the library states and never derived here."""
+    slots = body["slots"]
+    return {slots[axes["slot"]]["name"]: {"payload": list(slots[axes["slot"]]["shape"]),
+                                          "axes": [{"label": label, "extent": None if extent < 0 else extent}
+                                                   for label, extent in zip(axes["labels"], axes["extents"])]}
+            for axes in launch["plane_axes"]}
+
+
 def sidecar_of_unit(kernel, unit: dict, *, lead_device: bool, fmt: str, scalar_type: str, exec_targets, family: list, steps=None,
                     derivative: dict | None = None, block: int | None = None, measured: dict | None = None, tool: dict | None = None,
                     stated: dict | None = None, records: dict | None = None) -> dict:
@@ -679,6 +690,14 @@ def sidecar_of_unit(kernel, unit: dict, *, lead_device: bool, fmt: str, scalar_t
         block=block, index_set=index_set, planes=planes, broadcast=getattr(kernel, "broadcast", None),
         step_ops=_counted(finish, "step_ops"), wide={p["name"]: {"layout": "warp_tiled"} for p in body["team_planes"] if p["wide"] == "WarpTiled"} or None, fp64_ops_ir=_counted(finish, "fp64_ops_ir"),
         entry_counts_finished=bool(finish and finish["flags"] & _FINISH_ENTRY_COUNTS), measured=measured, tool=tool, stated=stated)
+    stated = _stated_plane_axes(body, launch)
+    if source is not None and source is not unit and at == 0:
+        # the unit that lists the stages states the axes of the kernel's outputs, which a later stage writes: the kernel's
+        # sidecar is its first stage's, so there the statement is read from the listing unit as well (a later stage
+        # declares none of the kernel's planes)
+        stated = {**_stated_plane_axes(source["meta"]["body"], source["meta"]["launch"]), **stated}
+    if stated:      # the axes a declared sink states win; the library's statement covers the planes nobody declared
+        out["plane_axes"] = {**stated, **out.get("plane_axes", {})}
     # the records of the lowering answer the runtime reads, kept as given: the steps table and the dispatch costs; the
     # contractions the family's units are, each with the route word the library chose (``contractions`` below)
     for key, member in (("steps_reverse_table", "steps_reverse"), ("dispatch_costs", "dispatch_costs")):

@@ -81,17 +81,11 @@ def test_spacing_is_np_spacing_compiled_on_the_host(built):
 
 @pytest.mark.gpu
 def test_spacing_is_np_spacing_compiled_on_the_device(built):
-    import json
-
-    import _deploy as L
     import cupy as cp
-    import eagle.exec as eexec
-    from eagle import plan as eplan
 
-    sidecar = json.loads((built / "spaced.json").read_text())
     x, y = cp.asarray(_VALUES), cp.zeros(len(_VALUES))
-    eplan.plan(L.device_plugin(built, "spaced", sidecar),
-               structure=eexec.DeviceKernel).bind(x=x, y=y).launch()
+    hawk.plan(hawk.load(built, "spaced"), hawk.DeviceKernel).bind(x=x, y=y).launch()
+    hawk.synchronize()
     np.testing.assert_array_equal(cp.asnumpy(y), np.spacing(_VALUES))
 
 

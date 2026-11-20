@@ -75,7 +75,7 @@ class Osprey:
         self.targets = {row["request"]: row for row in manifest["targets"]}
         self._lock = threading.Lock()
         self._open = None
-        self._runtime_door = None
+        self._doors: dict = {}
 
     def _opened(self) -> tuple:
         """``(binding module, context, library)``, opened on the first call."""
@@ -98,22 +98,29 @@ class Osprey:
                     ) from refusal
             return self._open
 
-    def runtime_door(self):
-        """Return the runtime door of this library: one :class:`_osprey.Door`, made on first use and kept with the
-        opened library, which stays open as long as the door lives.
+    def runtime_door(self, device: int | None = None):
+        """Return the runtime door of this library: one :class:`_osprey.Door` for the host (``device=None``) or one for each
+        device ordinal, each made on first use and kept with the opened library, which stays open as long as a door lives.
 
-        Units, planes and plans are made through it; its context admits one calling thread at a time.
+        Units, planes and plans are made through it; its context admits one calling thread at a time, and a device door has
+        one stream. A library that cannot make the door refuses by its reason.
         """
         module, _context, library = self._opened()
         with self._lock:
-            if self._runtime_door is None:
+            if device not in self._doors:
                 try:
-                    self._runtime_door = module.Door(library)
+                    self._doors[device] = module.Door(library) if device is None else module.Door(library, device=device)
                 except (ValueError, module.Fault) as refusal:
+                    place = "" if device is None else f" for device {device}"
                     raise HawkError(
-                        f"the OSPREY {self.name!r} at {self.folder} has no runtime door: {refusal}"
+                        f"the OSPREY {self.name!r} at {self.folder} has no runtime door{place}: {refusal}"
                     ) from refusal
-            return self._runtime_door
+            return self._doors[device]
+
+    def open_doors(self) -> dict:
+        """Return the runtime doors made so far, ``{device ordinal or None for the host: door}``; none is made by asking."""
+        with self._lock:
+            return dict(self._doors)
 
     def _refused(self, what: str, refusal: Exception) -> HawkError:
         """Return the ``HawkError`` for the library's ``refusal`` of ``what``, keeping its code."""

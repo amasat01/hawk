@@ -97,6 +97,21 @@ def buildable(target: str) -> bool:
     return ospreys.serving(target).machine(ask)["tools_absent"] is None
 
 
+def runs_here(target: str) -> tuple:
+    """``(whether the OSPREY serving ``target`` runs on this machine, its reason)``, as the library's machine answer states them.
+
+    A library whose answer does not state ``runs_here`` is not taken to run here: the reason says it does not say.
+    """
+    from ..artifact import default_cache_dir    # the artifact package imports this one: a module-level import would be a cycle
+
+    target = ospreys.target_id(target)
+    ask = {"target": target, "options": {}, "opt_level": "", "root": str(default_cache_dir())}
+    answer = ospreys.serving(target).machine(ask)
+    if "runs_here" not in answer:
+        return False, f"the {ospreys.serving(target).name} library does not say whether it runs here"
+    return bool(answer["runs_here"]), answer.get("why", "")
+
+
 def machine(target: str, *, options=None, opt_level: str = "") -> dict:
     """What the library says about this machine for ``target``: the ``stated`` record of its machine answer, as given (compiler
     path and identity, profile, flags, device architecture). The keys are the library's; hawk reads none of them.
