@@ -115,6 +115,20 @@ def test_the_derived_kernel_is_named_and_records_its_steps():
         }
 
 
+def test_the_derived_kernel_keeps_the_compaction_group_of_its_step():
+    """``hawk.steps(k, K)`` compacts by the group its single step declares, as the decorator form does."""
+
+    @kernel(steps=1, group=32)
+    def grouped(limit: Scalar, terminated: Terminated, s: Mutable[Scalar]):
+        sn = s + 1.0
+        s = sn
+        terminated = sn >= limit
+
+    assert grouped.group == 32
+    for k in (*KS, "auto"):
+        assert hawk.steps(grouped, k).group == 32
+
+
 def test_a_kernel_without_a_finish_refuses():
     @kernel
     def plain(x: Scalar, y: Mutable[Scalar]):

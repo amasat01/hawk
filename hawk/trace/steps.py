@@ -240,6 +240,7 @@ def _derive(kernel: Any, K: int | str, out_name: str, *, step: Any = None) -> An
                    source_digest=getattr(kernel, "source_digest", None),
                    returns=getattr(kernel, "returns", None))
     fused.tangents = kernel.tangents  # the fused kernel has the step's planes, tangent planes included
+    fused.group = kernel.group  # K steps of a kernel compact by the same group as its single step
     return fused
 
 
