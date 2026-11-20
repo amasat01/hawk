@@ -25,7 +25,7 @@ from typing import NamedTuple
 
 import _osprey
 
-from . import graph_builder
+from . import _place, graph_builder
 from .errors import HawkError
 from .runner import GradientReport, Gradients, RunRecord, check_reverse_options
 from .host_steps import BoundHostStep
@@ -72,6 +72,10 @@ class _Cond:
     index: int = 0
     baseline: object = None
     baseline_index: int = 0
+    #: of a WHILE: the one-cell arrays the library counts the iterations in, stops at and is told to stop by
+    counter: object = None
+    limit: object = None
+    brk: object = None
 
 
 @dataclass
@@ -161,13 +165,36 @@ class Skippable:
 
 
 class RepeatWhile:
-    """A step repeated while its guard holds, at most ``max_iters`` times per replay: what :func:`repeat_while` returns."""
+    """A step repeated while its guard holds, at most ``max_iters`` times per replay: what :func:`repeat_while` returns.
 
-    def __init__(self, step, guard: SkipGuard, max_iters: int | None) -> None:
-        """Hold the step, its guard and the cap (``None``: until the guard fails)."""
+    ``limit`` and ``brk`` are one-cell ``uint32`` arrays of the caller: the loop runs at most ``limit[0]`` times, read at every
+    replay, and ends after the iteration that leaves ``brk[0]`` nonzero. The library counts the iterations in
+    :attr:`iteration_index`.
+    """
+
+    def __init__(self, step, guard: SkipGuard | None, max_iters: int | None, limit=None, brk=None) -> None:
+        """Hold the step, what stops it (a guard, a limit or a break cell: at least one) and the cap (``None``: no cap)."""
         if max_iters is not None and (isinstance(max_iters, bool) or not isinstance(max_iters, int) or max_iters < 1):
             raise HawkError(f"repeat_while: max_iters is a whole number of 1 or more, or None, got {max_iters!r}")
+        if guard is None and limit is None and brk is None:
+            raise HawkError("repeat_while: nothing stops the loop; pass a guard, limit= or brk=")
         self.step, self.guard, self.max_iters = step, guard, max_iters
+        self.limit, self.brk = limit, brk
+        self._counter = None
+
+    @property
+    def iteration_index(self):
+        """The one-cell ``uint32`` array the library counts in, in the memory of the loop's own cells: the index of the
+        iteration while the body runs (0 in the first), which a kernel of the body may read, and the count once the loop
+        ends."""
+        if self._counter is None:
+            like = next(cell for cell in (getattr(self.guard, "count_arr", None), self.limit, self.brk) if cell is not None)
+            self._counter = _place.Maker.at(_place.device_of(like), like).zeros((1,), "uint32")
+        return self._counter
+
+    def iterations(self) -> int:
+        """The iterations the last replay ran; 0 before any. On a device the read waits for the replay."""
+        return int(self.iteration_index[0])
 
 
 def skippable(step, guard: SkipGuard) -> Skippable:
@@ -177,11 +204,12 @@ def skippable(step, guard: SkipGuard) -> Skippable:
     return Skippable(step, _guard(guard, "skippable"))
 
 
-def repeat_while(step, guard: SkipGuard, max_iters: int | None = None) -> RepeatWhile:
+def repeat_while(step, guard: SkipGuard | None = None, max_iters: int | None = None, *, limit=None, brk=None) -> RepeatWhile:
     """``step`` (as in :func:`skippable`) repeated while ``guard`` holds, at most ``max_iters`` times per replay: one WHILE in the
     recorded graph. The cap is fixed at record; ``None`` repeats until the guard fails, and a graph kept for :func:`reverse`
-    needs it."""
-    return RepeatWhile(step, _guard(guard, "repeat_while"), max_iters)
+    needs it. ``limit`` (a one-cell ``uint32`` array) is a trip count read at every replay; ``brk`` (a one-cell ``uint32``
+    array the body writes) ends the loop after the iteration that leaves it nonzero; with either, ``guard`` may be ``None``."""
+    return RepeatWhile(step, None if guard is None else _guard(guard, "repeat_while"), max_iters, limit, brk)
 
 
 def _guard(guard, verb: str) -> SkipGuard:
@@ -226,6 +254,11 @@ class GraphPipeline:
         self._params: dict | None = None
         self._handles: list = []
         self._finalizer = None
+
+    def _share_planes(self, other: "GraphPipeline") -> None:
+        """Bind this graph's planes through those of ``other``, which has launches: the two then name one plane per region of
+        memory, as the graphs of one stepping run must."""
+        self._door, self._store = other._door, other._store
 
     def _store_over(self, door) -> PlaneStore:
         """The plane store of this graph over ``door``, which the first launch makes the graph's: a graph runs on one door, so a
@@ -287,13 +320,23 @@ class GraphPipeline:
             else:
                 through_door(door.record_wait, [self._plane_of(array) for array in item.arrays])
 
+    def _while_of(self, loop: RepeatWhile) -> _Cond:
+        """The conditional item of ``loop``: its guard when it has one, its body, and the cells the library counts in, stops at
+        and is told to stop by."""
+        body, cap = [self._items_of(loop.step)], loop.max_iters or 0
+        item = _Cond(_WHILE, None, body, max_iters=cap) if loop.guard is None else _cond_of(loop.guard, _WHILE, body, cap)
+        item.counter, item.limit, item.brk = loop.iteration_index, loop.limit, loop.brk
+        return item
+
     def _emit_cond(self, item: _Cond) -> None:
         """Record the conditional ``item`` and its arms."""
         door = self._door
-        baseline = None if item.baseline is None else self._plane_of(item.baseline)
-        through_door(door.record_cond_begin, item.kind, self._plane_of(item.cell), n_arms=len(item.arms) if item.kind == _SWITCH
-                     else 0, negate=item.negate, max_iters=item.max_iters, cell_index=item.index, baseline=baseline,
-                     baseline_index=item.baseline_index)
+        plane = {name: None if array is None else self._plane_of(array) for name, array in
+                 (("cell", item.cell), ("baseline", item.baseline), ("counter", item.counter), ("limit", item.limit),
+                  ("brk", item.brk))}
+        through_door(door.record_cond_begin, item.kind, plane["cell"], n_arms=len(item.arms) if item.kind == _SWITCH else 0,
+                     negate=item.negate, max_iters=item.max_iters, cell_index=item.index, baseline=plane["baseline"],
+                     baseline_index=item.baseline_index, counter=plane["counter"], limit=plane["limit"], brk=plane["brk"])
         for position, arm in enumerate(item.arms):
             if position:
                 through_door(door.record_cond_arm)
@@ -644,7 +687,7 @@ class Graph(GraphPipeline):
         if isinstance(step, Skippable):
             return [_cond_of(step.guard, _IF, [self._items_of(step.step)])]
         if isinstance(step, RepeatWhile):
-            return [_cond_of(step.guard, _WHILE, [self._items_of(step.step)], step.max_iters or 0)]
+            return [self._while_of(step)]
         if isinstance(step, Graph):
             if step._finalizer is None:
                 raise HawkError("Graph.add: a graph added as a step is built first (g.build())")

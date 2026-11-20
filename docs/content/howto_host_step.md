@@ -106,8 +106,9 @@ iterable of them (a list, a tuple, a generator). A graph a `@hawk.Graph.builder`
 
 - `hawk.run` runs the items once, in the order written, and waits: `hawk.run([double(x=a, y=b), kernel], x=b, ...)`. A step alone
   runs alone: `hawk.run(double(x=a, y=b))`.
-- A stepping run runs the steps and graphs once per step, ahead of the kernels: list them first, and an iterable with a step
-  after a kernel is refused. It needs at least one kernel or plan, which is what counts the steps.
+- A stepping run runs each step and graph once per step, at its place among the kernels:
+  `[before, kernel, after]` runs in that order in every step. A recorded run takes steps ahead of the kernels only and
+  refuses one after a kernel by name. It needs at least one kernel or plan, which is what counts the steps.
   `hawk.until_done([double(x=a, y=b), kernel], max_steps=100, ...)`. A step must not write a sample that has finished.
 - With `record=True`, `hawk.reverse(run.record, cotangents)` goes through each kernel and, with its `@<step>.reverse`, each step.
 

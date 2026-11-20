@@ -145,8 +145,11 @@ def test_the_refusals_are_by_name():
         hawk.until_done([triple(x=x), "ramp"], max_steps=3, **planes())
     with pytest.raises(HawkError, match="holds a HostStep"):
         hawk.until_done([triple, one], max_steps=3, **planes())
-    with pytest.raises(HawkError, match="after a plan"):
-        hawk.until_done([one, triple(x=x)], max_steps=3, **planes())
+    with pytest.raises(HawkError, match="before_plan"):
+        arrays = planes()
+        hawk.until_done(
+            [one, triple(x=arrays["x"])], max_steps=3, record=True, **arrays
+        )
     with pytest.raises(HawkError, match="no plan or kernel"):
         hawk.until_done([triple(x=x)], max_steps=3, **planes())
     with pytest.raises(HawkError, match="not built"):
@@ -155,3 +158,22 @@ def test_the_refusals_are_by_name():
         HawkError, match="base= and count= are the range of a loaded kernel"
     ):
         hawk.run(triple(x=x), base=1)
+
+
+def test_a_host_step_after_a_kernel_runs_after_it_in_every_step():
+    arrays = planes()
+    hawk.until_done([one, triple(x=arrays["x"])], max_steps=40, **arrays).run()
+    expected = X0.copy()
+    for _ in range(T):
+        expected = 3.0 * (A * expected + B)
+    np.testing.assert_allclose(arrays["x"], expected, rtol=1e-14)
+
+
+def test_host_steps_on_both_sides_of_a_kernel_run_in_the_order_written():
+    arrays = planes()
+    x = arrays["x"]
+    hawk.until_done([triple(x=x), one, triple(x=x)], max_steps=40, **arrays).run()
+    expected = X0.copy()
+    for _ in range(T):
+        expected = 3.0 * (A * (3.0 * expected) + B)
+    np.testing.assert_allclose(x, expected, rtol=1e-14)

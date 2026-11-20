@@ -226,11 +226,11 @@ class Runner:
 
     def __init__(self, plans: list[Plan], bounds: list[BoundPlan], max_steps: int, active: ActiveSet | None, *,
                  layout: str | None = None, record: bool = False, window: int | None = None,
-                 memory_budget: int | None = None, steps_reverse: str = "per_step", step_graph=None) -> None:
+                 memory_budget: int | None = None, steps_reverse: str = "per_step", step_graphs=()) -> None:
         """Make the library's runner over ``bounds``, the plans of one step in order, bound from ``plans``; ``layout`` is the
         call's, which a reverse reads its planes by; ``record``, ``window``, ``memory_budget`` and ``steps_reverse`` are those
-        of :func:`until_done`. ``step_graph`` is a built :class:`~hawk.graph.Graph` the library runs once per step, ahead of the
-        plans."""
+        of :func:`until_done`. ``step_graphs`` are pairs of a built :class:`~hawk.graph.Graph` and the count of plans it runs
+        after, in the order written: the library runs each once per step at that place."""
         self._plans = plans
         self._bounds = bounds
         self._layout = layout
@@ -259,12 +259,13 @@ class Runner:
             options["derived_roles"] = [role for role, _ in self._derived]
             options["derived_units"] = [unit for _, unit in self._derived]
         self._recorded = record
-        self._step_graph = step_graph
-        if step_graph is not None:
-            if step_graph._door is not self._door:
-                raise HawkError("Runner: the host steps and the plans of one model run on one door, and their arrays are in "
-                                "more than one memory; bind them all in the same place")
-            options["step_graph"] = step_graph._handles[0]
+        #: the graphs of the step, kept for as long as the library's runner names them
+        self._step_graphs = [graph for graph, _ in step_graphs]
+        if any(graph._door is not self._door for graph in self._step_graphs):
+            raise HawkError("Runner: the host steps and the plans of one model run on one door, and their arrays are in "
+                            "more than one memory; bind them all in the same place")
+        if step_graphs:
+            options["steps"] = [(graph._handles[0], after) for graph, after in step_graphs]
         self._handle = through_door(self._door.runner_new, [bound.handle for bound in bounds], max_steps, **options)
         #: the handle in a list the finalizer frees without holding this object
         self._handles = [self._handle]
@@ -412,21 +413,19 @@ def _checked_items(model) -> list:
 
 
 def _split_model(model) -> tuple:
-    """``(steps, kernels)`` of ``model`` for a stepping run: what the library runs once per step ahead of the plans (a bound host
-    step, a built graph) and the plans and kernels it runs as the step. A host step or graph after a plan is refused: the library
-    runs them ahead of the plans, so it would run in another order than the one written."""
-    steps, kernels = [], []
+    """``(groups, kernels)`` of ``model`` for a stepping run: the plans and kernels it runs as the step, and the host steps and
+    graphs between them as ``(items, after)`` groups, ``after`` being the count of plans written before the group."""
+    groups, kernels = [], []
     for item in _checked_items(model):
         if isinstance(item, (Plan, Kernel)):
             kernels.append(item)
-        elif kernels:
-            raise HawkError(f"the model lists a {type(item).__name__} after a plan: the library runs host steps and graphs "
-                            "once per step ahead of the plans, so list them first")
+        elif groups and groups[-1][1] == len(kernels):
+            groups[-1][0].append(item)
         else:
-            steps.append(item)
+            groups.append(([item], len(kernels)))
     if not kernels:
         raise HawkError("the model has no plan or kernel: a stepping run needs one to count its steps")
-    return steps, kernels
+    return groups, kernels
 
 
 def _plans_of(kernels: list, record: bool = False, window: int | None = None) -> list[Plan]:
@@ -462,18 +461,23 @@ def run_once(model, arrays: dict, n_samples: int | None, layout: str | None) -> 
             bound.close()
 
 
-def _step_graph(steps: list, record: bool, bounds: list[BoundPlan]):
-    """The graph of ``steps`` in order, built; recorded for the reverse when the run is. The plans of the run are bound through
-    the graph's planes, so that a step and a plan over one array share one plane and a reverse follows the array from one to the
-    other."""
+def _step_graphs(groups: list, record: bool, bounds: list[BoundPlan]) -> list:
+    """One built graph per group of ``groups`` with the count of plans it runs after; recorded for the reverse when the run is.
+    The graphs and the plans of the run are bound through one set of planes, so that steps and plans over one array share one
+    plane and a reverse follows the array from one to the other."""
     from .graph import Graph  # graph imports this module
 
-    graph = Graph(record=record)
-    for step in steps:
-        graph.add(step)
+    graphs = []
+    for items, _ in groups:
+        graph = Graph(record=record)
+        if graphs:
+            graph._share_planes(graphs[0])
+        for item in items:
+            graph.add(item)
+        graphs.append(graph)
     for bound in bounds:
-        bound.join(graph._store)
-    return graph.build()
+        bound.join(graphs[0]._store)
+    return [(graph.build(), after) for graph, (_, after) in zip(graphs, groups)]
 
 
 def _bind_model(plans: list[Plan], planes: dict, n_samples, layout) -> list[BoundPlan]:
@@ -514,8 +518,8 @@ def until_done(model, *, max_steps: int, active: ActiveSet | None = None, n_samp
     """Bind ``model`` and make the loop that runs it until every sample is done; ``.run()`` of the result runs it.
 
     ``model`` is a plan, a kernel, a bound :func:`hawk.host_step` or a built :class:`hawk.Graph`, alone or in any iterable of them
-    (a list, a tuple, a generator), run as one step in order (see the module): the host steps and graphs, which come first,
-    run once per step ahead of the plans. ``planes`` are bound by
+    (a list, a tuple, a generator), run as one step in the order written (see the module): a host step or graph runs once per
+    step at its place among the plans; a recorded run takes them ahead of the plans only. ``planes`` are bound by
     the rules of :meth:`hawk.plans.Plan.bind`, except the finished counter and the active set, which the library makes; an
     omitted ``terminated`` mask starts all-false and an omitted output is made, zeroed. ``max_steps`` caps the steps a
     sample may take. ``active`` states the compaction of a kernel built under ``Guard(active_set=True)``.
@@ -531,13 +535,13 @@ def until_done(model, *, max_steps: int, active: ActiveSet | None = None, n_samp
     if active is not None and (active.mask is not None or active.positions is not None):
         raise HawkError("until_done: a runner makes its own active set; pass ActiveSet(every=, reorder=), or bind "
                         "ActiveSet(mask=...).planes(kernel) to a plain plan")
-    steps, kernels = _split_model(model)
+    groups, kernels = _split_model(model)
     plans = _plans_of(kernels, record, window)
     bounds = _bind_model(plans, planes, n_samples, layout)
     try:
         return Runner(plans, bounds, max_steps, active, layout=layout, record=record, window=window,
                       memory_budget=memory_budget, steps_reverse=steps_reverse,
-                      step_graph=_step_graph(steps, record, bounds) if steps else None)
+                      step_graphs=_step_graphs(groups, record, bounds) if groups else ())
     except BaseException:
         for bound in bounds:
             bound.close()
