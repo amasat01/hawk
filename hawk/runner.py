@@ -4,7 +4,7 @@
 """Running a model until every sample is done: :func:`until_done` builds the loop, :func:`simulate` runs it and returns
 the state.
 
-hawk binds the planes by the rules of :meth:`hawk.plans.Plan.bind` and states how the live samples are compacted
+hawk binds the planes by the rules of :meth:`hawk.plans.Plan.bind` and states how a runner compacts the live samples
 (:class:`ActiveSet`); the run itself is the host library's: its picks, its compaction, its counting of steps and finished
 samples. The model is a :class:`~hawk.plans.Plan`, a kernel (deployed first) or a list of them run as one step, in order,
 over one namespace of planes: a name is one plane in every plan that declares it.
@@ -29,24 +29,92 @@ from .targets import host_target
 __all__ = ["ActiveSet", "RunReport", "Runner", "SimResult", "simulate", "until_done"]
 
 
-@dataclass(frozen=True)
 class ActiveSet:
-    """How a runner compacts the live samples of a kernel built under ``Guard(active_set=True)``.
+    """The live samples of a kernel built under ``Guard(active_set=True)``: how a runner compacts them, or the map and count
+    a plain launch runs.
 
-    ``every`` is the compaction cadence in steps (``None``: the library's choice) and ``reorder`` the locality threshold
-    ``theta`` at which it also reorders the bound planes (``None``: never). The library makes and keeps the set itself;
-    both are refused by it, with its reason, for a model that reads none.
+    For a runner, ``every`` is the compaction cadence in steps (``None``: the library's choice) and ``reorder`` the locality
+    threshold ``theta`` at which it also reorders the bound planes (``None``: never); the library makes and compacts the
+    set itself, so ``mask`` and ``positions`` are not given. For a plain launch, ``mask`` (a one-dimensional bool or
+    ``uint8`` array, set = finished, read where it is every time :meth:`planes` is called) or ``positions`` (the entries of
+    the map, in the order the launch runs them, each at most once) state the set, and :meth:`planes` returns the planes to
+    bind. A kernel emitted for groups of ``G`` lanes reads group indices: a mask is compacted by group, and ``positions``
+    are group indices.
     """
 
-    every: int | None = None
-    reorder: float | None = None
+    def __init__(self, mask=None, *, positions=None, every: int | None = None, reorder: float | None = None) -> None:
+        """Keep the stated set or cadence; refuse a set stated twice and a cadence that is not a whole number."""
+        if mask is not None and positions is not None:
+            raise HawkError("ActiveSet takes mask= or positions=, not both")
+        if (mask is not None or positions is not None) and (every is not None or reorder is not None):
+            raise HawkError("ActiveSet(every=, reorder=) states a runner's compaction; a mask or positions state a plain "
+                            "launch's set: give one or the other")
+        if every is not None and (isinstance(every, bool) or not isinstance(every, int)):
+            raise HawkError(f"ActiveSet(every=...) is a whole number of steps or None, got {every!r}")
+        if reorder is not None and (isinstance(reorder, bool) or not isinstance(reorder, (int, float))):
+            raise HawkError(f"ActiveSet(reorder=...) is a locality threshold or None, got {reorder!r}")
+        self.mask, self.positions, self.every, self.reorder = mask, positions, every, reorder
+        self._planes: dict | None = None
 
-    def __post_init__(self) -> None:
-        """Refuse a cadence that is not a whole number and a threshold that is not a number."""
-        if self.every is not None and (isinstance(self.every, bool) or not isinstance(self.every, int)):
-            raise HawkError(f"ActiveSet(every=...) is a whole number of steps or None, got {self.every!r}")
-        if self.reorder is not None and (isinstance(self.reorder, bool) or not isinstance(self.reorder, (int, float))):
-            raise HawkError(f"ActiveSet(reorder=...) is a locality threshold or None, got {self.reorder!r}")
+    def planes(self, kernel) -> dict:
+        """The planes ``{map name: array, count name: array}`` of this set for ``kernel`` (a :class:`~hawk.plans.Plan` or a
+        loaded kernel), to bind with :meth:`hawk.plans.Plan.bind`. The names and the map's dtype are the kernel's.
+
+        The arrays are made on the first call; a later call writes the set again into the same arrays from the mask as it
+        is then, so a plan bound earlier sees it. The map is as long as the samples (rounded up to whole groups) and the
+        count says how many lanes the launch runs.
+        """
+        import numpy as np
+
+        loaded = kernel.kernel if isinstance(kernel, Plan) else kernel
+        if not isinstance(loaded, HostKernel) or not loaded.active_set:
+            raise HawkError("ActiveSet.planes: the kernel reads no active set (build it under Guard(active_set=True))")
+        if self.mask is None and self.positions is None:
+            raise HawkError("ActiveSet.planes: this set states a runner's compaction; give mask= or positions= to make planes")
+        map_name, count_name = loaded.active_set
+        group = int(loaded.declared["launch"]["lane_space"]["group"])
+        entries = self._entries(group)
+        capacity = max(entries.size * group, self._capacity(group))
+        if self._planes is None:
+            dtype = loaded.declared["arg_dtypes"][map_name]
+            self._planes = {map_name: np.zeros(max(capacity, 1), dtype=dtype), count_name: np.zeros(1, dtype=np.uint32)}
+        elif set(self._planes) != {map_name, count_name}:
+            raise HawkError(f"ActiveSet.planes: the planes were made for a kernel reading {sorted(self._planes)}, "
+                            f"this one reads {[map_name, count_name]}")
+        made_map, made_count = self._planes[map_name], self._planes[count_name]
+        if entries.size > made_map.size:
+            raise HawkError(f"ActiveSet.planes: {entries.size} entries do not fit the {made_map.size} the map was made for")
+        made_map[: entries.size] = entries
+        made_count[0] = entries.size * group
+        return dict(self._planes)
+
+    def _entries(self, group: int):
+        """The map's entries: the live positions of the mask in ascending order (their groups, for a group kernel), or the
+        positions as stated."""
+        import numpy as np
+
+        if self.positions is not None:
+            return np.asarray(self.positions).reshape(-1)
+        live = np.flatnonzero(~np.asarray(self.mask, dtype=bool).reshape(-1))
+        return np.unique(live // group) if group > 1 else live
+
+    def _capacity(self, group: int) -> int:
+        """The entries the map is made with: one per lane of the mask, rounded up to whole groups, because the launch's count
+        is in lanes and the library refuses a count above the map's length."""
+        import numpy as np
+
+        if self.mask is None:
+            return 0
+        return -(-np.asarray(self.mask).size // group) * group
+
+    def __repr__(self) -> str:
+        """The set as stated."""
+        stated = [f"{name}={value!r}" for name, value in (("every", self.every), ("reorder", self.reorder)) if value is not None]
+        if self.mask is not None:
+            stated.append("mask=...")
+        if self.positions is not None:
+            stated.append("positions=...")
+        return f"ActiveSet({', '.join(stated)})"
 
 
 @dataclass(frozen=True)
@@ -178,8 +246,7 @@ def _bind_model(plans: list[Plan], planes: dict, n_samples, layout) -> list[Boun
             bound = bind_for_run(plan, {name: value for name, value in namespace.items() if name in names},
                                  n_samples, layout)
             bounds.append(bound)
-            # a step word belongs to the plan that reads it; every other plane is one array across the step
-            namespace |= {name: value for name, value in bound.planes.items() if name != "fused_steps"}
+            namespace |= bound.planes   # a plane made for an omitted one is the same array in the next plan
     except BaseException:
         for bound in bounds:
             bound.close()
@@ -197,6 +264,9 @@ def until_done(model, *, max_steps: int, active: ActiveSet | None = None, n_samp
     sample may take. ``active`` states the compaction of a kernel built under ``Guard(active_set=True)``. A run cannot be
     recorded for a reverse pass yet.
     """
+    if active is not None and (active.mask is not None or active.positions is not None):
+        raise HawkError("until_done: a runner makes its own active set; pass ActiveSet(every=, reorder=), or bind "
+                        "ActiveSet(mask=...).planes(kernel) to a plain plan")
     plans = _plans_of(model)
     bounds = _bind_model(plans, planes, n_samples, layout)
     try:

@@ -68,8 +68,8 @@ docs = ["Sphinx", "sphinx-book-theme", "myst-nb", "sphinx-design", "sphinx-copyb
         "nbclient", "ipykernel", "matplotlib", "warp-lang", "setuptools-scm", "sphinx-sitemap>=2.6"]
 # The GPU route: NVRTC + CCCL + cuda-bindings for one CUDA major (no nvcc needed).
 # CUDA 13's wheels carry no -cu13 suffix (those names on PyPI are empty placeholders).
-cuda12 = ["raptor-simt", "cuda-bindings>=12.6,<13", "nvidia-cuda-nvrtc-cu12>=12.6,<13", "nvidia-cuda-cccl-cu12>=12.6,<13"]
-cuda13 = ["raptor-simt", "cuda-bindings>=13,<14", "nvidia-cuda-nvrtc>=13,<14", "nvidia-cuda-cccl>=13,<14"]
+cuda12 = ["raptor-osprey-cuda", "cuda-bindings>=12.6,<13", "nvidia-cuda-nvrtc-cu12>=12.6,<13", "nvidia-cuda-cccl-cu12>=12.6,<13"]
+cuda13 = ["raptor-osprey-cuda", "cuda-bindings>=13,<14", "nvidia-cuda-nvrtc>=13,<14", "nvidia-cuda-cccl>=13,<14"]
 
 # The compiled `hawk._core` is a nanobind extension, so a wheel is per-Python/ABI
 # (never py3-none-any). It is HOST-ONLY — no device kernels, no arch list, no nvcc

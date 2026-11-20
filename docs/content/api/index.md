@@ -93,7 +93,7 @@ The declarations a kernel is written in, and the top-level functions. Each has i
 
 ## Running a model until it is done
 
-`hawk.until_done` binds a plan, a kernel or a list of them run as one step and makes the loop that runs every sample to done; `hawk.simulate` runs it and returns the state. `hawk.ActiveSet` states how a kernel built over an active set is compacted.
+`hawk.until_done` binds a plan, a kernel or a list of them run as one step and makes the loop that runs every sample to done; `hawk.simulate` runs it and returns the state. `hawk.ActiveSet` states how a runner compacts a kernel built over an active set, or makes the map and count that a plain launch of such a kernel runs.
 
 ```{eval-rst}
 .. autosummary::

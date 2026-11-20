@@ -315,7 +315,12 @@ def _guarded_run(kernel, target, dead, group_live=None):
     x = xp.asarray(np.linspace(0.1, 2.0, n))
     planes = {"x": x, "terminated": terminated,
               **{nm: xp.full((8, n), 7.0) for _, nm in kernel.arg_spec if nm not in ("x", "terminated")}}
-    if group_live is not None:
+    if group_live is not None and target == "host":
+        # a host whose rule cuts the chain (avx2, sse2) runs it as stages, which ``hawk.load`` loads as one split kernel
+        bundle = build_bundle([kernel], pathlib.Path(group_live) / kernel.name, targets=(target,))
+        loaded = hawk.load(bundle.directory, kernel.name)
+        hawk.plan(loaded).bind(**planes, **hawk.ActiveSet(dead).planes(loaded)).launch()
+    elif group_live is not None:
         import eagle
         from eagle import ActiveSet
 
@@ -323,7 +328,6 @@ def _guarded_run(kernel, target, dead, group_live=None):
         side = sidecar_of(bundle, kernel.name)
         live = ActiveSet(terminated, group=side["launch"]["lane_space"]["group"])
         live.compact()
-        # deploy, not one plugin: a host whose rule cuts the chain (avx2, sse2) runs it as stages
         eagle.deploy(kernel, scalar_type="float64", targets=(target,))(**planes, active_map=live.map,
                                                                         active_count=live.count)
     else:

@@ -97,33 +97,34 @@ def test_the_sidecar_records_the_group(bundles):
 
 def _run(bundle, target, live_groups):
     """One launch with every lane outside ``live_groups`` (``G``-wide splits of
-    ``N`` samples) terminated, through eagle's group-aware ``ActiveSet``."""
+    ``N`` samples) terminated, over the group map of the lanes still live: hawk's own plan on the host, eagle's
+    group-aware ``ActiveSet`` on the device."""
+    dead = np.ones(N, dtype=bool)
+    for g in live_groups:
+        dead[g * G:(g + 1) * G] = False
+    omega = np.linspace(-1.0, 1.0, N)
+    if target == "host":
+        loaded = hawk.load(bundle.directory, "_step")
+        x = np.linspace(0.0, 3.0, N)
+        stated = hawk.ActiveSet(dead)
+        hawk.plan(loaded).bind(omega=omega, dt=DT, terminated=dead, x=x, **stated.planes(loaded)).launch()
+        return x.copy()
+    import cupy as xp
     import eagle.exec as eexec
     from eagle import ActiveSet
     from eagle import plan as eplan
 
-    xp = np
-    if target == "cuda":
-        import cupy as xp
     sidecar = sidecar_of(bundle, "_step")
-    group = sidecar["launch"]["lane_space"]["group"]
-    dead = np.ones(N, dtype=bool)
-    for g in live_groups:
-        dead[g * G:(g + 1) * G] = False
     terminated = xp.asarray(dead)
-    live = ActiveSet(terminated, group=group)
+    live = ActiveSet(terminated, group=sidecar["launch"]["lane_space"]["group"])
     live.compact()
-    if target == "host":
-        plugin, structure = L.host_plugin(bundle.directory, "_step", sidecar), eexec.HostTeam
-    else:
-        plugin, structure = (L.device_plugin(bundle.directory, "_step", sidecar),
-                             eexec.DeviceKernel)
+    plugin, structure = L.device_plugin(bundle.directory, "_step", sidecar), eexec.DeviceKernel
     x = xp.asarray(np.linspace(0.0, 3.0, N))
     bound = eplan.plan(plugin, structure=structure).bind(
-        omega=xp.asarray(np.linspace(-1.0, 1.0, N)), dt=DT, terminated=terminated, x=x,
+        omega=xp.asarray(omega), dt=DT, terminated=terminated, x=x,
         active_map=live.map, active_count=live.count)
     bound.launch()
-    return np.asarray(x.get() if hasattr(x, "get") else x).copy()
+    return np.asarray(x.get()).copy()
 
 
 @pytest.mark.parametrize("target", ["host", pytest.param("cuda", marks=pytest.mark.gpu)])

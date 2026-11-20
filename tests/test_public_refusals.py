@@ -77,7 +77,7 @@ def test_a_build_for_no_target_is_refused_naming_the_served_targets_and_publishe
 
     with pytest.raises(
         HawkError,
-        match=r"'scaled': no target to build; the served targets are \('host', 'cuda'\)",
+        match=r"'scaled': no target to build; the served targets are \('cuda', 'host'\)",
     ):
         build_bundle(
             [scaled], tmp_path / "bundle", targets=(), cache_dir=tmp_path / "cache"

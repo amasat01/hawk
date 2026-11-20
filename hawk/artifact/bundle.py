@@ -235,11 +235,11 @@ def _target_ids(targets) -> tuple:
 
 
 def _refuse_targets(name: str, targets) -> None:
-    """Refuse an empty ``targets``, the embedded C target, and a target no OSPREY serves (by name, with the served ones)."""
+    """Refuse an empty ``targets``, the embedded C target, and a target no OSPREY serves (by name, with the served ones, sorted by id)."""
     if "c" in targets:
         raise HawkError(EMBEDDED_C)
     if not targets:
-        raise HawkError(f"{name!r}: no target to build; the served targets are {tuple(TARGETS) or 'none'}")
+        raise HawkError(f"{name!r}: no target to build; the served targets are {tuple(sorted(TARGETS)) or 'none'}")
     for target in targets:
         ospreys.serving(target)
 

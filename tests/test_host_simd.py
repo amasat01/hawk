@@ -52,10 +52,8 @@ import re
 import subprocess
 import sys
 
-import _deploy as L
 import numpy as np
 import pytest
-from conftest import sidecar_of
 
 import hawk
 from hawk import Mutable, Param, Scalar, Terminated
@@ -285,21 +283,14 @@ def _maps():
 
 
 def _run_mapped(bundle, positions, live):
-    import eagle.exec as eexec
-    from eagle import ActiveSet
-    from eagle import plan as eplan
-
     inp = _inputs()
     x, v, k = inp["x"].copy(), inp["v"].copy(), np.zeros(N)
     terminated = inp["terminated"].copy()
-    aset = ActiveSet(terminated)
-    aset.map[:] = 0
-    aset.map[:live] = positions
-    aset.count[0] = live
-    plugin = L.host_plugin(bundle.directory, "osc_step", sidecar_of(bundle, "osc_step"))
-    step = eplan.plan(plugin, structure=eexec.HostTeam).bind(
+    loaded = hawk.load(bundle.directory, "osc_step")
+    stated = hawk.ActiveSet(positions=positions[:live])
+    step = hawk.plan(loaded).bind(
         omega=inp["omega"], zeta=inp["zeta"], dt=DT, terminated=terminated,
-        x=x, v=v, k=k, **aset.planes())
+        x=x, v=v, k=k, **stated.planes(loaded))
     for _ in range(STEPS):
         step.launch()
     return x, v, k

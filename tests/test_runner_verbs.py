@@ -55,7 +55,7 @@ def tail(x: Scalar, z: Mutable[Scalar]):
 # one step per launch, so a step cap and a compaction cadence count single steps
 lead = hawk.steps(hawk.kernel(lead_step), 1)
 mapped = hawk.steps(hawk.kernel(mapped_step, kind=MAPPED), 1)
-grouped = hawk.steps(hawk.kernel(grouped_step, kind=MAPPED, group=GROUP), 1)
+grouped = hawk.kernel(grouped_step, kind=MAPPED, group=GROUP, steps=1)
 
 
 @pytest.fixture(scope="module")
@@ -132,6 +132,21 @@ def test_a_list_of_plans_runs_as_one_step_in_order_over_one_namespace(loaded):
     assert res.steps == 4 and set(res.state) == {"x", "z"}
 
 
+def test_a_step_whose_finisher_is_automatic_runs_one_step_per_launch_to_done(loaded):
+    plans = [hawk.plan(loaded["ramp"]), hawk.plan(loaded["tail"])]
+    res = hawk.simulate(plans, rate=RATE, goal=GOAL, max_steps=1000)
+    taken = _stepped(1000)[2]
+    want_z = sum(_stepped(k)[0] for k in range(1, taken + 1))     # the tail adds the state the finisher just wrote
+    assert res.done and res.steps == taken and res.x.tobytes() == _stepped(1000)[0].tobytes()
+    assert res.z.tobytes() == want_z.tobytes()
+
+
+def test_the_library_refuses_a_step_word_bound_to_an_automatic_finisher_in_a_several_plan_step(loaded):
+    plans = [hawk.plan(loaded["ramp"]), hawk.plan(loaded["tail"])]
+    with pytest.raises(HawkError, match="steps word"):
+        hawk.until_done(plans, max_steps=5, rate=RATE, goal=GOAL, fused_steps=np.ones(1, dtype=np.int64))
+
+
 def test_a_counter_array_receives_what_each_run_finished_and_a_reset_starts_over(loaded):
     finished = np.zeros(1, dtype=np.uint32)
     x = np.zeros(N)
@@ -196,13 +211,100 @@ def test_an_active_set_states_a_whole_cadence_and_a_numeric_threshold(bad):
         hawk.ActiveSet(**bad)
 
 
-def test_the_active_set_is_the_librarys_and_a_caller_cannot_bind_it(loaded):
+def _plain_planes(live=None):
+    """The planes of one plain launch of a ramp kernel over ``N`` samples, ``live`` being the mask's complement."""
+    dead = np.zeros(N, dtype=bool) if live is None else ~np.asarray(live)
+    return {"rate": RATE, "goal": GOAL, "x": np.zeros(N), "terminated": dead}
+
+
+def _one_step(live_positions):
+    """The NumPy oracle of one launch: every sample at ``live_positions`` takes one step."""
+    want = np.zeros(N)
+    want[live_positions] = RATE[live_positions]
+    return want
+
+
+@pytest.mark.parametrize("structure", [hawk.HostTeam, hawk.HostSerial], ids=["team", "serial"])
+@pytest.mark.parametrize("name", ["mapped", "grouped"])
+def test_a_plain_launch_runs_the_samples_of_a_set_made_from_a_mask(loaded, name, structure):
+    kernel = loaded[(mapped if name == "mapped" else grouped).name]
+    rng = np.random.default_rng(3)
+    live = rng.random(N) < 0.4
+    planes = _plain_planes(live)
+    stated = hawk.ActiveSet(planes["terminated"])
+    hawk.plan(kernel, structure).bind(**planes, **stated.planes(kernel)).launch()
+    # a live lane is in a live group, and a dead lane of a live group is skipped by the mask: the live lanes step
+    np.testing.assert_array_equal(planes["x"], _one_step(np.flatnonzero(live)))
+
+
+def test_a_set_from_positions_runs_them_in_any_order_and_team_equals_serial(loaded):
     kernel = loaded[mapped.name]
-    planes = {"rate": RATE, "goal": GOAL, "x": np.zeros(N), "terminated": np.zeros(N, dtype=bool)}
-    with pytest.raises(HawkError, match="active set"):
-        hawk.plan(kernel).bind(**planes, active_map=np.arange(N, dtype=np.int32), active_count=np.full(1, N, np.uint32))
-    with pytest.raises(HawkError):      # without a runner there is no active set to read
-        hawk.plan(kernel).bind(**planes).launch()
+    ends_only = np.arange(70, dtype=np.int32)       # the identity at both ends of the tile, not in between
+    ends_only[35] = N - 1
+    positions = {"reversed": np.arange(N - 1, 59, -1), "scattered": np.array([97, 3, 50, 4, 99, 0, 61]),
+                 "ends_only": ends_only}
+    for label, entries in positions.items():
+        results = []
+        for structure in (hawk.HostTeam, hawk.HostSerial):
+            planes = _plain_planes()
+            hawk.plan(kernel, structure).bind(**planes, **hawk.ActiveSet(positions=entries).planes(kernel)).launch()
+            results.append(planes["x"])
+        np.testing.assert_array_equal(results[0], _one_step(np.unique(entries)), err_msg=label)
+        assert results[0].tobytes() == results[1].tobytes(), label
+
+
+def test_a_set_from_group_positions_runs_whole_groups(loaded):
+    kernel = loaded[grouped.name]
+    planes = _plain_planes()
+    hawk.plan(kernel).bind(**planes, **hawk.ActiveSet(positions=[3, 1]).planes(kernel)).launch()
+    np.testing.assert_array_equal(planes["x"], _one_step(np.r_[GROUP:2 * GROUP, 3 * GROUP:N]))
+
+
+def test_planes_called_again_rewrite_the_same_arrays_from_the_mask_as_it_is_then(loaded):
+    kernel = loaded[mapped.name]
+    planes = _plain_planes()
+    stated = hawk.ActiveSet(planes["terminated"])
+    made = stated.planes(kernel)
+    bound = hawk.plan(kernel).bind(**planes, **made)
+    bound.launch()
+    np.testing.assert_array_equal(planes["x"], RATE)
+    planes["terminated"][::2] = True
+    planes["x"][:] = 0.0
+    again = stated.planes(kernel)
+    assert all(again[name] is made[name] for name in made)
+    bound.launch()
+    np.testing.assert_array_equal(planes["x"], _one_step(np.arange(1, N, 2)))
+
+
+def test_a_count_above_the_map_is_refused_by_name_at_the_launch(loaded):
+    kernel = loaded[mapped.name]
+    bound = hawk.plan(kernel).bind(**_plain_planes(), active_map=np.arange(4, dtype=np.int32),
+                                   active_count=np.array([9], dtype=np.uint32))
+    with pytest.raises(HawkError, match="count 9 is above the map's 4 entries"):
+        bound.launch()
+
+
+def test_a_plain_plan_over_an_active_set_needs_the_planes_and_a_runner_refuses_a_plan_that_holds_them(loaded):
+    kernel = loaded[mapped.name]
+    with pytest.raises(HawkError, match="active_map"):
+        hawk.plan(kernel).bind(**_plain_planes())
+    held = hawk.ActiveSet(positions=[0, 1]).planes(kernel)
+    with pytest.raises(HawkError, match="caller"):
+        hawk.until_done(hawk.plan(kernel), max_steps=3, **_plain_planes(), **held)
+
+
+def test_an_active_set_states_one_thing_and_its_planes_need_a_kernel_with_a_set(loaded):
+    with pytest.raises(HawkError, match="not both"):
+        hawk.ActiveSet(np.zeros(N, dtype=bool), positions=[1])
+    with pytest.raises(HawkError, match="one or the other"):
+        hawk.ActiveSet(np.zeros(N, dtype=bool), every=8)
+    with pytest.raises(HawkError, match="reads no active set"):
+        hawk.ActiveSet(positions=[0]).planes(loaded["ramp"])
+    with pytest.raises(HawkError, match="runner's compaction"):
+        hawk.ActiveSet(every=8).planes(loaded[mapped.name])
+    with pytest.raises(HawkError, match="makes its own active set"):
+        hawk.until_done(hawk.plan(loaded[mapped.name]), max_steps=3, active=hawk.ActiveSet(positions=[0]),
+                        **_plain_planes())
 
 
 def test_a_wrong_model_or_plane_is_refused_by_name(loaded):
