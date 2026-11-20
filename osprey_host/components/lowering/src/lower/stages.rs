@@ -234,7 +234,7 @@ fn stage_declared(ctx: *mut Ctx, base: &Member) -> Result<Vec<DeclaredSlot>, Ref
 /// The unit of a cut kernel that lists its stages and has no entry of its own: its slots are what the caller binds over the whole
 /// kernel and its digest is that of the kernel's walk. Its launch is the caller's view too: the kernel's lane space and the declared
 /// axes of its sink planes.
-fn source_unit(
+pub(super) fn source_unit(
     ctx: *mut Ctx,
     request: &KernelRequest,
     member: &Member,

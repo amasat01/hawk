@@ -42,7 +42,7 @@ Every file with its line count (this file excluded):
      51  osprey_host/components/lowering/src/lower/blocks.rs
      35  osprey_host/components/lowering/src/lower/boxed.rs
    1217  osprey_host/components/lowering/src/lower/card.rs
-    255  osprey_host/components/lowering/src/lower/chain.rs
+    353  osprey_host/components/lowering/src/lower/chain.rs
     776  osprey_host/components/lowering/src/lower/derived.rs
     199  osprey_host/components/lowering/src/lower/events.rs
      57  osprey_host/components/lowering/src/lower/fused.rs

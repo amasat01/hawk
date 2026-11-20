@@ -4,7 +4,8 @@
 //! hands the pieces to the steps that follow as pending units.
 use super::request::{DeclaredSlot, KernelRequest, Member};
 use super::stage_block::{PlaneRecord, StageRecord};
-use super::stages::Note;
+use super::stages::{source_unit, Note};
+use super::unit_meta::UnitMeta;
 use super::{carries_no_forced_access, held_exempt, merge_slot, real_bytes, wing, Pending};
 use crate::facts;
 use crate::facts::CardSet;
@@ -117,7 +118,31 @@ pub(super) fn fusion_row(
     }
 }
 
-/// The pending units of a chain, one per piece, each noting the planes it hands to the next piece.
+/// The unit that lists the pieces of a cut chain: the whole chain composed as one kernel, so its slots are every plane the caller
+/// binds over the chain, whichever piece reads or writes it.
+fn source_of(
+    ctx: *mut Ctx,
+    request: &KernelRequest,
+    members: &[ChainMember],
+    (bodies, declared): (&[Member], &[DeclaredSlot]),
+) -> Result<UnitMeta, Refusal> {
+    // SAFETY: the caller's context is not read elsewhere while the source is made.
+    let sinks = bind(unsafe { &mut *ctx }, members, &HashSet::new())
+        .map_err(wing)?
+        .sinks;
+    let exempt = held_exempt(ctx, bodies, &sinks, declared)?;
+    let whole = Member {
+        name: request.name.clone(),
+        sinks,
+        declared: declared.to_vec(),
+        force: None,
+        exempt,
+    };
+    source_unit(ctx, request, &whole)
+}
+
+/// The pending units of a chain, one per piece, each noting the planes it hands to the next piece. The first piece of a cut chain
+/// carries the unit that lists the pieces.
 pub(super) fn expand(
     ctx: *mut Ctx,
     request: &KernelRequest,
@@ -138,7 +163,11 @@ pub(super) fn expand(
         carries_no_forced_access(member, "a chain member")?;
     }
     let declared = declared_by_members(members)?;
-    let cut = parts.len() > 1;
+    let source = match parts.len() > 1 {
+        true => Some(source_of(ctx, request, &named, (members, &declared))?),
+        false => None,
+    };
+    let cut = source.is_some();
     let mut units = vec![];
     for (index, piece) in parts.into_iter().enumerate() {
         let exempt = held_exempt(ctx, members, &piece.sinks, &declared)?;
@@ -174,7 +203,7 @@ pub(super) fn expand(
                 })
                 .collect(),
             keyed: vec![],
-            source: None,
+            source: source.clone().filter(|_| index == 0),
         });
         units.push(unit);
     }
@@ -183,8 +212,11 @@ pub(super) fn expand(
 
 #[cfg(test)]
 mod tests {
-    //! The fusion row of a device build follows the rows the device document states.
+    //! The fusion row of a device build follows the rows the device document states, and the first piece of a cut chain carries the
+    //! unit that lists the whole chain.
     use super::*;
+    use crate::lower::request::Body as RequestBody;
+    use raptor_ir::door::{rx_ctx_free, rx_ctx_new, RX_OK};
 
     /// The shipped document with the rows `rows` (JSON) stated in place of its empty list.
     fn docs_with_rows(rows: &str) -> CardSet {
@@ -251,5 +283,71 @@ mod tests {
         let unknown = docs_with_rows(r#"[{"cc": "sm_61", "dtype": "float32", "regs": 1}]"#);
         let why = device_row("sm_61", Scalar::Float32, &unknown).unwrap_err();
         assert!(why.reason.contains("regs"), "{}", why.reason);
+    }
+
+    /// A node of `class` over `ops`, with the fields text `fields`.
+    fn node(ctx: *mut Ctx, class: &str, (ops, fields): (&[u32], &str)) -> u32 {
+        // SAFETY: `ctx` is the live context of the test, used by one thread.
+        unsafe { &mut *ctx }
+            .make(class, "f64", &[], None, ops, fields)
+            .unwrap()
+    }
+
+    /// A read of the per-sample plane `name`.
+    fn read(ctx: *mut Ctx, name: &str) -> u32 {
+        let fields = format!(
+            "(('kind', 'vocab_read'), ('role', 'per_sample'), ('name', '{name}'), ('quantity', None), ('wire_index', 0), ('sorted', False))"
+        );
+        node(ctx, "Leaf", (&[], &fields))
+    }
+
+    /// An operation `kind` over `ops`.
+    fn op(ctx: *mut Ctx, kind: &str, ops: &[u32]) -> u32 {
+        node(
+            ctx,
+            "Op",
+            (ops, &format!("(('kind', '{kind}'), ('literal', None))")),
+        )
+    }
+
+    /// The write of `value` to the mutable plane `name`.
+    fn write(ctx: *mut Ctx, name: &str, value: u32) -> u32 {
+        let fields = format!("(('kind', 'assign'), ('role', 'mutable'), ('name', '{name}'))");
+        node(ctx, "Assign", (&[value], &fields))
+    }
+
+    /// Oracle: the chain `y = exp(x)`, `z = exp(y)`: its source unit is the caller's face of the whole chain, so it lists `x` and `z`
+    /// (`z` is written by the last member only) and not `y`, which the members hand on between them.
+    #[test]
+    fn the_source_of_a_chain_lists_the_plane_only_the_last_member_writes() {
+        let ctx = rx_ctx_new();
+        // SAFETY: `ctx` is the live context just made.
+        assert_eq!(
+            unsafe { raptor_wings::declare::rw_declare_kinds(ctx) },
+            RX_OK
+        );
+        let first = write(ctx, "y", op(ctx, "exp", &[read(ctx, "x")]));
+        let second = write(ctx, "z", op(ctx, "exp", &[read(ctx, "y")]));
+        let request = KernelRequest::from_json(&format!(
+            r#"{{"v": 1, "name": "k", "scalar": "Float64", "targets": ["Host"], "kind": {{"guard": "Default", "active_set": false, "sink": "Plain"}}, "body": {{"Chain": [{{"name": "a", "sinks": [{first}], "declared": [], "exempt": []}}, {{"name": "b", "sinks": [{second}], "declared": [], "exempt": []}}]}}, "facts": {{"Host": "{{}}"}}}}"#
+        ))
+        .unwrap();
+        let RequestBody::Chain(bodies) = &request.body else {
+            panic!("a chain body");
+        };
+        let members: Vec<ChainMember> = bodies
+            .iter()
+            .map(|m| ChainMember {
+                name: &m.name,
+                sinks: &m.sinks,
+            })
+            .collect();
+        let source = source_of(ctx, &request, &members, (bodies, &[])).unwrap();
+        // SAFETY: `ctx` is the live context made above and is not used after.
+        unsafe { rx_ctx_free(ctx) };
+        let mut listed: Vec<&str> = source.body.slots.iter().map(|s| s.name.as_str()).collect();
+        listed.sort_unstable();
+        assert_eq!(listed, ["x", "z"]);
+        assert_eq!(source.name, "k_source");
     }
 }
