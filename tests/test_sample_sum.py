@@ -78,14 +78,20 @@ def _inputs(n, mode):
             dt.type(1.3), dt.type(-0.7))
 
 
+def _ran(bound):
+    """``bound`` after one launch that has run: a launch over device memory is queued, so the planes are read only after the wait."""
+    bound.launch()
+    bound.wait()
+    return bound
+
+
 def _run(bundle, target, n, mode):
     xp = _xp(target)
     x, gy, k, b = _inputs(n, mode)
     planes = {name: xp.full(1, np.nan, dtype=mode) for name in ("bar_k", "bar_b")}     # the library folds the rows into the cell
     planes.update(x=xp.asarray(x), bar_y=xp.asarray(gy), k=xp.asarray([k]),
                   b=xp.asarray([b]), bar_x=xp.zeros(n, dtype=mode))
-    bound = _launch(bundle, "law_ss", target, planes)
-    bound.launch()
+    bound = _ran(_launch(bundle, "law_ss", target, planes))
     return _read(planes), (bound, planes)
 
 
@@ -126,8 +132,8 @@ def test_ten_columns_equal_the_per_sample_gradients_summed(built, target, n):
     summed.update({f"bar_{c}": xp.full(1, np.nan, dtype=mode) for c in COEFFS})     # the library folds the rows into the cell
     plain = dict(common, bar_x=xp.zeros(n, dtype=mode), **cells)
     plain.update({f"bar_{c}": xp.zeros(n, dtype=mode) for c in COEFFS})
-    _launch(bundle, "rat_ss", target, summed).launch()
-    _launch(bundle, "rat_vjp", target, plain).launch()
+    _ran(_launch(bundle, "rat_ss", target, summed))
+    _ran(_launch(bundle, "rat_vjp", target, plain))
     got, want = _read(summed), _read(plain)
     # the device compiler may contract the cell and by-value spellings apart
     np.testing.assert_allclose(got["bar_x"], want["bar_x"], rtol=0,
@@ -146,7 +152,7 @@ def test_device_rows_are_bitwise_across_launches(built):
     for _ in range(5):
         for name in ("bar_k", "bar_b"):
             planes[name].fill(np.nan)
-        bound.launch()
+        _ran(bound)
         again = _read(planes)
         for name in ("bar_k", "bar_b"):
             assert again[name].tobytes() == first[name].tobytes(), name
@@ -229,7 +235,7 @@ def _fold_rows_run(bundle, name, target, n):
     if wide:       # the six columns of a vector sum are one cell
         planes = {"t": xp.full(6, np.nan)}
     planes["v" if wide else "x"] = xp.asarray(rng.uniform(-2, 2, (6, n) if wide else n))
-    _launch(bundle, name, target, planes).launch()
+    _ran(_launch(bundle, name, target, planes))
     out = {c: np.array(a.get() if hasattr(a, "get") else a) for c, a in planes.items() if c not in ("x", "v")}
     if wide:
         out = {f"t_{k}": out["t"][k:k + 1] for k in range(6)}
@@ -307,12 +313,12 @@ def test_the_device_combine_on_awkward_values_equals_the_host_twin(folded, name,
         its name; each library folds the rows into the cell."""
         planes = {"t": xp.full(6, np.nan)} if name == "foldv" else {c: xp.full(1, np.nan) for c in cols}
         planes[key] = xp.asarray(data)
-        _launch(folded[None], name, target, planes).launch()
+        _ran(_launch(folded[None], name, target, planes))
         read = {k: np.array(a.get() if hasattr(a, "get") else a) for k, a in planes.items() if k != key}
         return {f"t_{k}": read["t"][k] for k in range(6)} if name == "foldv" else {c: read[c][0] for c in cols}
 
     device, host = run("cuda", _xp("cuda")), run("host", np)
-    terms = {"fold1": {"s": x}, "fold2": {"s": x, "c": x * x}, "foldv": {f"t_{k}": data[k] for k in range(6)}}[name]
+    terms = {f"t_{k}": data[k] for k in range(6)} if name == "foldv" else {"s": x, "c": x * x}
     for c in cols:
         if not np.isfinite(device[c]):
             # a NaN or an Inf decides the total the same way in every order of the additions

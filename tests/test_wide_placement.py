@@ -350,7 +350,8 @@ TWIN = pathlib.Path(os.environ["HAWK_TWIN_VENV"]) if os.environ.get("HAWK_TWIN_V
 
 
 
-ARCH = _arch() if __name__ == "__main__" else None
+# the arch the gate states, or none: the backend library then builds for the device it finds
+ARCH = W.device_arch() if __name__ == "__main__" else None
 
 _CLOCK = [time.perf_counter()]
 
