@@ -846,14 +846,54 @@ static PyObject* m_launch(PyObject* self, PyObject* args)
 
 /* runner_new(plans, max_steps, flags=0, derived_roles=None, derived_units=None, every=0,
  * window=0, memory_budget=0, reorder_theta=0.0, steps_reverse=0, events=0, on_no_event=0,
- * step_graph=None): the fields of eg_runner_desc, a field left out being its zero. */
+ * steps=None): the fields of eg_runner_desc, a field left out being its zero. `steps` is a sequence
+ * of (graph, before_plan) pairs, passed as given: the door checks their order and the
+ * recorded-runner rules. */
+static int seq_steps(Door* d, PyObject* osteps, struct eg_step_graph** out, Py_ssize_t* n)
+{
+    *out = NULL;
+    *n   = 0;
+    if (osteps == NULL || osteps == Py_None)
+        return 0;
+    Py_ssize_t count = PySequence_Size(osteps);
+    if (count < 0)
+        return -1;
+    struct eg_step_graph* steps = PyMem_Malloc(((size_t)count + 1) * sizeof *steps);
+    if (steps == NULL) {
+        PyErr_NoMemory();
+        return -1;
+    }
+    for (Py_ssize_t i = 0; i < count; i++) {
+        PyObject* pair = PySequence_GetItem(osteps, i);
+        void* graph    = NULL;
+        long before    = 0;
+        int ok         = pair != NULL && PyTuple_Check(pair) && PyTuple_Size(pair) == 2;
+        if (pair != NULL && !ok)
+            PyErr_SetString(PyExc_TypeError, "each step is a (graph, before_plan) pair");
+        ok = ok && handle_ptr(d, PyTuple_GetItem(pair, 0), KIND_GRAPH, &graph) == 0;
+        if (ok) {
+            before = PyLong_AsLong(PyTuple_GetItem(pair, 1));
+            ok     = !(before == -1 && PyErr_Occurred());
+        }
+        Py_XDECREF(pair);
+        if (!ok) {
+            PyMem_Free(steps);
+            return -1;
+        }
+        steps[i] = (struct eg_step_graph){ .graph = graph, .before_plan = (int32_t)before };
+    }
+    *out = steps;
+    *n   = count;
+    return 0;
+}
+
 static PyObject* m_runner_new(PyObject* self, PyObject* args, PyObject* kw)
 {
     static char* names[] = { "plans", "max_steps", "flags", "derived_roles", "derived_units",
         "every", "window", "memory_budget", "reorder_theta", "steps_reverse", "events",
-        "on_no_event", "step_graph", NULL };
+        "on_no_event", "steps", NULL };
     Door* d              = (Door*)self;
-    PyObject *oplans, *oroles = NULL, *ounits = NULL, *ograph = NULL;
+    PyObject *oplans, *oroles = NULL, *ounits = NULL, *osteps = NULL;
     unsigned int flags = 0;
     long long max_steps, every = 0, window = 0;
     unsigned long long budget = 0;
@@ -861,17 +901,18 @@ static PyObject* m_runner_new(PyObject* self, PyObject* args, PyObject* kw)
     int steps_reverse = 0, events = 0, on_no_event = 0;
     if (!PyArg_ParseTupleAndKeywords(args, kw, "OL|IOOLLKdiiiO", names, &oplans, &max_steps, &flags,
             &oroles, &ounits, &every, &window, &budget, &theta, &steps_reverse, &events,
-            &on_no_event, &ograph)
+            &on_no_event, &osteps)
         || !door_ready(d))
         return NULL;
-    void **plans = NULL, **units = NULL, *graph = NULL;
-    void* roles = NULL;
-    Py_ssize_t n_plans, n_units, n_roles;
+    void **plans = NULL, **units = NULL;
+    struct eg_step_graph* steps = NULL;
+    void* roles                 = NULL;
+    Py_ssize_t n_plans, n_units, n_roles, n_steps;
     PyObject* res = NULL;
     if (seq_handles(d, oplans, KIND_PLAN, &plans, &n_plans) < 0
         || seq_handles(d, ounits, KIND_UNIT, &units, &n_units) < 0
         || seq_ints(oroles, sizeof(int32_t), &roles, &n_roles) < 0
-        || handle_ptr_or_none(d, ograph, KIND_GRAPH, &graph) < 0)
+        || seq_steps(d, osteps, &steps, &n_steps) < 0)
         goto done;
     if (n_roles != n_units) {
         PyErr_SetString(PyExc_ValueError, "derived_roles and derived_units must have one length");
@@ -892,7 +933,8 @@ static PyObject* m_runner_new(PyObject* self, PyObject* args, PyObject* kw)
         .steps_reverse                          = steps_reverse,
         .events                                 = events,
         .on_no_event                            = on_no_event,
-        .step_graph                             = graph };
+        .step_graphs                            = steps,
+        .n_step_graphs                          = (int32_t)n_steps };
     eg_runner* runner          = NULL;
     if (door_check(d, d->fn.eg_runner_new(d->ctx, &desc, &runner)) == 0)
         res = handle_make(d, KIND_RUNNER, runner);
@@ -900,6 +942,7 @@ done:
     PyMem_Free(plans);
     PyMem_Free(units);
     PyMem_Free(roles);
+    PyMem_Free(steps);
     return res;
 }
 
@@ -1035,20 +1078,26 @@ static PyObject* m_record_begin(PyObject* self, PyObject* args)
 }
 
 /* record_cond_begin(kind, cell, n_arms=0, negate=False, max_iters=0, cell_index=0, baseline=None,
- * baseline_index=0): opens a conditional on the int32 cell plane; the defaults are the header's. */
+ * baseline_index=0, counter=None, limit=None, limit_index=0, brk=None, brk_index=0): opens a
+ * conditional on the int32 cell plane (None only for a WHILE with a limit or a brk); the defaults
+ * are the header's: no counter, limit or break. */
 static PyObject* m_record_cond_begin(PyObject* self, PyObject* args, PyObject* kw)
 {
     static char* names[] = { "kind", "cell", "n_arms", "negate", "max_iters", "cell_index",
-        "baseline", "baseline_index", NULL };
+        "baseline", "baseline_index", "counter", "limit", "limit_index", "brk", "brk_index", NULL };
     Door* d              = (Door*)self;
-    PyObject *ocell, *obaseline = Py_None;
+    PyObject *ocell, *obaseline = Py_None, *ocounter = Py_None, *olimit = Py_None, *obrk = Py_None;
     int kind, n_arms = 0, negate = 0;
-    long long max_iters = 0, cell_index = 0, baseline_index = 0;
-    void *cell, *baseline;
-    if (!PyArg_ParseTupleAndKeywords(args, kw, "iO|ipLLOL", names, &kind, &ocell, &n_arms, &negate,
-            &max_iters, &cell_index, &obaseline, &baseline_index)
-        || !door_ready(d) || handle_ptr(d, ocell, KIND_PLANE, &cell) < 0
-        || handle_ptr_or_none(d, obaseline, KIND_PLANE, &baseline) < 0)
+    long long max_iters = 0, cell_index = 0, baseline_index = 0, limit_index = 0, brk_index = 0;
+    void *cell, *baseline, *counter, *limit, *brk;
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "iO|ipLLOLOOLOL", names, &kind, &ocell, &n_arms,
+            &negate, &max_iters, &cell_index, &obaseline, &baseline_index, &ocounter, &olimit,
+            &limit_index, &obrk, &brk_index)
+        || !door_ready(d) || handle_ptr_or_none(d, ocell, KIND_PLANE, &cell) < 0
+        || handle_ptr_or_none(d, obaseline, KIND_PLANE, &baseline) < 0
+        || handle_ptr_or_none(d, ocounter, KIND_PLANE, &counter) < 0
+        || handle_ptr_or_none(d, olimit, KIND_PLANE, &limit) < 0
+        || handle_ptr_or_none(d, obrk, KIND_PLANE, &brk) < 0)
         return NULL;
     struct eg_cond_desc desc = { .struct_size = sizeof desc,
         .flags                                = negate ? EG_COND_NEGATE : 0,
@@ -1058,7 +1107,12 @@ static PyObject* m_record_cond_begin(PyObject* self, PyObject* args, PyObject* k
         .max_iters                            = max_iters,
         .cell_index                           = cell_index,
         .baseline                             = baseline,
-        .baseline_index                       = baseline_index };
+        .baseline_index                       = baseline_index,
+        .counter                              = counter,
+        .limit                                = limit,
+        .limit_index                          = limit_index,
+        .brk                                  = brk,
+        .brk_index                            = brk_index };
     if (door_check(d, d->fn.eg_record_cond_begin(d->ctx, &desc)) < 0)
         return NULL;
     Py_RETURN_NONE;

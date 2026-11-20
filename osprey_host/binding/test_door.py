@@ -1063,6 +1063,167 @@ def check_reverse_structure(door, done):
     )
 
 
+def check_step_graphs_and_loops(door, done, raises):
+    """Rows of runner_new(steps=) and of the limit, counter and brk members of record_cond_begin."""
+    n = 4
+    count1 = door.unit_load(FIXTURE, "count1", digest(0xD1))
+
+    def counting_plan(limit):
+        """A finishing plan that steps k by one per launch up to `limit`: its k array and plane."""
+        arrays = [np.zeros(n), np.full(n, float(limit)), np.zeros(n, dtype=np.bool_)]
+        planes = [door.plane_wrap(a) for a in arrays]
+        handle = door.plan_new(count1, o.EG_STRUCTURE_HOST_SERIAL, 0, n)
+        door.bind(handle, [0, 1, 2], planes)
+        return arrays[0], planes[0], handle
+
+    # two step graphs of an unrecorded runner of two plans (the finishing plan counts, the second
+    # one y = 2 x): the first graph does x += 1 ahead of plan 0, the second x *= 10 ahead of plan 1
+    k_a, plane_a, plan_a = counting_plan(5)
+    scale, scale_vjp = (
+        door.unit_load(GRAPH, name, digest(b)) for name, b in (("scale", 0x10), ("scale_vjp", 0x11))
+    )
+    x_steps, y_steps, two = np.arange(1.0, n + 1), np.zeros(n), np.array([2.0])
+    plane_x, plane_y, plane_two = (door.plane_wrap(v) for v in (x_steps, y_steps, two))
+    plan_b = door.plan_new(scale, o.EG_STRUCTURE_HOST_SERIAL, o.EG_REDUCE_COMPENSATED, n)
+    door.bind(plan_b, [0, 1, 2], [plane_x, plane_two, plane_y], [], [])
+    x_oracle = x_steps.copy()
+    seen = []
+
+    def step_graph(tag, change):
+        def work(views):
+            seen.append((tag, float(np.from_dlpack(views[0])[0])))
+            x = np.from_dlpack(views[1])
+            x[:] = change(x)
+
+        node = door.host_node(tag, work)
+        door.record_begin()
+        door.host_call(
+            node, [plane_a, plane_x], [o.EG_ACCESS_READ, o.EG_ACCESS_READ | o.EG_ACCESS_WRITE]
+        )
+        return door.record_end()
+
+    ahead_of_a = step_graph("ahead_of_a", lambda x: x + 1.0)
+    ahead_of_b = step_graph("ahead_of_b", lambda x: x * 10.0)
+    report = door.run(
+        door.runner_new([plan_a, plan_b], 100, steps=[(ahead_of_a, 0), (ahead_of_b, 1)])
+    )
+    # launch L (1 based): plan a has stepped L - 1 times before the first graph and L before the
+    # second
+    expected = []
+    for launch in range(1, 6):
+        expected += [("ahead_of_a", launch - 1.0), ("ahead_of_b", float(launch))]
+        x_oracle = (x_oracle + 1.0) * 10.0
+    assert report["launches"] == 5 and seen == expected, (report, seen)
+    assert np.array_equal(k_a, np.full(n, 5.0)), k_a
+    assert np.array_equal(x_steps, x_oracle) and np.array_equal(y_steps, 2.0 * x_oracle), x_steps
+    done.append("runner_new(steps=): two graphs run ahead of plan 0 and plan 1 of each launch")
+
+    # a recorded runner takes a graph only ahead of its first plan: before_plan 1 is refused by name
+    size = 37
+    lin = door.unit_load(REVERSE, "lin", digest(0xE0))
+    tape = door.unit_load(REVERSE, "lin", digest(0xE1))
+    vjp = door.unit_load(REVERSE, "lin_vjp", digest(0xE4))
+    state = [
+        1.0 + np.arange(size) / 8.0,
+        np.zeros(size),
+        np.zeros(size, dtype=np.bool_),
+        1.0 + (np.arange(size) * 7) % 10,
+    ]
+    lin_plan = door.plan_new(lin, o.EG_STRUCTURE_HOST_SERIAL, o.EG_REDUCE_COMPENSATED, size)
+    door.bind(
+        lin_plan,
+        [0, 1, 2, 4],
+        [door.plane_wrap(a) for a in state],
+        [5, 6],
+        [uniform(0.5), uniform(0.25)],
+    )
+    gx, gw, gy = np.arange(1.0, n + 1), np.array([0.5]), np.zeros(n)
+    scale_plan = door.plan_new(scale, o.EG_STRUCTURE_HOST_SERIAL, o.EG_REDUCE_COMPENSATED, n)
+    door.bind(scale_plan, [0, 1, 2], [door.plane_wrap(a) for a in (gx, gw, gy)], [], [])
+    door.record_begin()
+    door.launch(scale_plan)
+    differentiated = door.record_end([(0, scale_vjp)])
+    recorded = dict(
+        flags=o.EG_RUN_RECORD,
+        derived_roles=[o.EG_DERIVED_TAPE, o.EG_DERIVED_STEP_VJP],
+        derived_units=[tape, vjp],
+        window=1,
+    )
+    e = raises(
+        o.BadRequest,
+        lambda: door.runner_new([lin_plan], 10, steps=[(differentiated, 1)], **recorded),
+        "runner_new: a recorded runner with a step graph ahead of no plan",
+    )
+    assert "before_plan" in refusal_text(door, e), str(e)
+    done.append("runner_new(steps=): a recorded runner refuses before_plan 1 by the door's text")
+
+    # WHILE loops over x <- a x (two scale plans), against numpy
+    x0, a, unit_gain = 0.5 + 0.3 * np.arange(n), np.array([0.9]), np.ones(1)
+    x, t = x0.copy(), np.zeros(n)
+    px, pt, pa, pone = (door.plane_wrap(v) for v in (x, t, a, unit_gain))
+
+    def body_plans():
+        first = door.plan_new(scale, o.EG_STRUCTURE_HOST_SERIAL, o.EG_REDUCE_COMPENSATED, n)
+        door.bind(first, [0, 1, 2], [px, pa, pt], [], [])
+        second = door.plan_new(scale, o.EG_STRUCTURE_HOST_SERIAL, o.EG_REDUCE_COMPENSATED, n)
+        door.bind(second, [0, 1, 2], [pt, pone, px], [], [])
+        return first, second
+
+    first, second = body_plans()
+    counter, limit = np.full(1, 99, dtype=np.uint32), np.array([9, 3], dtype=np.uint32)
+    door.record_begin()
+    door.record_cond_begin(
+        o.EG_COND_WHILE,
+        None,
+        counter=door.plane_wrap(counter),
+        limit=door.plane_wrap(limit),
+        limit_index=1,
+    )
+    door.launch(first)
+    door.launch(second)
+    door.record_cond_end()
+    door.graph_launch(door.record_end())
+    assert np.allclose(x, a[0] ** 3 * x0) and counter[0] == 3, (x, counter)
+    done.append(
+        "record_cond_begin: a WHILE stops at limit[limit_index] and the counter reads the count"
+    )
+
+    # a brk written in the body stops the loop after that iteration (the cap of 50 would show
+    # otherwise)
+    tick = door.unit_load(GRAPH, "tick", digest(0x1E))
+    # (the loop reads the flag as uint32; the tick unit counts the same word down as an int32, so
+    # one iteration leaves it non-zero)
+    brk = np.zeros(1, dtype=np.uint32)
+    stop = door.plan_new(tick, o.EG_STRUCTURE_HOST_SERIAL, o.EG_REDUCE_COMPENSATED, 1)
+    pbrk = door.plane_wrap(brk)
+    door.bind(stop, [0], [door.plane_wrap(brk.view(np.int32))], [], [])
+    x[:] = x0
+    door.record_begin()
+    door.record_cond_begin(o.EG_COND_WHILE, None, max_iters=50, brk=pbrk)
+    door.launch(first)
+    door.launch(second)
+    door.launch(stop)
+    door.record_cond_end()
+    door.graph_launch(door.record_end())
+    assert np.allclose(x, a[0] * x0), x
+    done.append("record_cond_begin: a brk written in the body stops the loop")
+
+    # the same loop under a DIFF recording is refused by name, at the end of the recording
+    door.record_begin()
+    door.record_cond_begin(o.EG_COND_WHILE, None, max_iters=50, brk=pbrk)
+    door.launch(first)
+    door.launch(stop)
+    door.record_cond_end()
+    e = raises(
+        o.NotWritten,
+        lambda: door.record_end([(0, scale_vjp)]),
+        "record_end(diff): a WHILE with a brk",
+    )
+    assert "holds a break" in refusal_text(door, e), str(e)
+    door.record_abort()  # the refused end leaves the recording open
+    done.append("record_end(diff): a WHILE holding a brk is refused by name")
+
+
 def check_gather_mask(door, done, raises):
     """A gathered matrix with a keep mask binds with its column count, not with another."""
     samples = 40
@@ -1404,9 +1565,9 @@ def check_host_nodes(door, backend, done, raises):
     count1 = door.unit_load(FIXTURE, "count1", digest(0xD1))
     plan = door.plan_new(count1, o.EG_STRUCTURE_HOST_SERIAL, 0, 200)
     door.bind(plan, [0, 1, 2], [door.plane_wrap(a) for a in arrays])
-    report = door.run(door.runner_new([plan], 1000, step_graph=step_graph))
+    report = door.run(door.runner_new([plan], 1000, steps=[(step_graph, 0)]))
     assert report["launches"] > 1 and len(counted) == report["launches"], (report, len(counted))
-    done.append("runner_new(step_graph=): a host node in it runs once per launch of the runner")
+    done.append("runner_new(steps=): a host node in it runs once per launch of the runner")
 
 
 def check_device_props(door, done, raises):
@@ -2026,6 +2187,7 @@ def run(done, raises, not_run, backends):
     check_host_nodes(door, cpu, done, raises)
     check_fork_and_cond(door, done, raises)
     check_reverse_structure(door, done)
+    check_step_graphs_and_loops(door, done, raises)
     check_gather_mask(door, done, raises)
     check_gather_table(door, done, raises)
     check_reverse_options(door, done, raises)
