@@ -144,9 +144,6 @@ def test_the_host_arm_of_the_warp_form_corpus_is_exact(name, mode, tmp_path, cac
     bundle = build_bundle([entry.kernel], tmp_path / name, mode=mode, targets=("host",), cache_dir=cache_dir,
                           host_profile="native")
     kernel = O.load(bundle.directory, entry.kernel.name, sidecar_of(bundle, entry.kernel.name))
-    for _role, nm in kernel.arg_spec:           # a scratch plane of a placement: a host text never touches it
-        if nm.startswith("hwd"):
-            run[nm] = np.zeros(1)
     got = np.array(O.run_kernel(kernel, n, **run))
     assert np.array_equal(got, entry.want(real, planes, n))
 

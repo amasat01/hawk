@@ -502,8 +502,8 @@ def _primal(derived, x):
 def test_the_tangent_of_a_keyed_sum_under_a_set_matches_central_differences(derived):
     x = np.linspace(0.5, 1.5, PAIRS)
     v = np.random.default_rng(3).normal(size=PAIRS)
-    dot_d, dot_rs, comp = np.zeros(NPAIR), np.zeros(PAIRS), np.zeros(PAIRS)
-    rt.run(derived["pair_jvp"], x=x, dot_x=v, dot_d=dot_d, dot_rs=dot_rs, dot_rs_c=comp,
+    dot_d, dot_rs = np.zeros(NPAIR), np.zeros(PAIRS)
+    rt.run(derived["pair_jvp"], x=x, dot_x=v, dot_d=dot_d, dot_rs=dot_rs,
            pair=NPAIR, **_live())
     h = 1e-6
     (pd, prs), (md, mrs) = _primal(derived, x + h * v), _primal(derived, x - h * v)

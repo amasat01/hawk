@@ -57,7 +57,6 @@ import numpy as np
 import pytest
 from conftest import sidecar_of
 
-from hawk import runtime
 
 N = 48
 QUANTITY = "earth__orientation"
@@ -77,14 +76,6 @@ def test_the_two_wires_occupy_distinct_slots(kernel):
     slots = [kernel.slot_of[w] for w in WIRES]
     assert len(set(slots)) == 2, f"the two wires share a slot: {dict(zip(WIRES, slots))}"
     assert all(w in kernel.slot_of for w in WIRES), kernel.arg_spec
-
-
-def test_the_two_wires_bind_through_different_abi_shapes(kernel):
-    """And they are not even the same SIZE: a 40-byte mirror and a 32-byte
-    handle. An aliasing bug here does not merely read the wrong number, it reads
-    the wrong number of bytes."""
-    kinds = {w: kernel.descriptor[kernel.slot_of[w]] for w in WIRES}
-    assert kinds[WIRES[0]] == "gref" and kinds[WIRES[1]] == "handle", kinds
 
 
 def test_both_wires_values_round_trip_through_the_host_path(kernel):
@@ -134,34 +125,6 @@ def test_the_wires_are_not_interchangeable(kernel):
         "changing the per_sample wire moved the QUATERNION output: the two wires "
         "are not independent, which is the F56 defect seen from the other side"
     )
-
-
-def test_the_bulk_rebind_moves_only_the_named_wire(kernel):
-    """The bulk path over the same two wires: rebinding ONE slot's pointer
-    must move that wire's answer and no other. This is the launch-loop shape
-    (every cache pointer changes every step) applied where an aliasing defect
-    would be most visible."""
-    q, w = D.quat(N), np.linspace(0.5, 2.0, N)
-    bound = O.planes(kernel, N, {WIRES[0][1]: q, WIRES[1][1]: w})
-    kernel.bind_all(bound, N)
-    kernel.launch(0, N, N)
-    # COPIED: the output planes are the caller's and are written IN PLACE, so
-    # keeping a reference would compare the second launch against itself.
-    first_q, first_w = (p.copy() for p in O.returned(kernel, bound))
-
-    other_w = np.ascontiguousarray(w + 1.0)
-    keepalive: list = []
-    kernel.rebind([kernel.slot_of[WIRES[1]]],
-                  [runtime.buffer_address(other_w, keepalive)])
-    kernel.launch(0, N, N)
-    second_q, second_w = O.returned(kernel, bound)
-
-    assert second_w.tobytes() == D.ref_two_wire(q, other_w)[1].tobytes()
-    assert second_q.tobytes() == first_q.tobytes(), (
-        "rebinding the per_sample wire changed the quaternion plane: rebind wrote "
-        "into the wrong slot's mirror"
-    )
-    assert first_w.tobytes() != second_w.tobytes()
 
 
 def test_eagle_agrees_about_both_wires(built):

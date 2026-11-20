@@ -21,6 +21,18 @@ Releases after 0.6.5 are on [GitHub](https://github.com/amasat01/hawk/releases):
 - **Target ids have one spelling.** An id a library states and a target name you pass (`targets=`, `hawk.targets.machine`, the prefix of an option such as `cuda.arch`) is lowercased with whitespace, dashes and underscores removed, so `"CUDA"`, `"Cu-Da"` and `" c u_da "` are `cuda`; what is left must be a letter followed by letters and digits, or it is refused by name. Two folders whose ids have the same spelling serve one target and stop the search with an error naming both, as two folders with the same id did.
 - **The sidecar and `describe` member `digest` identifies the lowered unit.** It covers what a kind adds when the unit is lowered, so a kernel under an active-set kind and the same body under the default kind differ in it. It was the digest of the traced body in 0.7.x; that identity is now `Kernel.body_digest`.
 - **The stamp file of a published unit is `.hawk_stamp`** (it was `.hawk_unit`); its members are unchanged. The sidecar has no `element_counts` member: `slot_shapes` states the same fact.
+- **`hawk.run` and `hawk.load` run through the backend library's runtime.** The planes, the plan, the launch, the folds of compensated sums and of sums over samples, and the scratch planes between the stages of a split kernel are the library's; hawk's own launcher and its compiled helper no longer take part. `ArgBlock`, `descriptor_for_sidecar`, `kind_for`, `DEVICE_CPU` and `HostKernel.rebind`, `.descriptor`, `.block`, `.entry`, `.library` and `.folds` are removed. Threads calling into one library's runtime take turns in the library; hawk keeps no lock of its own.
+- **Inputs of `hawk.run` are arrays.** A NumPy array, or anything that exports DLPack, is bound (an array with no buffer protocol is handed over as it is, so one that needs a transpose or a reshape is refused by name); a plain buffer (`array.array`, `bytes`) is refused by name: wrap it in `numpy.asarray`.
+- **A per-sample plane holds exactly `n_samples` samples.** A longer or a shorter plane is refused before the launch, naming the plane, its declared width, the shape it must have and the slice to pass (`x[:n]`). A prefix of a longer plane used to be run on.
+- **The library owns a sum's compensation plane** (`<target>_c`, and a cell's rows): binding one is refused by name; the target alone holds the compensated sum after the run.
+- **`base=` and `count=` mean what the library says for the kernel.** A thread-box kernel's range counts threads, and a kernel that reads an index set takes one range of positions; hawk no longer computes a thread count.
+
+### Changed
+
+- A `finished_count` or `<group>_mix` array bound to `hawk.run` is filled after the launch from the library's counters; a read-only one or one of the wrong length is refused by name before it. A launch of an automatic-step kernel takes one step unless `fused_steps` is bound.
+- A segmented dispatch group runs from one launch of any of its branch units: the library plans the group, and the class, offsets and stale planes are its own (they are not bound).
+- A read-only array is accepted for an input of `hawk.run` (the kernel never writes it); a read-only array bound to a written plane is still refused by name.
+- The sidecar of a split kernel states `source` (the name, digest and slot names of the unit that lists its stages) and every sidecar states `slots`, the unit's slot table in the order a run binds by.
 
 ### Added
 

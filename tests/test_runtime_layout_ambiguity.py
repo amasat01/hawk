@@ -21,6 +21,7 @@ from conftest import sidecar_of
 
 import hawk
 from hawk import runtime as rt
+from hawk._plane_layout import plane_layout
 from hawk.errors import HawkError
 
 
@@ -134,9 +135,9 @@ def test_the_host_kernel_bind_path_takes_the_same_choices(built):
 def test_a_square_matrix_width_is_ambiguous_too():
     """A matrix head with N == R == C is a (R*C, N) plane at the binding."""
     a = np.zeros((9, 9))
-    assert rt.plane_layout(memoryview(a), 9) == "ambiguous"
-    assert rt.plane_layout(memoryview(a), 9, layout="samples_last") == "native"
-    assert rt.plane_layout(memoryview(a.T), 9, layout="samples_first") == "view"
+    assert plane_layout(memoryview(a), 9) == "ambiguous"
+    assert plane_layout(memoryview(a), 9, layout="samples_last") == "native"
+    assert plane_layout(memoryview(a.T), 9, layout="samples_first") == "view"
 
 
 def test_the_shared_marker_protocol_is_accepted(built):

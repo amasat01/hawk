@@ -19,7 +19,7 @@ import pytest
 import hawk
 import hawk.math
 from hawk import HawkError, Kernel, Mutable, Scalar, Vector, kernel
-from hawk import _cells, runtime
+from hawk import runtime
 from hawk.artifact import build_bundle
 
 SIZES = (1, 31, 32, 33, 1000, 100003, 300007)
@@ -110,23 +110,6 @@ def test_a_cell_equals_numpy(built, op, n):
     else:
         tol = 1e-14 if mode == "float64" else 1e-5
         np.testing.assert_allclose(float(got[0]), want, rtol=tol, atol=tol * np.abs(t).sum() / max(n, 1))
-
-
-def test_the_rows_are_made_once_per_kernel_and_sample_count(built, monkeypatch):
-    bundles, mode = built
-    kernel_ = runtime.load(bundles["cell_sum"].directory, "cell_sum")
-    t = np.zeros(1, dtype=mode)
-    made = []
-    scratch = _cells.Scratch
-    monkeypatch.setattr(_cells, "Scratch", lambda *a, **k: made.append(1) or scratch(*a, **k))
-    for _ in range(3):
-        runtime.run(kernel_, x=_x(100, mode), t=t)
-    assert len(made) == 1
-    first = kernel_._cell_scratches[100]
-    runtime.run(kernel_, x=_x(100, mode), t=t)
-    assert kernel_._cell_scratches[100] is first
-    runtime.run(kernel_, x=_x(101, mode), t=t)
-    assert len(made) == 2
 
 
 def test_binding_the_rows_instead_of_the_cell_names_the_cell(built):

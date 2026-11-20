@@ -353,8 +353,7 @@ def test_stat_many_counts_as_one_crossing_however_many_paths():
     however many paths are in the list.
 
     ``crossings()`` increments the SAME counter it reads (calibrated in
-    ``test_launch_crossings.py::
-    test_the_instrument_costs_exactly_one_crossing``), so the closing reading
+    ``test_the_instrument_costs_exactly_one_crossing`` of this file), so the closing reading
     below is one crossing of its own and is subtracted by name rather than
     silently folded into the count being asserted."""
     before = _core.crossings()
@@ -363,3 +362,11 @@ def test_stat_many_counts_as_one_crossing_however_many_paths():
     assert after - before - 1 == 1, (
         f"stat_many crossed the boundary {after - before - 1} time(s) for 3 "
         "paths, not 1")
+
+
+def test_the_instrument_costs_exactly_one_crossing():
+    """Calibration of ``crossings()``: it counts every exported call, itself included, so two back-to-back readings
+    differ by exactly one. Every per-call figure taken as a difference of two readings is offset by this amount."""
+    before = _core.crossings()
+    after = _core.crossings()
+    assert after - before == 1, f"crossings() moved the counter by {after - before}, not 1"

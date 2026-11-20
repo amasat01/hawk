@@ -352,6 +352,18 @@ def test_a_change_after_the_cut_recompiles_only_the_later_stage(tmp_path):
 
 # -- sidecar ----------------------------------------------------------------
 
+def test_the_first_stage_states_the_unit_that_lists_its_stages(built):
+    """A split kernel runs as the unit that lists its stages, which is none of them: the first stage's sidecar names
+    that unit, its digest and its slots, and the slots hold every plane of every stage the caller binds."""
+    bundles, _ = built
+    arts = {a.name: a.sidecar for a in bundles["standard"].artifacts}
+    source = arts["standard"]["source"]
+    assert source["name"] not in arts and len(source["digest"]) == 64
+    caller_planes = {name for side in arts.values() for _role, name in side["arg_spec"]}
+    assert {"x", "mu", "z", "t"} <= set(source["slots"]) <= caller_planes | {"cut0_comp", "mu_comp", "t_comp"}
+    assert "source" not in arts["standard_2"]
+
+
 def test_the_first_stage_names_every_stage_and_cell(built):
     bundles, _ = built
     arts = {a.name: a.sidecar for a in bundles["standard"].artifacts}

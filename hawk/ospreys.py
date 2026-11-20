@@ -14,7 +14,8 @@ and raw names and takes its checked answers and refusals as they are.
 hawk looks in the folders that installed distributions declare under the entry-point group
 ``hawk.ospreys`` (the value is a data path, nothing is imported) and in the folders of the
 environment variable ``HAWK_OSPREY_PATH``. It asks a library for nothing but the door calls of
-:class:`Osprey`: the machine, the lowering, one unit's build, the link and the store's state.
+:class:`Osprey`: the machine, the lowering, one unit's build, the link, the store's state, and the runtime door that
+loads and launches the built units.
 """
 
 from __future__ import annotations
@@ -74,6 +75,7 @@ class Osprey:
         self.targets = {row["request"]: row for row in manifest["targets"]}
         self._lock = threading.Lock()
         self._open = None
+        self._runtime_door = None
 
     def _opened(self) -> tuple:
         """``(binding module, context, library)``, opened on the first call."""
@@ -95,6 +97,23 @@ class Osprey:
                         f"the OSPREY {self.name!r} at {self.folder} cannot be opened: {refusal}"
                     ) from refusal
             return self._open
+
+    def runtime_door(self):
+        """Return the runtime door of this library: one :class:`_osprey.Door`, made on first use and kept with the
+        opened library, which stays open as long as the door lives.
+
+        Units, planes and plans are made through it; its context admits one calling thread at a time.
+        """
+        module, _context, library = self._opened()
+        with self._lock:
+            if self._runtime_door is None:
+                try:
+                    self._runtime_door = module.Door(library)
+                except (ValueError, module.Fault) as refusal:
+                    raise HawkError(
+                        f"the OSPREY {self.name!r} at {self.folder} has no runtime door: {refusal}"
+                    ) from refusal
+            return self._runtime_door
 
     def _refused(self, what: str, refusal: Exception) -> HawkError:
         """Return the ``HawkError`` for the library's ``refusal`` of ``what``, keeping its code."""

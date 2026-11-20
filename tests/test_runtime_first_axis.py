@@ -7,7 +7,6 @@ every size. No stride depends on it, so it is never in the generated code."""
 
 from __future__ import annotations
 
-import ctypes
 import pathlib
 
 import numpy as np
@@ -140,10 +139,3 @@ def test_a_direct_call_takes_the_free_label_as_a_keyword(tmp_path):
     np.testing.assert_array_equal(eagle.deploy(count).run(conn=conn, e=2, node=4), got)
     with pytest.raises(ValueError, match="node"):
         count(conn, b=np.zeros(5), e=2, node=4)
-
-
-def test_the_entry_object_states_the_address_the_sidecars_host_entry_symbol_resolves_to(host):
-    loaded = host(count)
-    symbol = loaded.sidecar["host_entry"]
-    resolved = ctypes.cast(getattr(ctypes.CDLL(str(loaded.path)), symbol), ctypes.c_void_p).value
-    assert loaded.entry.address == resolved

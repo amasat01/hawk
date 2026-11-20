@@ -291,23 +291,18 @@ def test_auto_segmented_runs_unfused(tmp_path, cache_dir):
     rng = np.random.default_rng(13)
     counts = [17, 30, 14]
     k = np.concatenate([np.full(c, j, dtype=np.int32) for j, c in enumerate(counts)])
-    offsets = np.concatenate([[0], np.cumsum(counts)]).astype(np.int64)
     bs = rng.uniform(0.5, 1.0, (K, N))
     x_split, x_ref = np.zeros(N), np.zeros(N)
     stopped = np.zeros(N, dtype=bool)
-    cls, stale = np.zeros(N, dtype=np.int64), np.zeros(N, dtype=bool)
+    unit = O.load(bundle.directory, "walker__k0", _sidecar(bundle, "walker__k0"))
     for _ in range(3):
-        for j in range(K):
-            name = f"walker__k{j}"
-            unit = O.load(bundle.directory, name, _sidecar(bundle, name))
-            O.run_kernel(unit, N, base=0, count=counts[j], k=k, bs=bs, x=x_split,
-                         terminated=stopped, dispatch0_offsets=offsets,
-                         dispatch0_class=cls, dispatch0_stale=stale,
-                         finished_count=np.zeros(1, dtype=np.uint32))
+        # one launch of a branch loaded with the group's units runs the whole group over the sorted samples: the
+        # library plans it, and the class, offsets and stale planes are its own
+        hawk.run(unit, k=k, bs=bs, x=x_split, terminated=stopped)
         hawk.run(hawk.load(ref_bundle.directory, "walker_ref"), k=k, bs=bs, x=x_ref,
                  terminated=np.zeros(N, dtype=bool))
         np.testing.assert_array_equal(x_split, x_ref)
-    assert not stale.any() and (x_ref > 0).all()
+    assert (x_ref > 0).all()
 
 
 def test_static_units_write_no_class_and_a_classify_kernel_does(built):

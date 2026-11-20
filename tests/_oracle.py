@@ -73,6 +73,8 @@ def planes(kernel, n: int, kw: dict) -> dict:
                     if m.get("dtype") == "int"}
     bound = {}
     for role, name in kernel.arg_spec:
+        if name in (kernel.sidecar.get("team_planes") or ()):
+            continue                    # the scratch between stages is the library's
         if role in OUTPUT_ROLES:
             out_dtype = np.dtype(np.int64) if name in int_mutables else dtype
             bound[name] = (np.ascontiguousarray(kw[name]) if name in kw

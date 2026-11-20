@@ -140,14 +140,23 @@ def test_terminated_mask_bound_as_bool_passes(built):
 # 3. a sum over samples: one row per 32 samples, plus its compensation plane.
 # --------------------------------------------------------------------------- #
 def test_a_sum_over_samples_binds_one_row_per_32_samples(built):
-    """``energy``'s ``total`` holds ``ceil(n/32)`` rows and ``total_comp``
-    its compensation; their sum is the reference total."""
+    """``energy``'s ``total`` holds ``ceil(n/32)`` rows; the library owns the compensation plane
+    ``total_comp`` and folds it into ``total``, so the rows alone sum to the reference total."""
     kernel = _energy(built)
     v = np.arange(3 * N, dtype=float).reshape(3, N) * 0.25 + 1.0
     rows = -(-N // 32)
-    total, comp = np.zeros(rows), np.zeros(rows)
-    rt.run(kernel, v=v, total=total, total_comp=comp, n_samples=N)
-    np.testing.assert_allclose(total.sum() + comp.sum(), D.ref_energy(v).sum())
+    total = np.zeros(rows)
+    rt.run(kernel, v=v, total=total, n_samples=N)
+    np.testing.assert_allclose(total.sum(), D.ref_energy(v).sum())
+
+
+def test_a_compensation_plane_the_caller_binds_is_refused_by_the_library(built):
+    """The compensation plane of a sum is the library's: a caller that binds one is refused, naming the slot."""
+    kernel = _energy(built)
+    v = np.arange(3 * N, dtype=float).reshape(3, N) * 0.25 + 1.0
+    rows = -(-N // 32)
+    with pytest.raises(HawkError, match=r"'total_comp'.*companion or compensation plane"):
+        rt.run(kernel, v=v, total=np.zeros(rows), total_comp=np.zeros(rows), n_samples=N)
 
 
 def test_a_scattered_accum_out_plane_is_not_shape_checked(built):
@@ -189,19 +198,17 @@ def test_a_read_only_array_for_a_writable_role_is_refused(built):
         rt.run(kernel, x=x, terminated=terminated, y=y, n_samples=N)
 
 
-def test_a_read_only_array_for_an_input_role_is_still_refused(built):
-    """A read-only INPUT (``x``, a ``per_sample`` leaf) is not flagged by the
-    new writable-role check (it is not a sink role) — but it is still
-    refused, by the pre-existing ``hawk.runtime.buffer_address`` rule that
-    every bound plane (input or output) must be writable, because HAWK binds
-    by ADDRESS, never by copy."""
+def test_a_read_only_array_for_an_input_role_is_accepted(built):
+    """A read-only INPUT (``x``, a ``per_sample`` leaf) binds: the kernel never writes it, so nothing is lost.
+    The written plane next to it still gets the kernel's result, and ``x`` is left read-only."""
     kernel = _diagnostic(built)
     x = np.arange(N, dtype=float)
     x.flags.writeable = False
     terminated = np.zeros(N, dtype=bool)
     y = np.zeros(N)
-    with pytest.raises(HawkError, match=r"read-only"):
-        rt.run(kernel, x=x, terminated=terminated, y=y, n_samples=N)
+    rt.run(kernel, x=x, terminated=terminated, y=y, n_samples=N)
+    np.testing.assert_allclose(y, x + 1.0)
+    assert not x.flags.writeable
 
 
 def test_multiple_bad_arguments_are_reported_together(built):
@@ -216,14 +223,78 @@ def test_multiple_bad_arguments_are_reported_together(built):
         rt.run(kernel, x=x, terminated=terminated, y=y, n_samples=N)
 
 
-def test_an_explicitly_shorter_n_samples_over_a_longer_plane_still_passes(built):
-    """Non-vacuity for the minimum-length shape rule: `run`'s own contract
-    lets an explicit ``n_samples=`` ask for FEWER samples than the bound
-    per-sample planes hold (``test_runtime_n_inference.py``'s own row for
-    this) — the validator must not turn that into a false refusal."""
+def test_an_explicitly_shorter_n_samples_over_slices_of_longer_planes_passes(built):
+    """Non-vacuity for the exact-length shape rule: a caller who allocated more than it launches passes
+    slices of ``n_samples`` samples, and ``run`` writes into them."""
     kernel = _diagnostic(built)
     x = np.arange(2 * N, dtype=float)
     terminated = np.zeros(2 * N, dtype=bool)
     y = np.zeros(2 * N)
-    rt.run(kernel, x=x, terminated=terminated, y=y, base=0, count=N, n_samples=N)
+    rt.run(kernel, x=x[:N], terminated=terminated[:N], y=y[:N], base=0, count=N, n_samples=N)
     np.testing.assert_allclose(y[:N], x[:N] + 1.0)
+    assert not y[N:].any()
+
+
+def test_a_longer_plane_than_n_samples_is_refused_with_the_slice_to_pass(built):
+    """A per-sample plane holds exactly ``n_samples`` samples: a longer one would run on its prefix, so it is
+    refused by name, with its declared width, the shape it must have and the way out."""
+    kernel = _diagnostic(built)
+    x = np.arange(2 * N, dtype=float)
+    terminated = np.zeros(2 * N, dtype=bool)
+    y = np.zeros(2 * N)
+    with pytest.raises(HawkError, match=rf"plane 'x' is declared 1 component\(s\) wide, so at n={N} its plane is "
+                                        rf"\({N},\); got \({2 * N},\); pass a slice of {N} samples"):
+        rt.run(kernel, x=x, terminated=terminated, y=y, n_samples=N)
+    assert not y.any()
+
+
+def test_a_shorter_plane_than_n_samples_is_refused_with_the_slice_to_pass(built):
+    """The same rule from below: a plane shorter than ``n_samples`` is refused before the library reads past it."""
+    kernel = _diagnostic(built)
+    x = np.arange(N - 1, dtype=float)
+    terminated = np.zeros(N, dtype=bool)
+    y = np.zeros(N)
+    with pytest.raises(HawkError, match=rf"plane 'x'.*got \({N - 1},\); pass a slice of {N} samples"):
+        rt.run(kernel, x=x, terminated=terminated, y=y, n_samples=N)
+
+
+class _DlpackOnly:
+    """An array that exports DLPack and nothing else: no buffer protocol, no shape or dtype attributes."""
+
+    def __init__(self, array):
+        self._array = array
+
+    def __dlpack__(self, **kwargs):
+        return self._array.__dlpack__(**kwargs)
+
+    def __dlpack_device__(self):
+        return self._array.__dlpack_device__()
+
+
+def test_an_array_that_exports_dlpack_without_the_buffer_protocol_runs_a_kernel(built):
+    """hawk reads the shape and dtype of such an array from the library and hands it over as it is: the values are
+    exact, a read-only input is accepted and a read-only output is refused, as for NumPy."""
+    kernel = _diagnostic(built)
+    x = np.arange(N, dtype=float)
+    x.flags.writeable = False
+    y = np.zeros(N)
+    rt.run(kernel, x=_DlpackOnly(x), terminated=_DlpackOnly(np.zeros(N, dtype=bool)), y=_DlpackOnly(y), n_samples=N)
+    np.testing.assert_array_equal(y, x + 1.0)
+    frozen = np.zeros(N)
+    frozen.flags.writeable = False
+    with pytest.raises(HawkError, match=r"'y'.*writable"):
+        rt.run(kernel, x=_DlpackOnly(x), terminated=_DlpackOnly(np.zeros(N, dtype=bool)), y=_DlpackOnly(frozen),
+               n_samples=N)
+
+
+def test_an_array_that_exports_dlpack_without_a_buffer_and_needs_a_view_is_refused_by_name(built):
+    """No array library to transpose it with: a sample-major plane that needs its transpose is refused, naming the
+    argument, the shape to pass and numpy.asarray as the way out."""
+    bundle = built["vec3"]
+    kernel = O.load(bundle.directory, "vec3_scale", sidecar_of(bundle, "vec3_scale"))
+    x = np.arange(3 * N, dtype=float).reshape(3, N)
+    y = np.zeros((3, N))
+    with pytest.raises(HawkError, match=r"'x' exports DLPack and no buffer.*pass it as \(3, 'N'\).*numpy.asarray\(x\)"):
+        rt.run(kernel, x=_DlpackOnly(np.asfortranarray(x.T)), a=2.0, y=y)
+    rt.run(kernel, x=_DlpackOnly(x), a=2.0, y=_DlpackOnly(y))
+    np.testing.assert_array_equal(y, 2.0 * x)

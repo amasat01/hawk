@@ -15,7 +15,7 @@ import _deployable as D
 import pytest
 from conftest import sidecar_of
 
-from hawk import HawkError, _ir, runtime
+from hawk import _ir
 
 TensorType = _ir.TensorType
 
@@ -47,21 +47,6 @@ def test_the_sidecar_states_the_pinned_mirror_of_every_slot(built, name, kernel)
     assert got == {slot: _expected(role, slot, sidecar) for role, slot in sidecar["arg_spec"]}
 
 
-def test_every_mirror_has_a_core_descriptor_kind():
-    """A mirror with no ``_core`` kind would fail at bind time, after the artifact was built, loaded and declared good."""
-    kinds = {runtime.kind_for(role, _V3 if mirror == "GRefMirror" else _S, mirror)
-             for role, mirror in _MIRROR_OF.items() if role != "nsamples"}
-    assert kinds <= {"gref", "handle", "int_handle", "f64", "f32", "int"}, kinds
-    assert runtime.kind_for("nsamples", TensorType((), "i32"), "value") == "nsamples"
-
-
-def test_a_sidecar_without_the_mirror_of_a_slot_is_refused_by_name():
-    sidecar = {"arg_spec": [["out", "y"]], "arg_mirrors": {}, "scalar_type": "float64",
-               "mutables": [{"name": "y", "dtype": "scalar", "default": None}]}
-    with pytest.raises(HawkError, match="arg_mirrors"):
-        runtime.descriptor_for_sidecar(sidecar)
-
-
 def test_the_two_handle_pods_are_byte_identical_in_this_build():
     """The premise the row below rests on, read off the BINDING rather than
     assumed (``layout_sizes()`` fields 1 and 2, ``gref_abi.h``'s own order)."""
@@ -73,14 +58,3 @@ def test_the_two_handle_pods_are_byte_identical_in_this_build():
         "longer interchangeable, so a sidecar that cannot declare an input "
         "plane's dtype can no longer describe one (needs the field)"
     )
-
-
-def test_a_vector_mutable_is_a_mirror_and_a_scalar_one_a_handle(built):
-    """HAWK's own worked example, on a REAL artifact: the 40-byte mirror and the
-    32-byte handle, told apart by the sidecar's dtype declaration alone."""
-    sidecar = sidecar_of(built["two_wire"], "two_wire")
-    descriptor = runtime.descriptor_for_sidecar(sidecar)
-    by_name = {name: descriptor[i]
-               for i, (role, name) in enumerate(tuple(tuple(p) for p in
-                                                      sidecar["arg_spec"]))}
-    assert by_name["out_q"] == "gref" and by_name["out_w"] == "handle", by_name

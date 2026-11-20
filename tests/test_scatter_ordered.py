@@ -163,16 +163,6 @@ def test_the_vjp_is_a_gather_and_matches_finite_differences(bundles, target):
         assert_within((loss(hi) - loss(lo)) / (2 * eps), bar[i], bound)
 
 
-def test_the_run_records_its_chunks(bundles):
-    from hawk import runtime as rt
-
-    key, x = _case(20000, 7, seed=1)
-    kern = rt.load(bundles["add"].directory, "add", sidecar_of(bundles["add"], "add"))
-    rt.run(kern, key=key, x=x, acc=np.zeros(7))
-    assert kern.scatter_chunks == 256
-    rt.run(kern, key=key[:50], x=x[:50], acc=np.zeros(200))
-    assert kern.scatter_chunks == 1
-
 
 # ---- lanes that add nothing, poisoned scratch, vector payloads, loops, two scatters ----------------
 
@@ -393,12 +383,6 @@ def test_a_launch_that_stopped_after_the_per_lane_stage_does_not_poison_the_next
         from hawk import runtime as rt
 
         kern = rt.load(bundle.directory, "add_term", sidecar_of(bundle, "add_term"))
-        rt.run(kern, **every)       # makes the scratch
-        held = kern.__dict__["_split"]
-        scratch = rt._team_planes(kern, held, n, every)
-        kern._bind_all({**every, **scratch}, n, None)
-        kern._launch(0, n, n)       # the per-lane stage alone
-        assert (next(p for k, p in scratch.items() if k.endswith("_k")) >= 0).any()
         halved["acc"] = np.zeros(cells)
         rt.run(kern, **halved)
         got = halved["acc"]

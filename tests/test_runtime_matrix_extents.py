@@ -42,15 +42,14 @@ def host(tmp_path, cache_dir):
     return load
 
 
-def test_the_sidecar_declares_the_extents_the_descriptor_reads(host):
+def test_the_sidecar_declares_the_extents_a_run_binds_by(host):
     kernel, bundle = host(products)
     sidecar = sidecar_of(bundle, "products")
     assert sidecar["mat_shapes"] == {"A": [4, 5], "B": [5, 3]}
     assert sidecar["vec_widths"] == {"v": 5}
     shapes = {m["name"]: m.get("shape") for m in sidecar["mutables"]}
     assert shapes == {"C": [4, 3], "y": None}
-    assert rt.descriptor_for_sidecar(sidecar) == ["gref"] * 5
-    assert kernel.descriptor == ["gref"] * 5
+    assert [role for role, _name in kernel.arg_spec].count("mat_in") == 2
 
 
 def test_rectangular_inputs_and_outputs_run(host):

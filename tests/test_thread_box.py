@@ -67,17 +67,3 @@ def test_device_values_are_the_box_free_values_and_near_the_host(tmp_path, cache
     # the device may fuse a multiply into an add the host keeps apart
     np.testing.assert_allclose(got, want, rtol=64 * np.finfo(mode).eps,
                                atol=64 * np.finfo(mode).eps * np.abs(want).max())
-
-
-@pytest.mark.parametrize(
-    ("box", "lanes", "threads"),
-    [
-        (None, 100, 100),  # no box: a thread per lane
-        ({"axis": 0, "T": 4, "stride": 8}, 64, 16),  # 64 = 2 * (4 * 8) lanes: two boxes of 8 threads
-        ({"axis": 0, "T": 4, "stride": 8}, 70, 24),  # 70 lanes need ceil(70 / 32) = 3 boxes of 8
-    ],
-)
-def test_a_launch_box_counts_whole_boxes_of_threads(box, lanes, threads):
-    from hawk.runtime import _launch_threads
-
-    assert _launch_threads(box, lanes) == threads

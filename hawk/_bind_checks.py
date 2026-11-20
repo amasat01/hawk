@@ -7,12 +7,12 @@ any address is taken."""
 
 from __future__ import annotations
 
-import array
 import math
 import os
 
 from ._plane_layout import (
     _NO_CHOICE,
+    describe,
     _native_extent,
     layout_refusal,
     mixed_refusal,
@@ -74,7 +74,7 @@ def _n_from(arg_spec, arrays: dict, arg_shapes: dict | None = None,
         # the NATIVE trailing extent: a sample-major (L, w) plane's count is
         # its leading axis, never its width
         width = int((arg_shapes or {}).get(name) or 1)
-        mv = memoryview(value)
+        mv = describe(value)
         kind = choice.of(name, mv, width)
         if kind in ("ambiguous", "conflict"):
             raise HawkError("hawk.runtime.run: " + layout_refusal(
@@ -173,15 +173,13 @@ def _check_plane_arg(role: str, name: str, value, arg_dtypes: dict,
     if isinstance(value, (bool, int, float, complex)):
         errors.append(number_refusal(name, value))
         return
-    try:
-        mv = memoryview(value)
-    except TypeError:
+    if not hasattr(value, "__dlpack__"):
         errors.append(
-            f"argument {name!r}: expected a buffer-protocol array (a numpy "
-            f"array, a torch CPU tensor, or an array.array), got "
-            f"{type(value).__name__} — pass np.asarray({name}, ...)"
+            f"argument {name!r}: expected an array (a numpy array or anything that exports DLPack), got "
+            f"{type(value).__name__}, a plain buffer — wrap it in numpy.asarray({name}, ...)"
         )
         return
+    mv = describe(value)
 
     expect_dtype = arg_dtypes.get(name)
     if expect_dtype is not None and not _dtype_matches(mv, expect_dtype):
@@ -216,12 +214,9 @@ def _check_plane_arg(role: str, name: str, value, arg_dtypes: dict,
         )
 
     if role in _PER_SAMPLE_ROLES:
-        # The trailing extent is a MINIMUM, not an exact match: an explicit
-        # `n_samples=` may ask for fewer samples than the bound planes hold
-        # (a caller allocates once, launches a sub-range without
-        # rebinding), so longer is correct and shorter is always the bug.
-        # The leading (per-sample width) extent is a static fact of the
-        # compiled body, so it's still checked exactly.
+        # A per-sample plane holds exactly n_samples samples: the library checks the same, and a longer plane
+        # would silently run on its prefix. The leading (per-sample width) extent is a static fact of the
+        # compiled body.
         width = int(arg_shapes.get(name) or 1)
         shape = tuple(mv.shape)
         if layout == "view":
@@ -229,17 +224,11 @@ def _check_plane_arg(role: str, name: str, value, arg_dtypes: dict,
         elif layout == "single":
             # one sample: its contiguous bytes ARE the (w, 1) / (1,) plane
             shape = (1,) if width <= 1 else (width, 1)
-        if width <= 1:
-            bad = len(shape) != 1 or shape[0] < n_samples
-            want = f"(L,) with L >= n_samples={n_samples}"
-        else:
-            bad = len(shape) != 2 or shape[0] != width or shape[1] < n_samples
-            want = f"({width}, L) with L >= n_samples={n_samples}"
-        if bad:
+        want = (n_samples,) if width <= 1 else (width, n_samples)
+        if shape != want:
             errors.append(
-                f"argument {name!r}: expected shape {want} ({width} per "
-                f"sample), got {shape} — pass an array of at least that "
-                f"length (never shorter than n_samples)"
+                f"plane {name!r} is declared {width} component(s) wide, so at n={n_samples} its plane is "
+                f"{want}; got {shape}; pass a slice of {n_samples} samples"
             )
 
 
@@ -247,6 +236,8 @@ def widen_index(names, arrays: dict) -> dict:
     """``arrays`` with each 32-bit integer plane among ``names`` (the input planes
     on the 64-bit index wire) widened to 64 bits, so an ``Index`` plane takes an
     int32 column. A copy, made only for such a plane; anything else is untouched."""
+    import numpy as np
+
     out = arrays
     for name in names:
         value = arrays.get(name)
@@ -259,7 +250,7 @@ def widen_index(names, arrays: dict) -> dict:
         if mv.itemsize == 4 and _buffer_kind(mv)[0] in ("i", "u") and mv.c_contiguous:
             if out is arrays:
                 out = dict(arrays)
-            out[name] = array.array("q", mv.cast("B").cast(mv.format).tolist())
+            out[name] = np.ascontiguousarray(value, dtype=np.int64)
     return out
 
 
@@ -290,6 +281,8 @@ def narrow_index(names, arrays: dict, kernel: str = "") -> dict:
     """``arrays`` with each signed 64-bit integer array bound to an ``Index`` plane among ``names``
     converted to ``int32`` (a copy), when every value fits ``[-2**31, 2**31 - 1]``; refused by name
     when one does not. An ``int32`` array is untouched, so it binds zero-copy."""
+    import numpy as np
+
     out = arrays
     for name in names:
         value = arrays.get(name)
@@ -308,8 +301,7 @@ def narrow_index(names, arrays: dict, kernel: str = "") -> dict:
             raise HawkError(f"{where}argument {name!r}: values exceed int32; declare Index[int64]")
         if out is arrays:
             out = dict(arrays)
-        narrow = array.array("i", flat.tolist())
-        out[name] = memoryview(narrow).cast("B").cast("i", shape=mv.shape) if mv.ndim > 1 else narrow
+        out[name] = np.ascontiguousarray(value, dtype=np.int32)
     return out
 
 
@@ -337,7 +329,7 @@ def _check_axes_arg(sidecar: dict, name: str, value, arrays: dict, n_samples: in
     from ._lane_bind import free_labels, output_shape
 
     try:
-        got = tuple(memoryview(value).shape)
+        got = tuple(describe(value).shape)
     except TypeError:
         return
     spec = sidecar["plane_axes"][name]
@@ -369,7 +361,7 @@ def _check_compact_arg(sidecar: dict, name: str, value, n_samples: int, errors: 
     from ._lane_bind import gather_columns
 
     try:
-        got = tuple(memoryview(value).shape)
+        got = tuple(describe(value).shape)
     except TypeError:
         return
     rows = int(sidecar.get("arg_shapes", {}).get(name) or 1)
@@ -385,7 +377,7 @@ def _check_adjoint_arg(sidecar: dict, name: str, value, arrays: dict, errors: li
     kernel scatters into it by the plane's own index, never by lane."""
     like = sidecar["adjoint_like"][name]
     try:
-        got, want = memoryview(value).shape, memoryview(arrays[like]).shape
+        got, want = describe(value).shape, describe(arrays[like]).shape
     except (TypeError, KeyError):
         return
     if math.prod(got) < math.prod(want):
@@ -406,7 +398,7 @@ def _check_uniform_arg(name: str, value, params: dict, errors: list) -> None:
         kind = "f"
     else:
         try:
-            mv = memoryview(value)
+            mv = describe(value)
         except TypeError:
             errors.append(
                 f"argument {name!r}: a uniform binds a Python number (or a "

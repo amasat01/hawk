@@ -78,8 +78,7 @@ _EXPECTED_MANIFEST = {
         "vec", "vsum", "where",
     ],
     "hawk.runtime": [
-        "ArgBlock", "DEVICE_CPU", "HostKernel",
-        "check_scatter_status", "descriptor_for_sidecar", "dispatch_costs", "kind_for", "load", "run", "steps_reverse_table",
+        "HostKernel", "check_scatter_status", "dispatch_costs", "load", "run", "steps_reverse_table",
     ],
     "hawk.ext": [
         "ATOMIC", "DEFAULT_GUARD", "DEFAULT_KIND", "Guard", "IndexSet",

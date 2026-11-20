@@ -272,8 +272,8 @@ def test_a_slab_with_a_break_matches_the_likelihood_ratio(tmp_path, cache_dir):
         ref = {k: np.zeros(n) for k in ("dot_through", "dot_back")}
         bins_alt, bins_lr = np.zeros(3), np.zeros(3)
         hawk.run(alt, dot_sigma_t=1.0, dot_sigma_ref=1.0, dot_tally=bins_alt,
-                 dot_tally_c=np.zeros(3), **got, **common)
-        hawk.run(lr, dot_sigma_t=1.0, dot_tally=bins_lr, dot_tally_c=np.zeros(3), **ref, **common)
+                 **got, **common)
+        hawk.run(lr, dot_sigma_t=1.0, dot_tally=bins_lr, **ref, **common)
         per_run["through"].append(got["dot_through"].mean() - ref["dot_through"].mean())
         per_run["back"].append(got["dot_back"].mean() - ref["dot_back"].mean())
         per_run["bins"].append((bins_alt - bins_lr) / n)
@@ -300,7 +300,7 @@ def test_the_slab_reverse_is_the_transpose_of_the_forward(tmp_path, cache_dir):
     vt, vb = rng.normal(size=n), rng.normal(size=n)
     dt, db = np.zeros(n), np.zeros(n)
     hawk.run(hawk.load(tmp_path / "j", "j"), dot_sigma_t=1.0, dot_sigma_ref=1.0, dot_through=dt,
-             dot_back=db, dot_tally=np.zeros(3), dot_tally_c=np.zeros(3), **common)
+             dot_back=db, dot_tally=np.zeros(3), **common)
     bar_t, bar_r = np.zeros(n), np.zeros(n)
     hawk.run(hawk.load(tmp_path / "v", "v"), bar_through=vt, bar_back=vb, bar_tally=np.zeros(3), bar_tally_c=np.zeros(3),
              bar_sigma_t=bar_t, bar_sigma_ref=bar_r, **common)

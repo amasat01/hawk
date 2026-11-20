@@ -403,14 +403,6 @@ def test_the_reserved_counters_are_uint32():
     assert side["arg_dtypes"][mix] == "uint32"
 
 
-def test_a_deployed_sidecar_describes_its_integer_mutables():
-    from hawk.runtime import descriptor_for_sidecar
-
-    kinds = descriptor_for_sidecar(_sidecar(casts))
-    spec = dict(zip((nm for _, nm in _ir.arg_spec(casts.walk)), kinds))
-    assert spec["to_i"] == spec["n"] == "int_handle" and spec["s"] == "int"
-
-
 def test_eagle_reads_the_label_and_allocates_to_match(host_plans):
     assert host_plans[2].plugin.arg_dtypes["to_u"] == "uint32"
     got = host_plans[2].run(**_cast_inputs())

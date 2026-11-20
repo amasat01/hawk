@@ -7,6 +7,7 @@ view, single sample), and the refusal texts for the rest."""
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import MappingProxyType
 
 from .errors import HawkError
 
@@ -85,6 +86,67 @@ def split_marks(arrays: dict, layout=None):
     if not axes:
         return arrays, axes
     return {n: (v.array if n in axes else v) for n, v in arrays.items()}, axes
+
+
+#: The ``memoryview`` format character of a DLPack ``(type code, bits)``: 0 signed, 1 unsigned, 2 float, 6 bool.
+_FORMAT_OF_DLPACK = MappingProxyType({(0, 8): "b", (0, 16): "h", (0, 32): "i", (0, 64): "q", (1, 8): "B", (1, 16): "H",
+                                      (1, 32): "I", (1, 64): "Q", (2, 16): "e", (2, 32): "f", (2, 64): "d", (6, 8): "?"})
+
+
+class _Described:
+    """What the host library states of an array that exports DLPack and no buffer: the members of a ``memoryview`` that
+    hawk's checks read (``shape``, ``ndim``, ``format``, ``itemsize``, ``readonly``, the two contiguities)."""
+
+    def __init__(self, layout: dict) -> None:
+        code, bits, _lanes = layout["dtype"]
+        self.shape = tuple(layout["shape"])
+        self.ndim = len(self.shape)
+        self.format = _FORMAT_OF_DLPACK.get((code, bits), "?")
+        self.itemsize = max(bits // 8, 1)
+        self.readonly = bool(layout["read_only"])
+        self._strides = layout["strides"]
+
+    def _contiguous(self, order) -> bool:
+        if self._strides is None:
+            return order == "C" or self.ndim <= 1
+        expect, shape = 1, self.shape
+        for axis in (reversed(range(self.ndim)) if order == "C" else range(self.ndim)):
+            if shape[axis] != 1 and self._strides[axis] != expect:
+                return False
+            expect *= shape[axis]
+        return True
+
+    @property
+    def c_contiguous(self) -> bool:
+        return self._contiguous("C")
+
+    @property
+    def f_contiguous(self) -> bool:
+        return self._contiguous("F")
+
+
+def describe(value):
+    """The shape, dtype and flags of ``value``: its ``memoryview``, or, for an array that exports DLPack and no buffer, what
+    the host library reads from its DLPack tensor (:class:`_Described`)."""
+    try:
+        return memoryview(value)
+    except TypeError:
+        pass
+    if not hasattr(value, "__dlpack__"):
+        raise TypeError(f"{type(value).__name__} exports neither the buffer protocol nor DLPack")
+    from . import ospreys
+    from .targets import host_target
+
+    return _Described(ospreys.serving(host_target().id).runtime_door().array_layout(value))
+
+
+def is_buffered(value) -> bool:
+    """Whether ``value`` exports the buffer protocol, so hawk can make a view of it (transpose, reshape, slice)."""
+    try:
+        memoryview(value)
+    except TypeError:
+        return False
+    return True
 
 
 def _is_single(shape: tuple, width: int) -> bool:

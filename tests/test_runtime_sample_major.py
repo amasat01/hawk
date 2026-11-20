@@ -27,6 +27,7 @@ import pytest
 from conftest import sidecar_of
 
 from hawk import runtime as rt
+from hawk._plane_layout import plane_layout
 from hawk.errors import HawkError
 
 N = 8
@@ -95,17 +96,17 @@ def test_a_square_plane_needs_its_axis_said(built):
 
 def test_plane_layout_classification():
     c = np.zeros((3, N))
-    assert rt.plane_layout(memoryview(c), 3) == "native"
-    assert rt.plane_layout(memoryview(c.T), 3) == "view"
-    assert rt.plane_layout(memoryview(np.zeros((N, 3))), 3) == "copy"
-    assert rt.plane_layout(memoryview(np.zeros((3, 3))), 3) == "ambiguous"
-    assert rt.plane_layout(memoryview(np.zeros(N)), 1) == "native"
-    assert rt.plane_layout(memoryview(np.zeros((N, 3))), 1) == "native"
+    assert plane_layout(memoryview(c), 3) == "native"
+    assert plane_layout(memoryview(c.T), 3) == "view"
+    assert plane_layout(memoryview(np.zeros((N, 3))), 3) == "copy"
+    assert plane_layout(memoryview(np.zeros((3, 3))), 3) == "ambiguous"
+    assert plane_layout(memoryview(np.zeros(N)), 1) == "native"
+    assert plane_layout(memoryview(np.zeros((N, 3))), 1) == "native"
 
 
 def test_plane_layout_single_sample_corpus():
     """The head is one sample; a shape that is also a batch is a batch."""
-    single = rt.plane_layout
+    single = plane_layout
     assert single(memoryview(np.zeros(())), 1) == "single"
     assert single(memoryview(np.zeros(1)), 1) == "native"        # batch of one
     assert single(memoryview(np.zeros(3)), 3) == "single"
@@ -172,13 +173,12 @@ def test_a_python_number_bound_to_a_plane_is_refused(built):
         rt.run(_scalar(built), x=2.0, a=1.0, b=0.0, y=np.zeros(()))
 
 
-def test_a_longer_plane_binds_its_own_component_pitch(built):
-    """Regression: (3, L) with L = 2N and n_samples = N. Each component must be
-    read at offset c * L. With the old pitch of n_samples, component 1 was
-    read from x[0, N:], and y's component 1 landed in y[0, N:]."""
+def test_a_plane_longer_than_n_samples_is_refused_with_the_slice_to_pass(built):
+    """The component pitch of a bound plane is its sample count, so a longer plane is refused by name with the
+    shape it must have at this ``n_samples``; a column slice of it is strided and is refused as such."""
     L = 2 * N
     x = np.arange(3 * L, dtype=float).reshape(3, L) + 1.0
     y = np.zeros((3, L))
-    rt.run(_vec3(built), x=x, a=2.0, y=y, n_samples=N)
-    np.testing.assert_allclose(y[:, :N], 2.0 * x[:, :N])
-    np.testing.assert_array_equal(y[:, N:], 0.0)
+    with pytest.raises(HawkError, match=rf"plane 'x' is declared 3 component\(s\) wide, so at n={N} its plane is "
+                                        rf"\(3, {N}\); got \(3, {L}\); pass a slice of {N} samples"):
+        rt.run(_vec3(built), x=x, a=2.0, y=y, n_samples=N)

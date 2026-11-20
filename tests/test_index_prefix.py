@@ -10,6 +10,7 @@ touched (their outputs keep their values); a ``hawk.sum`` and a keyed sum add th
 
 from __future__ import annotations
 
+import math
 import _deploy as L
 import numpy as np
 import pytest
@@ -61,6 +62,14 @@ def built(tmp_path_factory, cache_dir):
     return out
 
 
+def _finish(rows, comp, op):
+    """The cell of rows and their compensation: an exactly rounded sum (``math.fsum``, the oracle) for a sum or
+    a mean, the extreme row for a max or a min."""
+    if op in ("sum", "mean"):
+        return math.fsum(rows) + math.fsum(comp)
+    return rows.max() if op == "max" else rows.min()
+
+
 def _go(bundle, name, target, planes, outs):
     """One launch; returns the planes named ``outs`` afterwards."""
     planes = {k: (v.copy() if k in outs else v) for k, v in planes.items()}
@@ -70,8 +79,6 @@ def _go(bundle, name, target, planes, outs):
     import cupy as cp
     import eagle.exec as eexec
     from eagle import plan as eplan
-    from hawk import _cells
-
     cells = sidecar_of(bundle, name).get("cells") or {}
     rows = -(-N // 32)
     rows = -(-N // 32)
@@ -83,7 +90,7 @@ def _go(bundle, name, target, planes, outs):
     cp.cuda.get_current_stream().synchronize()
     out = {k: cp.asnumpy(dev[k]) for k in outs if k not in cells}
     for c in cells:                     # the plain finish over every row: a row past the count holds the identity
-        out[c] = np.asarray(_cells.finish(cp.asnumpy(dev[c]), cp.asnumpy(dev[c + "_comp"]), cells[c]["op"])).reshape(1)
+        out[c] = np.asarray(_finish(cp.asnumpy(dev[c]), cp.asnumpy(dev[c + "_comp"]), cells[c]["op"])).reshape(1)
     return out
 
 

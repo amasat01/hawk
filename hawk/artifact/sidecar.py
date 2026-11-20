@@ -303,6 +303,8 @@ def _dispatches(infos) -> list:
                 entry["classify"] = d.classify
         if d.units:
             entry["units"] = list(d.units)
+        if d.strategy == "segmented" and d.group_units:
+            entry["group_units"] = [dict(ref) for ref in d.group_units]
         out.append(entry)
     return out
 
@@ -547,7 +549,10 @@ def _unit_walk(unit: dict, planes: dict, kernel, family: list) -> SimpleNamespac
                                          selector_reads=_ir.selector_reads(kernel.walk, held[d["name"]][0]),
                                          branch_costs=d["branch_costs"],
                                          units=tuple(ref["name"] for ref in d["branches"]),       # the record lists a segmented group's branch units in order
-                                         classify=None if d["classify"] is None else d["classify"]["name"])
+                                         classify=None if d["classify"] is None else d["classify"]["name"],
+                                         # the units a run of a segmented group loads beside the branch: every branch and the one selector
+                                         group_units=tuple({"name": ref["name"], "digest": ref["digest"]}
+                                                           for ref in [*d["branches"], *(r for r in (d["classify"] or d["sweep"],) if r)]))
                          for d in listed),
     )
 
@@ -590,7 +595,8 @@ def _team_record(team: dict, source_body: dict, stage_slots: list) -> dict:
 
 def _split_block(source: dict, family: list) -> dict:
     """What the first stage of a cut kernel carries: every stage, every cell, the scratch planes and the keyed planes, as the
-    entry-less unit that lists the stages records them."""
+    entry-less unit that lists the stages records them, and that unit itself: its name, digest and slot names (``source``),
+    which is the unit a run loads and binds."""
     body = source["meta"]["body"]
     cells = {c["name"]: {"op": _snake(c["op"]), "columns": c["columns"], **({"internal": True} if c["internal"] else {})} for c in body["cells"]}
     stages = []
@@ -599,7 +605,9 @@ def _split_block(source: dict, family: list) -> dict:
         if st["team"] is not None:
             record["team"] = _team_record(st["team"], body, body["slots"])
         stages.append(record)
-    out = {"cells": cells, "stages": stages}
+    out = {"cells": cells, "stages": stages,
+           "source": {"name": source["meta"]["name"], "digest": source["meta"]["digest"],
+                      "slots": [slot["name"] for slot in body["slots"]]}}
     scratch = {}
     for p in body["team_planes"]:
         row = {"dtype": {"Real": "real"}.get(p["dtype"], _snake(p["dtype"])), "per_lane": p["per_lane"]}
@@ -685,6 +693,7 @@ def sidecar_of_unit(kernel, unit: dict, *, lead_device: bool, fmt: str, scalar_t
         out.update(_split_block(source, family))
     if body["cell_row"]:
         out["cell_row"] = body["cell_row"]
+    out["slots"] = names                # the unit's slot table, in the order a run binds by
     # The chunk cap belongs to an ordered scatter: the unit of the family that has one states it, and the
     # family's other units carry the same number; a family with no ordered scatter states none.
     chunk_cap = max(u["meta"]["body"]["scatter_chunks"] for u in family)

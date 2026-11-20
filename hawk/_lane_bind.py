@@ -327,9 +327,7 @@ def _bind_grid(sidecar: dict, arg_spec, arrays: dict, n_samples, per_sample_role
             raise HawkError(f"{where}: lane-shaped arguments disagree on the lane shape: "
                             f"{seen} vs {dims} ({name!r})")
         seen = dims
-        flat = mv.cast("B").cast(mv.format, shape=list(head) + [prod(dims)]) if head \
-            else mv.cast("B").cast(mv.format)
-        out[name] = flat
+        out[name] = out[name].reshape((*head, prod(dims)))
     total = None if seen is None else prod(seen)
     if extent is not None:
         want = extent * prod(static)

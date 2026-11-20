@@ -76,7 +76,8 @@ _WRT = ("table",)
 
 
 def _mem(values, typecode="q"):
-    return array.array(typecode, values)
+    """A buffer made the way a caller holding a plain one wraps it: through ``numpy.asarray``."""
+    return np.asarray(array.array(typecode, values))
 
 
 #: A PLACEHOLDER unit digest (this file never resolves it — that is
@@ -157,12 +158,27 @@ def test_a_kernel_with_no_per_sample_plane_requires_explicit_n_samples():
         R._n_from(arg_spec, arrays)
 
 
+def test_a_plain_buffer_is_refused_by_name_and_numpy_asarray_is_the_fix(gather_vjp_unit):
+    """``hawk.run`` takes arrays: a plain buffer (``array.array``) exports no DLPack, so it is refused naming the
+    argument and the fix, and the same values wrapped in ``numpy.asarray`` run."""
+    from conftest import sidecar_of
+
+    kernel = R.load(gather_vjp_unit.directory, "gather_vjp", sidecar_of(gather_vjp_unit, "gather_vjp"))
+    where = array.array("i", [0, 1, 2])
+    bar_y = np.array([1.0, 2.0, 3.0])
+    with pytest.raises(HawkError, match=r"'where'.*plain buffer.*wrap it in numpy.asarray\(where"):
+        R.run(kernel, bar_y=bar_y, where=where, bar_table=np.zeros(3), table=np.zeros(3), n_samples=3)
+    bar_table = np.zeros(3)
+    R.run(kernel, bar_y=bar_y, where=np.asarray(where), bar_table=bar_table, table=np.zeros(3), n_samples=3)
+    np.testing.assert_allclose(bar_table, bar_y)
+
+
 def test_explicit_n_samples_always_wins_over_the_bound_planes(gather_vjp_unit):
     """The positive control every refusal/inference row above is judged
     against: `hawk.runtime.run`'s `n_samples=` bypasses `_n_from` ENTIRELY, so
-    it is honoured even where it asks for FEWER samples than the bound
-    per-sample planes actually hold -- the caller who knows better is never
-    second-guessed by a vote it never asked for."""
+    it is honoured even where it asks for FEWER samples than the arrays the
+    caller allocated hold (it passes slices of that many) -- the caller who
+    knows better is never second-guessed by a vote it never asked for."""
     from conftest import sidecar_of
 
     kernel = R.load(gather_vjp_unit.directory, "gather_vjp",
@@ -170,7 +186,7 @@ def test_explicit_n_samples_always_wins_over_the_bound_planes(gather_vjp_unit):
     bar_y = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])   # 8 samples
     where = np.array([0, 1, 2, 0, 1, 2, 3, 4], dtype=np.int32)
     bar_table = np.zeros(5)
-    R.run(kernel, bar_y=bar_y, where=where, bar_table=bar_table, table=np.zeros_like(bar_table), n_samples=3)
+    R.run(kernel, bar_y=bar_y[:3], where=where[:3], bar_table=bar_table, table=np.zeros_like(bar_table), n_samples=3)
     want = np.zeros(5)
     np.add.at(want, where[:3], bar_y[:3])                        # only 3 scattered
     np.testing.assert_allclose(bar_table, want)

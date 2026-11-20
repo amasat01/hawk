@@ -115,8 +115,8 @@ def test_the_check_refuses_the_first_offending_position(loaded, monkeypatch):
 def test_the_check_only_reads_the_launched_lanes(loaded, monkeypatch):
     monkeypatch.setenv("HAWK_CHECK_SORTED", "1")
     x, seg, _ = _data()
-    seg[35] = 0                                       # past the 20 lanes launched
-    rt.run(loaded["by_segment"], x=x, seg=seg, acc=np.zeros(SEGMENTS), n_samples=20)
+    seg[35] = 0                                       # past the 20 lanes launched, so outside the slices passed
+    rt.run(loaded["by_segment"], x=x[:20], seg=seg[:20], acc=np.zeros(SEGMENTS), n_samples=20)
 
 
 def test_an_unsorted_index_is_never_checked(loaded, monkeypatch):

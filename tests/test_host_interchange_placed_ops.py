@@ -92,8 +92,5 @@ def test_a_placed_wide_value_feeds_a_whole_value_op(name, tmp_path, cache_dir):
     assert "hawk host loop interchange" in (b.directory / f"{k.name}.cpp").read_text()    # the tile loop runs interchanged
     kernel = O.load(b.directory, k.name, sidecar_of(b, k.name))
     planes = {"a": a, "s": s, "t": t, "y": np.zeros((W, N) if name != "dot" else N)}
-    for _role, nm in kernel.arg_spec:
-        if nm.startswith("hwd"):
-            planes[nm] = np.zeros(1)
     got = np.asarray(O.run_kernel(kernel, N, **planes))
     assert np.array_equal(got, want(a, s, t)), f"{name}: the result differs from NumPy's"

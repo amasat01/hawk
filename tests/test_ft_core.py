@@ -27,7 +27,6 @@ from pathlib import Path
 import ft_gate as gate
 import ft_gate as ft
 import pytest
-from conftest import sidecar_of
 
 from hawk import _core
 
@@ -40,7 +39,6 @@ EXPECTED_TESTS = frozenset(
         "test_core_is_gil_free",
         "test_core_canary_loses_updates",
         "test_crossings_exact_under_threads",
-        "test_shared_argblock_is_never_torn",
         "test_shared_hostlibrary_entries_stay_intact",
         "test_bindings_never_release_the_gil",
     }
@@ -92,72 +90,6 @@ def test_crossings_exact_under_threads():
 # --------------------------------------------------------------------------- #
 # FT-5: ONE stateful object shared across threads. Memory-safe, calls serialise.
 # --------------------------------------------------------------------------- #
-_ARGBLOCK_CHILD = r"""
-import faulthandler, json, sys, threading
-import numpy as np
-from hawk import runtime
-import _oracle as O
-
-faulthandler.enable()
-faulthandler.dump_traceback_later(60, exit=True)
-directory, sidecar, binders, runs = sys.argv[1], json.loads(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
-N = 8
-kernel = O.load(directory, "vec3_scale", sidecar)
-xa = np.arange(6 * N, dtype=np.float64)              # pitch N in use (3 * N valid)
-xb = 1000.0 + np.arange(6 * N, dtype=np.float64)     # pitch 2N
-y = np.zeros((3, N))
-kernel.bind_all({"x": xa[: 3 * N].reshape(3, N).copy(), "a": 1.0, "y": y}, N)
-slot = kernel.slot_of[("vec_in", "x")]
-keep = []
-pa, pb = runtime.buffer_address(xa, keep), runtime.buffer_address(xb, keep)
-want_a = xa[: 3 * N].reshape(3, N).copy()
-want_b = xb.reshape(3, 2 * N)[:, :N].copy()
-kernel.block.bind(slot, pa, N, 1, 0, 0)
-stop = threading.Event()
-errors = []
-
-def binder(flip):
-    try:
-        while not stop.is_set():
-            kernel.block.bind(slot, pa, N, 1, 0, 0)
-            kernel.block.bind(slot, pb, 2 * N, 1, 0, 0)
-    except (RuntimeError, ValueError) as exc:        # the documented outcomes
-        errors.append(repr(exc))
-
-pool = [threading.Thread(target=binder, args=(i,)) for i in range(binders)]
-for t in pool:
-    t.start()
-torn = 0
-try:
-    for _ in range(runs):
-        kernel.entry.run(kernel.block, 0, N, N)
-        if not (np.array_equal(y, want_a) or np.array_equal(y, want_b)):
-            torn += 1
-finally:
-    stop.set()
-    for t in pool:
-        t.join()
-print(json.dumps({"torn": torn, "runs": runs, "errors": errors}))
-"""
-
-
-def test_shared_argblock_is_never_torn(built):
-    gate.require_free_threaded()
-    bundle = built["vec3"]
-    proc = subprocess.run(
-        [sys.executable, "-c", _ARGBLOCK_CHILD, str(bundle.directory),
-         json.dumps(sidecar_of(bundle, "vec3_scale")), "7", "20000"],
-        capture_output=True, text=True, timeout=180, check=False,
-        cwd=str(Path(__file__).resolve().parent),
-    )
-    assert proc.returncode == 0, (
-        f"child died (rc={proc.returncode}):\n{proc.stderr[-2000:]}")
-    out = json.loads(proc.stdout.strip().splitlines()[-1])
-    assert out["errors"] == [], out["errors"]
-    assert out["torn"] == 0, (
-        f"{out['torn']} of {out['runs']} runs read a half-written mirror")
-
-
 _LIBRARY_CHILD = r"""
 import faulthandler, json, sys, threading
 from hawk import _core

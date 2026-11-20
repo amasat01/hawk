@@ -72,9 +72,6 @@ def test_both_loop_shapes_return_the_same_bits_and_numpy_s(name, tmp_path, cache
         b = build_bundle([k], tmp_path / f"d{len(defines)}", targets=("host",), cache_dir=cache_dir, defines=defines,
                          host_profile="native")
         kernel = O.load(b.directory, k.name, sidecar_of(b, k.name))
-        for _role, nm in kernel.arg_spec:           # a scratch plane of a placement: a host text never touches it
-            if nm.startswith("hwd"):
-                planes_run[nm] = np.zeros(1)
         got.append(np.array(O.run_kernel(kernel, n, **planes_run)))
     assert np.array_equal(got[0], got[1]), "the two loop shapes differ"
     assert np.array_equal(got[0], entry.want(np.float64, planes, n)), "the result differs from NumPy's"

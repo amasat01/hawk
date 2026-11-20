@@ -1,509 +1,452 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""The thin Python face over :mod:`hawk._core` — descriptor, bind, launch.
+"""Loading a built host kernel and running it over the runtime door of the host OSPREY.
 
-This module splits the host path by LIFETIME: everything a launch pays
-for is C++ (the ``void*[]``, the mirror marshal, the entry cache, the
-serial driver), and what stays in Python happens once per kernel —
-turning a slot's declared role into the by-value ABI shape it rides as,
-and handing the descriptor to :class:`hawk._core.ArgBlock`. It is not a
-runtime; it is the last mile of the DEFINITION.
+hawk's part is what no target decides: it resolves a plane's name to its slot from the kernel's sidecar,
+classifies each array's layout, infers and checks the sample count and refuses a wrong argument by name, all
+the failures of one call together. Everything that runs is the library's, reached through one
+:class:`_osprey.Door` (:meth:`hawk.ospreys.Osprey.runtime_door`): the unit is loaded, each array is wrapped as a plane,
+a plan is made over the range, the planes are bound and the plan is launched. The scratch planes a kernel
+owns (the finished counter, the step word, the compensation companions, the rows of a sum over samples, the
+planes between the stages of a split kernel) are made and folded by the door, so no array library is needed
+here.
 
-The descriptor is derived, never re-tabulated: a slot's kind comes from
-the mirror the lowering answer states for the slot (the sidecar's ``arg_mirrors``), the one the
-entry signature was generated from, so a slot cannot be described
-one way to the compiler and another to the marshal — the failure mode
-being a 32-byte handle where the kernel reads a 40-byte mirror, which
-is deterministic garbage, not a crash.
+Arrays are NumPy arrays or anything else that exports DLPack and the buffer protocol; the plane is the caller's
+memory, written in place. A plain buffer (``array.array``, ``bytes``) exports no DLPack and is refused by name.
+Every bound argument is validated against the sidecar's declaration before the door is called
+(:func:`_check_bind`): dtype is exact and fixed by role (every integer-valued role rides a 64-bit wire, and
+``Terminated`` is always ``bool``), a per-sample plane holds exactly ``n_samples`` samples, every plane is
+C-contiguous and a sink role's plane writable, except a sample-major plane whose transpose is C-contiguous,
+which binds as that view (:func:`plane_layout`). A ``(w, w)`` plane reads both ways and is refused unless
+``layout="samples_first"``/``"samples_last"`` (per call) or ``hawk.samples_first(x)``/``hawk.samples_last(x)``
+(per array, which wins) says which axis holds the samples.
 
-No numpy, and no allocation: planes cross through the buffer protocol,
-so a numpy array, a torch CPU tensor and a plain :class:`array.array`
-all bind the same way. Output planes are the caller's.
+The shape a caller passes and the shape the door is handed, by role (``w`` the declared width, ``P`` the payload axes the unit
+states for the slot, ``N`` the samples; the door binds by the unit's declared shape):
 
-The crossing budget is visible in the method split:
-:meth:`HostKernel.bind_all` is per bind, :meth:`HostKernel.rebind` is
-bulk (one crossing for the whole changed set), and
-:meth:`HostKernel.launch` is the single per-launch crossing.
+==============================  ==========================================  ==================================
+role                            the caller passes                           the door is handed
+==============================  ==========================================  ==================================
+per-sample plane, scalar        ``(N,)``                                    ``(N,)`` as passed
+per-sample plane, width ``w``   ``(w, N)``, or ``(N, w)`` whose transpose   ``(*P, N)``: ``(w, N)``; a matrix
+(``per_sample``, ``mutable``,   is contiguous; ``layout=`` / markers        payload ``(R, C)`` gets
+``out``, ``vec_in``,            settle ``N == w``                           ``(R, C, N)``; ``(N, w)`` as its
+``mat_in``, ``terminated``)                                                 transpose view, no copy
+one sample                      the head alone: ``()``, ``(w,)``            ``(*P, 1)``, a batch of one
+a matrix read at lane indices   ``(R*C, m)`` compact                        ``(R, C, m)``
+(``gather_mats``)
+table (``lookup``)              any contiguous array; a shared parameter    as passed
+                                in its declared shape
+wide plane (``wide_in``,        any contiguous array; a flat ``(W*N,)``     as passed, never reshaped (the
+``wide_out``)                   holds element ``(e, c)`` at ``e*W + c``     door's handle takes its trailing
+                                                                            extent)
+cell of a sum over samples      ``(columns,)``, one value per column        one ``(1,)`` view per column slot
+(``cells``)
+scatter target (``accum_out``)  ``(*payload, *axes)`` as declared           as passed
+uniform                         a Python number or a 0-d array              its bytes at the wire dtype
+==============================  ==========================================  ==================================
 
-Every bound argument is validated against the declaration in
-:meth:`HostKernel.bind_all`, before any address is taken
-(:func:`_check_bind`), since a wrong dtype or size used to run silently
-and return garbage or segfault. Dtype is exact and fixed by role (every
-integer-valued role rides a 64-bit wire regardless of how it was
-declared in Python, and ``Terminated`` is always ``bool``); shape
-requires a per-sample plane at least ``n_samples`` long (shorter is
-always the bug); every
-plane must be C-contiguous and a sink role's plane writable, except a
-sample-major plane whose transpose is C-contiguous, which binds
-zero-copy (:func:`plane_layout`). A ``(w, w)`` plane reads both ways and is
-refused unless ``layout="samples_first"``/``"samples_last"`` (per call) or
-``hawk.samples_first(x)``/``hawk.samples_last(x)`` (per array, which wins) says
-which axis holds the samples. :meth:`HostKernel.rebind` takes raw
-pointers, which carry none of this, and is the unchecked fast path over
-an already-validated bind.
+The library makes and the caller does not bind: the sample count, the step word, the finished counter, a dispatch group's
+branch counters, compensation planes, a cell's rows and the planes between the stages of a split kernel.
 
-Threading. Two :class:`HostKernel` objects are independent and run freely in
-parallel. ONE :class:`HostKernel` shared across threads is safe: :func:`run`
-(bind and launch together), :meth:`~HostKernel.bind_all` and
-:meth:`~HostKernel.launch` each hold the kernel's lock, so concurrent calls
-queue and each sees only its own planes. Separate ``bind_all`` and ``launch``
-calls from different threads are still the caller's to order. Module-level state (the build
-counters, the primitive registry, the unit publisher) is always safe to use
-from any thread.
+Threading. The door's context admits one calling thread at a time: a second thread calling while another is
+inside the door is refused by the door, with its reason.
 """
 
 from __future__ import annotations
 
-import array
-import ctypes
-import threading
+import json
+import struct
 from pathlib import Path
+from types import MappingProxyType
 
-from . import _cells, _core, _lane_bind
+import _osprey
+
+from . import _cells, _ir, _lane_bind, ospreys
 from ._bind_checks import _PER_SAMPLE_ROLES, _check_bind, _n_from, narrow_index, refuse_index_width, widen_index
-from ._plane_layout import (
-    LayoutChoice,
-    _native_extent,
-    plane_layout,
-    split_marks,
-)
+from ._plane_layout import LayoutChoice, describe, is_buffered, split_marks
 from .errors import HawkError
-from .targets import ENTRY_KINDS
-from . import _ir
+from .targets import ENTRY_KINDS, host_target
 
-__all__ = ["ArgBlock", "HostKernel", "descriptor_for_sidecar", "DEVICE_CPU",
-           "check_scatter_status", "dispatch_costs", "kind_for", "load", "run", "steps_reverse_table"]
+__all__ = ["HostKernel", "check_scatter_status", "dispatch_costs", "load", "run", "steps_reverse_table"]
 
-#: The DLPack CPU device code every host plane's mirror carries. Spelled
-#: here rather than imported, to sever the runtime.
-DEVICE_CPU = 1
-
-#: :class:`hawk._core.ArgBlock`, re-exported so a consumer never has to
-#: reach into the extension directly.
-ArgBlock = _core.ArgBlock
-
-#: The by-value ABI shape the lowering answer states for a slot -> ``_core`` descriptor-kind vocabulary.
-_KIND_OF_MIRROR = {"GRefMirror": "gref", "ScalarHandle": "handle"}
-
-_INT_DTYPES = ("i32", "i64", "int32", "uint32")
+#: The struct format a uniform's value is packed with, by the wire dtype the sidecar states for it.
+_UNIFORM_FORMAT = MappingProxyType({"float64": "<d", "float32": "<f", "int64": "<q", "int32": "<i", "uint32": "<I", "bool": "<?"})
 
 
-def kind_for(role: str, ttype: _ir.TensorType, mirror: str, *, scalar_type: str = "float64") -> str:
-    """The ``_core`` descriptor kind ONE slot binds as, given the ``mirror`` shape the lowering
-    answer states for it (``"GRefMirror"``, ``"ScalarHandle"`` or ``"value"``).
+def _through_door(call, *args, **kwargs):
+    """Return ``call(*args, **kwargs)``; a refusal of the door is raised as :class:`~hawk.errors.HawkError`, its reason as given."""
+    try:
+        return call(*args, **kwargs)
+    except (ValueError, _osprey.Fault) as refusal:
+        raise HawkError(str(refusal)) from refusal
 
-    The mirror-shaped roles by their POD, the by-value ones by the
-    element spelling the entry declares them with — the index width for
-    ``nsamples``, the emitter's ``Int`` for an integer uniform, and the
-    kernel's compiled ``Real`` otherwise."""
-    if mirror == "value":
-        if role == "nsamples":
-            return "nsamples"
-        if ttype.dtype in _INT_DTYPES:
-            return "int"
-        return {"float32": "f32", "banded": "banded"}.get(scalar_type, "f64")
-    kind = _KIND_OF_MIRROR[mirror]
-    if kind == "handle" and ttype.dtype in _INT_DTYPES:
-        return "int_handle"
-    return kind
-
-
-def descriptor_for_sidecar(sidecar: dict) -> list:
-    """The per-slot kind list for a DEPLOYED artifact, from its sidecar
-    alone.
-
-    A consumer holds a directory, not a canonical walk, so
-    types are reconstructed from the sidecar's own blocks: ``mutables``
-    (resolves a ``mutable`` role's shape — without it a
-    ``Mutable[Vector[3]]`` packs as a 32-byte handle where the kernel
-    expects a 40-byte mirror), ``vec_widths`` and ``mat_shapes`` (the
-    declared extents of the vector and matrix inputs), ``params`` and
-    ``scalar_type``. A slot's kind is decided by role and rank, but the
-    type handed to :func:`kind_for` is the declared one, whatever the
-    extents (``Matrix[R, C]``, ``Vector[W]``)."""
-    scalar_type = sidecar.get("scalar_type", "float64")
-    mutables = {m["name"]: m for m in sidecar.get("mutables", ())}
-    wire = sidecar.get("arg_dtypes", {})
-    mirrors = sidecar.get("arg_mirrors", {})
-    params = {p["name"]: p for p in sidecar.get("params", ())}
-    out = []
-    for role, name in (tuple(pair) for pair in sidecar["arg_spec"]):
-        if role in ("mutable", "out"):
-            ttype = _mutable_ttype(name, mutables.get(name, {}))
-        elif role == "uniform":
-            ttype = _ir.TensorType((), "i64" if params.get(name, {}).get("dtype") == "int"
-                               else "f64")
-        elif role == "vec_in":
-            ttype = _ir.TensorType((int(_extent(sidecar.get("vec_widths", {}).get(name),
-                                            "vec_widths", name)),), "f64")
-        elif role == "mat_in":
-            shape = _extent(sidecar.get("mat_shapes", {}).get(name), "mat_shapes", name)
-            ttype = _ir.TensorType(tuple(int(e) for e in shape), "f64")
-        else:
-            ttype = _ir.TensorType((), _WIRE_TO_DTYPE.get(wire.get(name), "f64"))
-        mirror = _extent(mirrors.get(name), "arg_mirrors", name)
-        out.append(kind_for(role, ttype, mirror, scalar_type=scalar_type))
-    return out
-
-
-def _extent(value, block: str, name: str):
-    """``value``, the extent the artifact declares for the plane ``name`` in
-    ``block``; a sidecar that omits it cannot be bound."""
-    if value is None:
-        raise HawkError(
-            f"the sidecar declares no {block!r} entry for {name!r}, so it "
-            "cannot be bound; rebuild the artifact")
-    return value
-
-
-def _mutable_ttype(name: str, decl: dict) -> _ir.TensorType:
-    """The type of a ``mutables`` entry: ``dtype`` names the rank, ``width`` and
-    ``shape`` the extents."""
-    dtype = decl.get("dtype", "scalar")
-    if dtype == "vector":
-        return _ir.TensorType((int(_extent(decl.get("width"), "mutables.width", name)),), "f64")
-    if dtype == "matrix":
-        shape = _extent(decl.get("shape"), "mutables.shape", name)
-        return _ir.TensorType(tuple(int(e) for e in shape), "f64")
-    return _ir.TensorType((), _MUTABLE_DTYPE[dtype])
-
-
-#: The IR dtype an integer ``arg_dtypes`` wire label stands for.
-_WIRE_TO_DTYPE = {"int64": "i64", "int32": "int32", "uint32": "uint32"}
-
-#: The IR dtype of each rank-0 ``mutables`` dtype.
-_MUTABLE_DTYPE = {"scalar": "f64", "int": "i64", "int32": "int32", "uint32": "uint32"}
 
 class HostKernel:
-    """One HAWK host artifact's entry, self-checked at load and bound once.
+    """One built host kernel: its sidecar and its unit, loaded through the host OSPREY's door.
 
-    Construction is per artifact + per kernel; everything after is per
-    bind or per launch. The library is held so the entry address can
-    never outlive it."""
+    Construction is per kernel; every :meth:`bind_all` and :meth:`launch` after it is per bind or per launch.
+    """
+
+    _FINISHED = _ir.FINISHED_PLANE
 
     def __init__(self, so_path, sidecar: dict) -> None:
+        """Load the unit the sidecar names from the library at ``so_path``, with the units of its stages."""
         self.path = Path(so_path)
         self.sidecar = sidecar
         self.arg_spec = tuple(tuple(pair) for pair in sidecar["arg_spec"])
         self.scalar_type = sidecar.get("scalar_type", "float64")
-        self.descriptor = descriptor_for_sidecar(sidecar)
-        entry_name = sidecar.get("host_entry")
-        if not entry_name:
+        if not sidecar.get("host_entry"):
             raise HawkError(
                 f"{self.path}: its sidecar declares no 'host_entry', so it carries "
                 "no host target to run"
             )
-        #: The self-check happens here, in C++: a wrong-layout artifact
-        #: refuses, naming the field, rather than computing garbage.
-        self.library = _core.HostLibrary(str(self.path))
-        self.entry = self.library.entry(entry_name)
-        #: ``{target: entry}``: the fold of each owned companion
-        #: (the writer's ``fold_entries``), run after the kernel.
-        self.folds = {target: self.library.entry(_cells.fold_entry_name(sidecar["kernel"], target)
-                                                 + "_host")
-                      for target in (sidecar.get("companions") or {}).values()}
-        self.block = _core.ArgBlock(self.descriptor)
-        self.slot_of = {pair: i for i, pair in enumerate(self.arg_spec)}
-        #: The input planes riding the 64-bit index wire: a 32-bit one is widened at bind.
-        self._index_inputs = tuple(
-            name for role, name in self.arg_spec
-            if role in ("per_sample", "lookup", "wide_in")
-            and sidecar.get("arg_dtypes", {}).get(name) == "int64")
-        self._values = []          # keeps every by-value ctypes box alive
-        self.one_step = None       # the word of 1 an unbound fused_steps reads
-        self.finished = None       # the counter an unbound finished_count fills
-        self._buffers = []         # keeps every exported buffer view alive
-        #: Held across everything one call touches (the block, the keepalive
-        #: lists, the shared scratch above), until its launch returns.
-        self._lock = threading.Lock()
+        door = ospreys.serving(host_target().id).runtime_door()
+        self._door = door
+        source = sidecar.get("source")
+        if source is None:
+            #: the unit a run loads and binds, and the specification of the planes it takes
+            members = self._group_members(sidecar)
+            self.unit = _load_unit(door, self.path, sidecar,
+                                   deps=[_load_unit(door, self.path, member) for member in members])
+            self._stages = []
+            slots = list(sidecar["slots"])
+            for member in members:      # the planes of the group's other units follow the branch's own in the slot table
+                slots += [name for name in member["slots"] if name not in slots]
+            role_of = {}
+            for pair in (*self.arg_spec, *(tuple(p) for member in members for p in member["arg_spec"])):
+                role_of.setdefault(pair[1], pair[0])
+            self._slots = slots
+            self.bind_spec = tuple((role_of[name], name) for name in slots if name in role_of)
+            self.declared = _declared_over([sidecar, *members]) if members else sidecar
+        else:
+            # a split kernel runs as the unit that lists its stages: the stage units are loaded first and named as its deps
+            later = [load(self.path.parent, record["kernel"]) for record in sidecar["stages"][1:]]
+            self._stages = later
+            stage_units = [_load_unit(door, self.path, sidecar), *(stage.unit for stage in later)]
+            self.unit = _load_unit(door, self.path, {"kernel": source["name"], "digest": source["digest"]}, deps=stage_units)
+            role_of = {}
+            for pair in (*self.arg_spec, *(p for stage in later for p in stage.arg_spec)):
+                role_of.setdefault(pair[1], pair[0])
+            self._slots = list(source["slots"])
+            self.bind_spec = tuple((role_of[name], name) for name in source["slots"] if name in role_of)
+            self.declared = _declared_over([sidecar, *(stage.sidecar for stage in later)])
+        self._slot_named = {name: i for i, name in enumerate(self._slots)}
+        #: ``{(role, name): slot}``: a slot is the index of the plane in the unit's slot table.
+        self.slot_of = {pair: self._slot_named[pair[1]] for pair in self.bind_spec}
+        self._made = _door_made_names(self.declared)
+        self._bound = None
+        self._one_step_word = None
+
+    def _group_members(self, sidecar: dict) -> list:
+        """The sidecars of the other units of the segmented dispatch group this unit is a branch of: its other branches and
+        its selector, which the library plans together with it (the sidecar's ``group_units`` names them)."""
+        members = []
+        for entry in sidecar.get("dispatch", ()):
+            group = entry.get("group_units") or ()
+            if any(member["name"] == sidecar["kernel"] for member in group):
+                members += [
+                    json.loads((self.path.parent / f"{member['name']}.json").read_text())
+                    for member in group
+                    if member["name"] != sidecar["kernel"]
+                ]
+        return members
 
     # -- per bind ----------------------------------------------------------
-    def _one_step_word(self, arrays: dict) -> dict:
-        """``arrays``, plus the reserved words a runner normally provides,
-        for each one this kernel uses and the caller leaves out: a
-        one-cell ``fused_steps`` word of ``1`` (a launch outside a runner
-        takes exactly one step) and a one-cell ``finished_count`` counter
-        reset to ``0`` (a kernel that finishes its own samples counts them
-        there; bind your own buffer to read the count), and a zeroed
-        ``<group>_mix`` plane per ``"auto"`` dispatch (its branch counts), and
-        a ``jump_seed`` of ``0`` for an alternate-path ``jump=`` derivative."""
-        from .diff.jump import SEED
-
-        extra = {}
-        if SEED not in arrays and any(n == SEED for _, n in self.slot_of):
-            extra[SEED] = 0
-        for name in (_ir.FUSED_STEPS_PLANE, _ir.FINISHED_PLANE):
-            if name in arrays or not any(n == name for _, n in self.slot_of):
-                continue
-            if name == _ir.FUSED_STEPS_PLANE:
-                if self.one_step is None:
-                    self.one_step = array.array("q", [1])
-                extra[name] = self.one_step
-            else:
-                if self.finished is None:
-                    self.finished = array.array("I", [0])
-                self.finished[0] = 0
-                extra[name] = self.finished
-        for entry in self.sidecar.get("dispatch", ()):
-            mix = entry.get("mix")
-            if mix is not None and mix not in arrays:
-                # an "auto" group's branch counters, left out: counted into a
-                # fresh scratch plane (bind your own to read them)
-                extra[mix] = array.array("I", [0] * int(entry["K"]))
-        return {**arrays, **extra} if extra else arrays
-
     def bind_all(self, arrays: dict, n_samples: int, *, layout=None) -> None:
-        """Bind every slot once (per bind). ``arrays`` maps a slot name to
-        a buffer-protocol object; a ``uniform`` maps to a Python number
-        and an ``nsamples`` role is bound from ``n_samples`` itself.
+        """Check ``arrays`` against the sidecar and keep them for :meth:`launch`.
 
-        VALIDATED FIRST, before any slot's address is taken
-        (:func:`_check_bind`): dtype, shape, C-contiguity and sink
-        writability, all read off the sidecar rather than hard-coded —
-        a wrong dtype or size used to silently return garbage or segfault.
-        Refuses naming every failing argument, not just the first. An
-        automatic kernel's ``fused_steps`` word may be left out (it is
-        bound to ``1``, one step per launch), and so may a finishing
-        kernel's ``finished_count`` counter (bound to a fresh ``0``)."""
-        with self._lock:
-            self._bind_all(arrays, n_samples, layout, keep=True)
+        ``arrays`` maps a slot name to an array; a ``uniform`` maps to a Python number. Refuses naming every
+        failing argument, not just the first. The planes stay the caller's memory, so a column of another
+        integer width than the kernel declares is refused (a copy would stay behind when the caller changes
+        the column); :func:`run` converts it instead. An automatic kernel's ``fused_steps`` word, a finishing
+        kernel's ``finished_count`` counter and the other planes the library owns are not bound.
+        """
+        self._bind_all(arrays, n_samples, layout, keep=True)
 
     def _bind_all(self, arrays: dict, n_samples: int, layout, *, keep: bool = False) -> None:
-        """``keep``: the planes stay bound after the call (``bind_all``), so an ``Index`` plane of
-        another width is refused instead of copied; ``run`` binds per call and converts."""
+        """Validate ``arrays`` and keep the views and uniform values to launch with.
+
+        ``keep``: the planes stay bound after the call (``bind_all``), so an ``Index`` plane of another width
+        is refused instead of copied; ``run`` binds per call and converts.
+        """
+        sidecar = self.declared
         arrays, axes = split_marks(arrays, layout)
         choice = LayoutChoice(layout, axes)
-        arrays = self._one_step_word(arrays)
+        arrays = self._with_seed(arrays)
+        arrays, counters = self._split_counters(arrays)
+        if _ir.FUSED_STEPS_PLANE in self._slot_named and _ir.FUSED_STEPS_PLANE not in arrays:
+            arrays = {**arrays, _ir.FUSED_STEPS_PLANE: self._one_step()}
+        index_inputs = tuple(
+            name
+            for role, name in self.bind_spec
+            if role in ("per_sample", "lookup", "wide_in") and sidecar.get("arg_dtypes", {}).get(name) == "int64"
+        )
         if keep:
-            refuse_index_width(self._index_inputs, self.sidecar.get("index_planes") or (), arrays,
-                               self.sidecar.get("kernel", ""))
+            refuse_index_width(index_inputs, sidecar.get("index_planes") or (), arrays, sidecar.get("kernel", ""))
         else:
-            if self._index_inputs:
-                arrays = widen_index(self._index_inputs, arrays)
-            if self.sidecar.get("index_planes"):
-                arrays = narrow_index(self.sidecar["index_planes"], arrays, self.sidecar.get("kernel", ""))
-        _check_bind(self.sidecar, self.arg_spec, arrays, n_samples, choice)
-        self._values, self._buffers = [], []
-        widths = self.sidecar.get("arg_shapes", {})
-        for slot, (role, name) in enumerate(self.arg_spec):
-            if role == "nsamples":
-                self.block.bind(slot, self._value_address(slot, n_samples),
-                                n_samples, 1, DEVICE_CPU, 0)
-            elif role == "uniform":
-                self.block.bind(slot, self._value_address(slot, arrays[name]),
-                                n_samples, 1, DEVICE_CPU, 0)
+            if index_inputs:
+                arrays = widen_index(index_inputs, arrays)
+            if sidecar.get("index_planes"):
+                arrays = narrow_index(sidecar["index_planes"], arrays, sidecar.get("kernel", ""))
+        arrays = self._with_cell_columns(arrays)
+        spec = tuple(pair for pair in self.bind_spec if pair[1] in arrays or pair[1] not in self._made)
+        _check_bind(sidecar, spec, arrays, n_samples, choice)
+        planes, uniforms = {}, {}
+        for role, name in spec:
+            if name not in arrays or role == "nsamples":
+                continue
+            if role == "uniform":
+                uniforms[name] = self._uniform_bytes(name, arrays[name])
             else:
-                # A GRef plane's component pitch is its trailing extent L,
-                # which may exceed n_samples; `ArgBlock.bind` derives the
-                # pitch from `samples`, so passing n_samples here would
-                # read every component after the first at the wrong offset.
-                samples = n_samples
-                if self.descriptor[slot] == "gref" and name in arrays:
-                    mv = memoryview(arrays[name])
-                    width = int(widths.get(name) or 1)
-                    samples = (mv.shape[-1] if name in (self.sidecar.get("gather_mats") or {})
-                               else _native_extent(mv, width, choice.of(name, mv, width)))
-                elif role in ("lookup", "wide_in") and name in arrays:
-                    # its own element count: a read at a computed index clamps to it (a Wide[W] plane holds
-                    # W elements per sample, so the sample count would hold every member past n / W at the edge)
-                    samples = memoryview(arrays[name]).nbytes // memoryview(arrays[name]).itemsize
-                self.block.bind(slot,
-                                self._buffer_address(arrays, name, role, choice),
-                                samples, 1, DEVICE_CPU, 0)
+                planes[name] = self._plane_view(role, name, arrays[name], choice)
+        self._bound = (planes, uniforms, counters)
 
-    def rebind(self, slots, ptrs) -> None:
-        """The BULK pointer swap: the whole changed set in ONE crossing.
+    def _one_step(self):
+        """The one-cell step word of ``1`` an automatic-step kernel reads when the caller binds none: a launch
+        outside a runner takes one step. Made once per kernel."""
+        if self._one_step_word is None:
+            import numpy as np
 
-        ``slots``/``ptrs`` are int64 sequences, converted to buffers
-        here once, since a Python call per slot is exactly the O(slots)
-        cost this exists to avoid.
+            self._one_step_word = np.ones(1, dtype=np.int64)
+        return self._one_step_word
 
-        UNCHECKED, by construction: a raw pointer carries no dtype,
-        shape or writability to check — :func:`_check_bind` validated
-        the original array at the :meth:`bind_all` call that produced
-        this pointer, and this call only swaps an already-approved
-        address. It is not where a new binding is introduced."""
-        return self.block.rebind(array.array("q", (int(s) for s in slots)),
-                                 array.array("q", (int(p) for p in ptrs)))
+    def _split_counters(self, arrays: dict) -> tuple:
+        """``(arrays without the counters, {name: array})``: the finished counter and a dispatch group's branch counters
+        a caller binds are the library's to count, so they are not bound as planes; they are checked here (one writable
+        array of the declared length) and filled from the plan's counters after the launch."""
+        names = {self._FINISHED: 1}
+        for entry in self.declared.get("dispatch", ()):
+            if entry.get("mix") is not None:
+                names[entry["mix"]] = int(entry["K"])
+        given = {name: arrays[name] for name in names if name in arrays}
+        errors = []
+        for name, value in given.items():
+            try:
+                view = describe(value)
+            except TypeError:
+                view = None
+            if view is None:
+                errors.append(f"argument {name!r}: the library fills this counter after the launch; pass a writable array, "
+                              f"numpy.zeros({names[name]}, dtype=numpy.uint32)")
+            elif view.readonly:
+                errors.append(f"argument {name!r}: the library fills this counter after the launch, so it must be "
+                              f"writable, got a read-only array")
+            elif tuple(view.shape) != (names[name],):
+                errors.append(f"argument {name!r}: this counter has {names[name]} cell(s), got shape {tuple(view.shape)}")
+        if errors:
+            raise HawkError(f"kernel {self.declared.get('kernel', '?')!r}: " + "; ".join(errors))
+        return {name: value for name, value in arrays.items() if name not in names}, given
 
-    def _cell_scratch_for(self, cells: dict, n_samples: int, arrays: dict):
-        """``(scratch, cell outputs, arrays)``: the caller binds each CELL
-        (``(columns,)``, the plane ``name`` or ``name_k`` of a wide one is its
-        column k); the rows are this kernel's own, made once per sample count."""
+    def _with_seed(self, arrays: dict) -> dict:
+        """``arrays`` plus a ``jump_seed`` of ``0`` when the kernel reads one and the caller left it out (an
+        alternate-path ``jump=`` derivative runs with seed 0 unless told otherwise)."""
+        from .diff.jump import SEED
+
+        if SEED in arrays or SEED not in self._slot_named:
+            return arrays
+        return {**arrays, SEED: 0}
+
+    def _with_cell_columns(self, arrays: dict) -> dict:
+        """``arrays`` with each cell the caller bound replaced by its columns, one one-cell view for each row plane.
+
+        A kernel that reduces over samples names a cell (``(columns,)``, one value per column); the unit's slot
+        for column ``k`` is the plane ``name`` or ``name_k``, one element.
+        """
+        cells = self.declared.get("cells") or {}
+        if not cells:
+            return arrays
         missing = [c for c in cells if c not in arrays]
-        if missing:
+        if missing and not self.declared.get("stages"):
             raise HawkError(
                 f"{self.path.name}: this kernel reduces over samples into the cells "
-                f"{sorted(cells)}; bind {missing} (one value per column), not its rows")
-        outputs = {c: arrays[c] for c in cells}
-        held = self.__dict__.setdefault("_cell_scratches", {})
-        if n_samples not in held:
-            held[n_samples] = _cells.Scratch(cells, n_samples, self.scalar_type, _cells.row_of(self.sidecar))
-        scratch = held[n_samples]
-        planes = {k: v for k, v in arrays.items() if k not in cells}
-        return scratch, outputs, {**planes, **scratch.rows}
+                f"{sorted(cells)}; bind {missing} (one value per column), not its rows"
+            )
+        out = {name: value for name, value in arrays.items() if name not in cells}
+        for cell, spec in cells.items():
+            if cell not in arrays:
+                continue
+            if not is_buffered(arrays[cell]):
+                if spec["columns"] != 1 or tuple(describe(arrays[cell]).shape) != (1,):
+                    raise HawkError(
+                        f"kernel {self.declared.get('kernel', '?')!r}: the cell {cell!r} exports DLPack and no buffer, so "
+                        f"hawk cannot slice it per column; pass shape ({spec['columns']},) as a one-cell array of one "
+                        f"column, or wrap it with numpy.asarray({cell})")
+                out[cell] = arrays[cell]
+                continue
+            column = arrays[cell].reshape(-1)
+            for k, plane in enumerate(_ir.planes(cell, spec["columns"])):
+                out[plane] = column[k : k + 1]
+        return out
+
+    def _uniform_bytes(self, name: str, value) -> bytes:
+        """The wire bytes of the uniform ``name``: its value at the width the sidecar states."""
+        wire = self.declared["arg_dtypes"][name]
+        if wire == "bool":
+            return struct.pack(_UNIFORM_FORMAT[wire], bool(value))
+        kind = float if wire.startswith("float") else int
+        return struct.pack(_UNIFORM_FORMAT[wire], kind(value))
+
+    def _plane_view(self, role: str, name: str, value, choice):
+        """The array ``value`` as the plane the unit's slot ``name`` takes (the table in the module docstring): the
+        caller's memory, never a copy.
+
+        A sample-major plane whose transpose is contiguous is bound as that transpose, one sample as a batch of one,
+        and a plane of per-sample payload axes (a vector, a matrix) as ``(*payload, samples)``. Any other role is
+        handed over as the caller passed it. An array that exports DLPack and no buffer is always handed over as
+        passed: hawk has no array library to make a view of it with, so one that needs a view is refused by name.
+        """
+        if role not in _PER_SAMPLE_ROLES:
+            return value
+        sidecar = self.declared
+        width = int(sidecar.get("arg_shapes", {}).get(name) or 1)
+        payload = tuple((sidecar.get("slot_shapes") or {}).get(name) or ())
+        view = describe(value)
+        kind = choice.of(name, view, width)
+        shape = tuple(view.shape)
+        native = (*payload, shape[0] if kind == "view" else shape[-1]) if shape else ()
+        if not is_buffered(value):
+            if kind != "native" or (payload and shape != native):
+                want = (*payload, "N") if payload else ("N",)
+                raise HawkError(
+                    f"kernel {sidecar.get('kernel', '?')!r}: argument {name!r} exports DLPack and no buffer, so hawk can "
+                    f"hand it over as it is and no other way, but this plane needs a view ({kind}, shape {shape}); "
+                    f"pass it as {want}, or wrap it with numpy.asarray({name})")
+            return value
+        if kind == "single":
+            return value.reshape(payload + (1,)) if payload else value.reshape((1,))
+        if kind == "view":
+            value = value.T
+        if payload:
+            value = value.reshape(payload + (value.shape[-1],))
+        return value
 
     # -- per launch --------------------------------------------------------
     def launch(self, base: int, count: int, n_samples: int) -> None:
-        """THE launch crossing: one call over ``[base, base+count)``.
+        """Launch over the samples ``[base, base + count)`` of the planes :meth:`bind_all` kept.
 
-        SERIAL, always: the reference oracle every partitioned, tiled or
-        ranked run is judged against, so it never grows a schedule."""
-        with self._lock:
-            self._launch(base, count, n_samples)
+        Serial, always: the reference every partitioned, tiled or ranked run is judged against.
+        """
+        if self._bound is None:
+            raise HawkError(f"{self.path.name}: bind_all(arrays, n_samples) first: nothing is bound to launch")
+        self._launch(base, count, n_samples)
 
-    def _launch(self, base: int, count: int, n_samples: int) -> None:
-        self.entry.run(self.block, int(base), int(count), int(n_samples))
+    def _fill_counters(self, plan, counters: dict) -> None:
+        """Write the plan's finished count and branch counters into the arrays the caller bound for them."""
+        counted = _through_door(self._door.plan_counters, plan)
+        if self._FINISHED in counters and counted["finished"] is not None:
+            counters[self._FINISHED][0] = counted["finished"]
+        offset = 0
+        for entry in self.declared.get("dispatch", ()):
+            if entry.get("mix") is None:
+                continue
+            width = int(entry["K"])
+            if entry["mix"] in counters:
+                for i, value in enumerate(counted["mix"][offset : offset + width]):
+                    counters[entry["mix"]][i] = value
+            offset += width
 
-    # -- helpers -----------------------------------------------------------
-    def _value_address(self, slot: int, value) -> int:
-        box = _box(self.descriptor[slot], value)
-        self._values.append(box)
-        return ctypes.addressof(box)
-
-    def _buffer_address(self, arrays: dict, name: str, role: str,
-                        choice=None) -> int:
+    def _launch(self, base: int, count: int | None, n_samples: int) -> None:
+        """Wrap the bound arrays as planes, plan the range, bind and launch; the handles are freed whatever happens."""
+        door = self._door
+        planes, uniforms, counters = self._bound
+        wrapped = {}
+        plan = None
         try:
-            obj = arrays[name]
-        except KeyError:
-            raise HawkError(
-                f"{self.path.name}: this artifact declares a {role!r} slot {name!r}, "
-                "but no plane was bound for it"
-            ) from None
-        width = int(self.sidecar.get("arg_shapes", {}).get(name) or 1)
-        view = memoryview(obj)
-        kind = (choice.of(name, view, width) if choice is not None
-                else plane_layout(view, width))
-        if role in _PER_SAMPLE_ROLES and kind == "view":
-            return _transposed_address(obj, self._buffers)
-        return buffer_address(obj, self._buffers)
+            for name, view in planes.items():
+                wrapped[name] = _through_door(door.plane_wrap, view)
+            for name in self._own_cell_planes(planes):
+                wrapped[name] = _through_door(door.plane_new, [1], 2, 32 if self.scalar_type == "float32" else 64,
+                                              flags=_osprey.EG_PLANE_ZERO)
+            whole = base == 0 and count in (None, n_samples)
+            ranges = {} if whole else {"part_base": [base], "part_count": [count]}
+            plan = _through_door(
+                door.plan_new, self.unit, _osprey.EG_STRUCTURE_HOST_SERIAL, _osprey.EG_REDUCE_COMPENSATED, n_samples, **ranges
+            )
+            _through_door(
+                door.bind,
+                plan,
+                [self._slot_named[name] for name in wrapped],
+                list(wrapped.values()),
+                [self._slot_named[name] for name in uniforms],
+                list(uniforms.values()),
+            )
+            _through_door(door.launch, plan)
+            if counters:
+                self._fill_counters(plan, counters)
+        finally:
+            if plan is not None:
+                door.plan_free(plan)
+            for plane in wrapped.values():
+                door.plane_free(plane)
 
 
-def buffer_address(obj, keepalive: list) -> int:
-    """The address of ``obj``'s buffer, through the BUFFER PROTOCOL alone.
-
-    No numpy: any C-contiguous writable buffer exports one, and
-    ``ctypes.from_buffer`` is the stdlib door to its address. Appended
-    to ``keepalive``, since dropping the export would let the owner
-    resize or free the memory the mirror still points at."""
-    view = memoryview(obj)
-    if not view.c_contiguous:
-        raise HawkError(
-            "hawk.runtime binds a plane at computed sample offsets, so it must be "
-            "C-contiguous; got a strided buffer — pass np.ascontiguousarray(x)"
-        )
-    if view.readonly:
-        raise HawkError(
-            "hawk.runtime binds a plane by ADDRESS, never by copy, so a read-only "
-            "buffer cannot be bound: a copy would silently drop the kernel's writes "
-            "and silently freeze an input's later updates — pass a writable array, "
-            "e.g. np.array(x)"
-        )
-    exported = (ctypes.c_char * view.nbytes).from_buffer(obj)
-    keepalive.append(exported)
-    return ctypes.addressof(exported)
+    def _own_cell_planes(self, planes: dict) -> list:
+        """The one-cell planes of a split kernel's cells the caller did not bind (a cell only a later stage reads
+        is the kernel's own): the unit's slots for them are bound to planes the door makes, zeroed."""
+        if not self.sidecar.get("stages"):
+            return []
+        return [
+            plane
+            for cell, spec in self.sidecar["cells"].items()
+            for plane in _ir.planes(cell, spec["columns"])
+            if plane not in planes and plane in self._slot_named
+        ]
 
 
-class _PyBuffer(ctypes.Structure):
-    """CPython's ``Py_buffer``, for the one export ``from_buffer`` can't
-    make: a writable F-contiguous plane."""
-
-    _fields_ = [("buf", ctypes.c_void_p), ("obj", ctypes.c_void_p),
-                ("len", ctypes.c_ssize_t), ("itemsize", ctypes.c_ssize_t),
-                ("readonly", ctypes.c_int), ("ndim", ctypes.c_int),
-                ("format", ctypes.c_char_p), ("shape", ctypes.c_void_p),
-                ("strides", ctypes.c_void_p), ("suboffsets", ctypes.c_void_p),
-                ("internal", ctypes.c_void_p)]
+def _load_unit(door, path: Path, sidecar: dict, deps=()):
+    """The unit ``sidecar`` names (``kernel``, ``digest``) from the library at ``path``; ``deps`` are the loaded units it runs."""
+    return _through_door(door.unit_load, str(path), sidecar["kernel"], bytes.fromhex(sidecar["digest"]), deps=list(deps))
 
 
-_PYBUF_F_CONTIGUOUS_WRITABLE = 0x0058 | 0x0001
-_get_buffer = ctypes.pythonapi.PyObject_GetBuffer
-_get_buffer.argtypes = (ctypes.py_object, ctypes.POINTER(_PyBuffer), ctypes.c_int)
-_get_buffer.restype = ctypes.c_int
-_release_buffer = ctypes.pythonapi.PyBuffer_Release
-_release_buffer.argtypes = (ctypes.POINTER(_PyBuffer),)
-_release_buffer.restype = None
+#: The declarations of a split kernel's stages that are dicts keyed by plane name, lists of records named by plane, and lists of names.
+_DICT_DECLARATIONS = ("arg_dtypes", "arg_shapes", "arg_widths", "slot_shapes", "mat_shapes", "vec_widths", "param_shapes",
+                      "plane_axes", "gather_mats", "adjoint_like", "companions")
+_RECORD_DECLARATIONS = ("mutables", "params")
+_NAME_DECLARATIONS = ("index_planes", "sorted_inputs", "unused_planes")
 
 
-class _Export:
-    """One held buffer export, released when the bind that took it is
-    dropped."""
-
-    def __init__(self, obj):
-        self.view = _PyBuffer()
-        _get_buffer(obj, ctypes.byref(self.view), _PYBUF_F_CONTIGUOUS_WRITABLE)
-
-    def __del__(self):
-        if self.view.obj:
-            _release_buffer(ctypes.byref(self.view))
-            self.view.obj = None
-
-
-def _transposed_address(obj, keepalive: list) -> int:
-    # Its bytes already ARE the native (w, L) plane, so no copy is made.
-    export = _Export(obj)
-    keepalive.append(export)
-    return int(export.view.buf)
+def _declared_over(sidecars: list) -> dict:
+    """The first sidecar with the plane declarations of every stage merged in: a split kernel is bound as one, by the
+    planes of all its stages. Where stages state the same plane, the first stage's word stands."""
+    merged = dict(sidecars[0])
+    for key in _DICT_DECLARATIONS:
+        merged[key] = {name: value for sidecar in reversed(sidecars) for name, value in (sidecar.get(key) or {}).items()}
+        merged[key].update(sidecars[0].get(key) or {})
+    for key in _RECORD_DECLARATIONS:
+        seen = {}
+        for sidecar in sidecars:
+            for record in sidecar.get(key) or ():
+                seen.setdefault(record["name"], record)
+        merged[key] = list(seen.values())
+    for key in _NAME_DECLARATIONS:
+        merged[key] = list(dict.fromkeys(name for sidecar in sidecars for name in sidecar.get(key) or ()))
+    return merged
 
 
-def _launch_threads(box: dict | None, n_samples: int) -> int:
-    """How many threads cover ``n_samples`` lanes under a sidecar ``launch.box``.
-
-    Without a box one thread takes one lane. A box of ``T`` threads per ``stride`` lanes launches
-    whole boxes: ``ceil(n / (T * stride))`` of them, each ``stride`` threads wide.
-    """
-    if not box:
-        return n_samples
-    span = box["T"] * box["stride"]
-    return -(-n_samples // span) * box["stride"]
-
-
-def _box(kind: str, value):
-    if kind == "f64":
-        return ctypes.c_double(float(value))
-    if kind == "f32":
-        return ctypes.c_float(float(value))
-    if kind == "int":
-        return ctypes.c_longlong(int(value))
-    if kind == "nsamples":
-        return _index_ctype()(int(value))
-    if kind == "banded":
-        raise HawkError("a banded uniform crosses as its cell word: run a banded kernel through eagle.plan, "
-                        "which packs it (eagle.banded_pack)")
-    raise HawkError(f"slot kind {kind!r} is not a by-value slot")
-
-
-def check_scatter_status(kernel: str, team: dict, status, cells: int) -> None:
-    """Refuse, by name, a run whose ordered scatter met a key outside ``[0, cells)`` that was not the skip key -1.
-
-    ``kernel`` names the kernel in the refusal, ``team`` is the sidecar's team record of the scatter (its ``of`` names the
-    plane the scatter adds into), ``status`` the plane ``team["status"]`` after the run (flags from element 1) and ``cells``
-    the extent of the plane ``team["of"]``. Raises :class:`~hawk.errors.HawkError`; returns ``None`` when no key was dropped."""
-    if any(int(f) for f in status[1:]):
-        raise HawkError(
-            f"{kernel}: hawk.scatter({team['of']}, contract='ordered') got a key outside [0, {cells}) "
-            f"that is not the skip key -1; those adds were dropped, the rest are in {team['of']}")
-
-
-def _index_ctype():
-    """The ctype of ``EAGLE_ABI_INDEX_T``, read off the binding rather
-    than assumed: a hard-coded ``c_uint32`` would shift the whole
-    parameter block on a 64-bit-index build."""
-    width = int(_core.build_info()["index_type_bytes"])
-    try:
-        return {4: ctypes.c_uint32, 8: ctypes.c_uint64}[width]
-    except KeyError:
-        raise HawkError(
-            f"hawk._core was built with a {width}-byte EAGLE_ABI_INDEX_T; the "
-            "nsamples role is 4 or 8 bytes wide"
-        ) from None
+def _door_made_names(sidecar: dict) -> set:
+    """The names of the slots the library makes and the caller need not bind: the finished
+    counter, a dispatch group's branch counters, the compensation companions, the scratch planes between the
+    stages, the compensation of a cell's rows and, in a split kernel, the cells themselves (the library keeps the
+    ones the caller does not read)."""
+    names = {_ir.FINISHED_PLANE}
+    names |= {entry["mix"] for entry in sidecar.get("dispatch", ()) if entry.get("mix") is not None}
+    for entry in sidecar.get("dispatch", ()):
+        if entry["strategy"] == "segmented":
+            names |= {entry["class"], entry["stale"], entry["offsets"]}   # the group's sorted-sample planes
+    names |= set(sidecar.get("companions") or ()) | set(sidecar.get("team_planes") or ()) | set(sidecar.get("keyed") or ())
+    for cell, spec in (sidecar.get("cells") or {}).items():
+        planes = _ir.planes(cell, spec["columns"])
+        if sidecar.get("stages"):
+            names |= set(planes)
+        if spec["op"] in ("sum", "mean"):
+            names |= {_cells.comp_name(plane) for plane in planes}
+    return names
 
 
 def load(directory, kernel: str, sidecar: dict | None = None) -> HostKernel:
     """Load ``<directory>/<kernel>.so``, reading its sidecar JSON if omitted."""
-    import json
-
     directory = Path(directory)
     if sidecar is None:
         sidecar = json.loads((directory / f"{kernel}.json").read_text())
@@ -522,42 +465,28 @@ def dispatch_costs(sidecar: dict) -> dict:
     return dict(sidecar.get("dispatch_costs") or {})
 
 
-def _own_companions(sidecar: dict, arrays: dict) -> tuple:
-    """``(arrays, owned)``: ``arrays`` plus a zeroed companion, the target's
-    shape, for each compensated keyed sum whose companion the caller did not
-    bind (the run owns it and the caller never passes it), and the
-    ``{companion: target}`` it made."""
-    owned = {comp: target for comp, target in (sidecar.get("companions") or {}).items()
-             if comp not in arrays and target in arrays}
-    if not owned:
-        return arrays, owned
-    import numpy as np
+def check_scatter_status(kernel: str, team: dict, status, cells: int) -> None:
+    """Refuse, by name, a run whose ordered scatter met a key outside ``[0, cells)`` that was not the skip key -1.
 
-    return {**arrays, **{comp: np.zeros_like(np.asarray(arrays[target]))
-                         for comp, target in owned.items()}}, owned
-
-
-def _fold_companions(kernel_artifact: HostKernel, arrays: dict, owned: dict) -> None:
-    """Each owned companion into its target, after the launch, through the
-    kernel's fold entry over the target's slots (the block is still bound):
-    the target alone then holds the compensated sum."""
-    import numpy as np
-
-    for target in owned.values():
-        size = int(np.asarray(arrays[target]).size)
-        kernel_artifact.folds[target].run(kernel_artifact.block, 0, size, size)
+    ``kernel`` names the kernel in the refusal, ``team`` is the sidecar's team record of the scatter (its ``of`` names the
+    plane the scatter adds into), ``status`` the plane ``team["status"]`` after the run (flags from element 1) and ``cells``
+    the extent of the plane ``team["of"]``. Raises :class:`~hawk.errors.HawkError`; returns ``None`` when no key was dropped."""
+    if any(int(f) for f in status[1:]):
+        raise HawkError(
+            f"{kernel}: hawk.scatter({team['of']}, contract='ordered') got a key outside [0, {cells}) "
+            f"that is not the skip key -1; those adds were dropped, the rest are in {team['of']}")
 
 
 def run(kernel_artifact: HostKernel, *, base: int = 0, count: int | None = None,
         n_samples: int | None = None, layout: str | None = None,
         **arrays) -> None:
-    """Bind ``arrays`` and run the WHOLE range in ONE serial call.
+    """Bind ``arrays`` and run the WHOLE range in ONE serial launch.
 
     ``count`` defaults to ``n_samples``, and ``n_samples`` to the count
     every bound per-sample plane agrees on (:func:`_n_from`). Output
     planes are the caller's, written in place; this returns nothing. A
-    thread-box kernel (sidecar ``launch.box``) counts ``base``/``count`` in
-    threads, ``count`` defaulting to the threads that cover ``n_samples``.
+    thread-box kernel (sidecar ``launch.box``) and a kernel that reads an index set run over the
+    whole range: the library refuses ``base=`` and ``count=`` for them.
 
     A per-sample plane whose shape reads both as component-major ``(w, N)`` and
     as sample-major ``(N, w)`` (``(w, w)``) is refused unless the call says
@@ -570,86 +499,64 @@ def run(kernel_artifact: HostKernel, *, base: int = 0, count: int | None = None,
     A kernel declaring ``hawk.Grid[...]`` takes its runtime extent by label
     (``run(k, x=x, y=y, channel=64)``) or from lane-shaped planes, and refuses
     ``n_samples=``."""
-    sidecar = kernel_artifact.sidecar
-    arrays = _flat_shared(sidecar, arrays)
-    arrays, lane_n = _lane_bind.bind(sidecar, kernel_artifact.arg_spec, arrays,
-                                     n_samples, _PER_SAMPLE_ROLES)
-    arrays, owned = _own_companions(sidecar, arrays)
+    sidecar = kernel_artifact.declared
+    spec = kernel_artifact.bind_spec
+    arrays = _shared_shapes_checked(sidecar, arrays)
+    arrays, lane_n = _lane_bind.bind(sidecar, spec, arrays, n_samples, _PER_SAMPLE_ROLES)
     plain, axes = split_marks(arrays, layout)
     if lane_n is not None:
         n_samples = lane_n
     if n_samples is None:
         compact = sidecar.get("gather_mats") or {}
-        n_samples = _n_from([(r, n) for r, n in kernel_artifact.arg_spec
+        n_samples = _n_from([(r, n) for r, n in spec
                              if not (r == "mat_in" and n in compact)], plain,
                             sidecar.get("arg_shapes", {}),
                             LayoutChoice(layout, axes))
         _lane_bind.check_total(sidecar, n_samples)
-    if kernel_artifact.sidecar.get("stages"):
-        _refuse_unbound_names(kernel_artifact, arrays, _stage_names(kernel_artifact))
+    cells = sidecar.get("cells") or {}
+    if sidecar.get("stages"):
+        declared = _stage_names(kernel_artifact)
         if base != 0 or count not in (None, n_samples):
             raise HawkError(
                 f"{kernel_artifact.path.name}: this kernel reads a value reduced over "
                 "every sample, so it runs over every sample (no base= or count=)")
-        with kernel_artifact._lock:
-            _run_stages(kernel_artifact, n_samples, layout, arrays, owned)
-        return
-    cells = kernel_artifact.sidecar.get("cells") or {}
-    _refuse_unbound_names(kernel_artifact, arrays, {name for _, name in kernel_artifact.arg_spec} | set(cells))
-    with kernel_artifact._lock:
-        scratch = None
-        if cells:
-            scratch, outputs, arrays = kernel_artifact._cell_scratch_for(
-                cells, n_samples, arrays)
-        kernel_artifact._bind_all(arrays, n_samples, layout)
-        # a thread-box kernel's base and count count threads (sidecar launch.box)
-        count = (_launch_threads(sidecar.get("launch", {}).get("box"), n_samples)
-                 if count is None else count)
-        kernel_artifact._launch(base, count, n_samples)
-        _fold_companions(kernel_artifact, arrays, owned)
-        if scratch is not None:
-            row = _cells.row_of(sidecar)
-            scratch.finish(outputs, base // row, -(-(base + count) // row))
+    else:
+        declared = {name for _, name in spec} | set(cells)
+    _refuse_unbound_names(kernel_artifact, arrays, declared)
+    kernel_artifact._bind_all(arrays, n_samples, layout)
+    kernel_artifact._launch(base, count, n_samples)
 
 
 def _stage_names(first: HostKernel) -> set:
     """Every plane name a stage of the split kernel ``first`` declares."""
-    sidecar = first.sidecar
     names = {name for _, name in first.arg_spec}
-    for record in sidecar["stages"][1:]:
-        names |= {name for _, name in load(first.path.parent, record["kernel"]).arg_spec}
-    return names | set(sidecar.get("cells") or ())
+    for stage in first._stages:
+        names |= {name for _, name in stage.arg_spec}
+    return names | set(first.sidecar.get("cells") or ())
 
 
-def _flat_shared(sidecar: dict, arrays: dict) -> dict:
-    """``arrays`` with each ``Param[Vector/Matrix/Table]`` plane (sidecar ``param_shapes``)
-    checked against its declared shape and bound flat, row-major."""
-    shapes = sidecar.get("param_shapes")
-    if not shapes or not any(name in arrays for name in shapes):
-        return arrays
-    import numpy as np
-
-    out = dict(arrays)
-    for name, shape in shapes.items():
-        if name not in out:
+def _shared_shapes_checked(sidecar: dict, arrays: dict) -> dict:
+    """``arrays``, each ``Param[Vector/Matrix/Table]`` plane (sidecar ``param_shapes``) checked against its declared
+    shape: one value for every lane, bound in that natural shape."""
+    for name, shape in (sidecar.get("param_shapes") or {}).items():
+        if name not in arrays:
             continue
-        value = np.asarray(out[name])
-        if value.shape != tuple(shape):
+        got = tuple(describe(arrays[name]).shape)
+        if got != tuple(shape):
             raise HawkError(
                 f"kernel {sidecar.get('kernel', '?')!r}: {name!r} is a shared parameter of shape "
-                f"{tuple(shape)} (one value for every lane), got shape {value.shape}")
-        out[name] = np.ascontiguousarray(value).reshape(-1)
-    return out
+                f"{tuple(shape)} (one value for every lane), got shape {got}")
+    return arrays
 
 
 def _refuse_unbound_names(kernel_artifact: HostKernel, arrays: dict, declared: set) -> None:
     """Refuse a bound name the kernel declares no slot for, as eagle's ``bind`` does: a plane passed
     under a wrong name is otherwise never written, and its zeros read as a result."""
-    unknown = sorted(set(arrays) - declared - _lane_bind.free_labels(kernel_artifact.sidecar))   # ``<label>=N`` is no plane
+    unknown = sorted(set(arrays) - declared - _lane_bind.free_labels(kernel_artifact.declared))   # ``<label>=N`` is no plane
     if not unknown:
         return
     name = kernel_artifact.sidecar.get("kernel", "?")
-    pruned = [n for n in unknown if n in (kernel_artifact.sidecar.get("unused_planes") or ())]
+    pruned = [n for n in unknown if n in (kernel_artifact.declared.get("unused_planes") or ())]
     stray = [n for n in unknown if n not in pruned]
     if pruned:
         raise HawkError(
@@ -660,107 +567,3 @@ def _refuse_unbound_names(kernel_artifact: HostKernel, arrays: dict, declared: s
     raise HawkError(
         f"kernel {name!r}: {stray} are not planes it declares "
         f"(declared: {sorted(declared)})")
-
-
-def _keyed_planes(first: HostKernel, held: dict, n_samples: int) -> dict:
-    """The keyed planes a split kernel owns between its stages, and the
-    companions of their compensated sums: made once per sample count and
-    ZEROED for every run (a stage accumulates into them)."""
-    import numpy as np
-
-    out = {}
-    for cell, spec in (first.sidecar.get("keyed") or {}).items():
-        size = _lane_bind.keyed_size(first.sidecar, spec, n_samples)
-        out[cell] = held.setdefault("keyed", {}).setdefault(
-            (cell, size), np.zeros(size, dtype=first.scalar_type))
-        for stage in held["stages"]:
-            for comp, target in (stage.sidecar.get("companions") or {}).items():
-                if target == cell:
-                    out[comp] = held["keyed"].setdefault(
-                        (comp, size), np.zeros(size, dtype=first.scalar_type))
-    for plane in out.values():
-        plane.fill(0)
-    return out
-
-
-def _team_planes(first: HostKernel, held: dict, n_samples: int, arrays: dict) -> dict:
-    """The scratch planes the team stages of a split kernel work on (``team_planes`` of its
-    sidecar), ``lanes x per_lane`` elements each, made once per sample count. They are the
-    kernel's own: the stages write them before they read them, so they are never zeroed. A block
-    sum's plane has ``per_lane`` elements for each key (``keys``) rather than each lane; an ordered
-    scatter's partial sums (``per_target``) are ``chunks x targets`` cells its first stage zeroes, and
-    its key log (``fill``: -1) is refilled at the start of every run, so what an aborted launch left in it
-    changes nothing."""
-    import numpy as np
-
-    out = {}
-    for name, spec in (first.sidecar.get("team_planes") or {}).items():
-        dtype = np.int32 if spec["dtype"] == "int32" else first.scalar_type
-        units = _lane_bind.team_units(first.sidecar, spec, n_samples, arrays)
-        made = held.setdefault("team", {})
-        if (name, n_samples, units) not in made:
-            made[name, n_samples, units] = np.full(spec.get("per_lane", 1) * units, spec.get("fill", 0), dtype=dtype)
-        out[name] = made[name, n_samples, units]
-        if "fill" in spec:              # a plane that holds its fill at the start of every run
-            out[name].fill(spec["fill"])
-    return out
-
-
-def _one_row_width(stages) -> None:
-    """One run has one row width: the stages of a split kernel that reduce over samples state the same ``cell_row``."""
-    widths = {st.path.stem: st.sidecar["cell_row"] for st in stages if "cell_row" in st.sidecar}
-    if len(set(widths.values())) > 1:
-        raise HawkError("one run has one row width, but the stages state " + ", ".join(f"{k}: {v}" for k, v in widths.items()))
-
-
-def _run_stages(first: HostKernel, n_samples: int, layout, arrays: dict,
-                owned: dict) -> None:
-    """A split kernel: stage ``k``, then the host finish of its cells, then
-    stage ``k + 1`` reading those cells as one-cell planes. A cell the caller
-    does not bind (one only a later stage reads) is this kernel's own."""
-    import numpy as np
-
-    cells = first.sidecar["cells"]
-    held = first.__dict__.setdefault("_split", {})
-    if "stages" not in held:
-        held["stages"] = [first] + [load(first.path.parent, st["kernel"])
-                                    for st in first.sidecar["stages"][1:]]
-        _one_row_width(held["stages"])
-        held["own"] = {c: np.zeros(spec["columns"], dtype=first.scalar_type)
-                       for c, spec in cells.items()}
-    values = {c: arrays[c] if c in arrays else held["own"][c] for c in cells}
-    keyed = _keyed_planes(first, held, n_samples)
-    scratch_planes = _team_planes(first, held, n_samples, arrays)
-    checks: list = []
-    for at, (stage, record) in enumerate(zip(held["stages"], first.sidecar["stages"])):
-        names = {name for _, name in stage.arg_spec}
-        bound = {k: v for k, v in arrays.items() if k in names and k not in cells}
-        bound.update({k: v for k, v in keyed.items() if k in names})
-        bound.update({k: v for k, v in scratch_planes.items() if k in names})
-        for cell in record["cells_in"]:
-            column = np.asarray(values[cell]).reshape(-1)
-            for k, plane in enumerate(_ir.planes(cell, cells[cell]["columns"])):
-                bound[plane] = column[k:k + 1]
-        out = {c: cells[c] for c in record["cells_out"]}
-        scratch = None
-        if out:
-            scratch, outputs, bound = stage._cell_scratch_for(
-                out, n_samples, {**bound, **{c: values[c] for c in out}})
-        stage._bind_all(bound, n_samples, layout)
-        grid = _lane_bind.team_grid(first.sidecar, record.get("team") or {}, n_samples, arrays)
-        if grid == 0:                   # an ordered scatter into no cells adds nothing
-            continue
-        if record.get("team", {}).get("grid") == "chunks":
-            first.scatter_chunks = grid     # the chunks the run added in (a run's record)
-            checks.append(record["team"])
-        stage._launch(0, grid, n_samples)
-        later = {name for st in held["stages"][at + 1:] for _, name in st.arg_spec}
-        mine = {c: t for c, t in owned.items() if c in names and c not in later}
-        mine.update({c: t for c, t in (stage.sidecar.get("companions") or {}).items()
-                     if t in keyed and c in keyed})
-        _fold_companions(stage, bound, mine)
-        if scratch is not None:
-            scratch.finish(outputs, 0, -(-n_samples // _cells.row_of(first.sidecar)))
-    for team in checks:
-        check_scatter_status(first.path.stem, team, scratch_planes[team["status"]],
-                             _lane_bind.target_size(arrays, team["of"]))
