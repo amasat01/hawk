@@ -21,7 +21,8 @@ import numpy as np
 import pytest
 from _block_kernels import gram_kernel, grad_kernel, keyed_transpose_kernel, readback_kernel, scaled_kernel, step_kernel, stored_and_read_kernel, total_kernel
 from _linalg_kernels import chol_from_kernel, chol_kernel, eigh_kernel, lstsq_kernel, lu_kernel
-from conftest import assert_within, sidecar_of, sum_bound
+from _team_stages import run_staged
+from conftest import _xp, assert_within, sidecar_of, sum_bound
 from scipy.linalg import lapack
 
 import hawk
@@ -111,16 +112,7 @@ def _run(bundle, kernel, mats, vecs, rhs, outs, target):
     sink = {name: np.zeros(LANES if width == 1 else (width, LANES),
                            dtype=np.int32 if name == "info" else np.float64)
             for name, width in outs.items()}
-    if target == "host":
-        rt.run(rt.load(bundle.directory, kernel.name, sidecar_of(bundle, kernel.name)),
-               **planes, **sink)
-    else:
-        import cupy as cp
-        from _team_stages import run_device
-
-        dev = {k: cp.asarray(v) for k, v in {**planes, **sink}.items()}
-        run_device(bundle, kernel.name, dev, LANES)
-        sink = {k: dev[k].get() for k in sink}
+    sink = _launch(bundle, kernel, planes, sink, target)
     return {name: plane.reshape(outs[name], LANES).T for name, plane in sink.items()}
 
 
@@ -300,16 +292,11 @@ def test_lstsq_by_qr_matches_numpy_and_reports_a_zero_column(cache, n, form, tar
 
 
 def _launch(bundle, kernel, planes, sink, target):
-    """One run of ``kernel`` over ``planes`` into the zeroed ``sink`` planes, which come back as arrays."""
-    if target == "host":
-        rt.run(rt.load(bundle.directory, kernel.name, sidecar_of(bundle, kernel.name)), **planes, **sink)
-        return sink
-    import cupy as cp
-    from _team_stages import run_device
-
-    dev = {k: cp.asarray(v) for k, v in {**planes, **sink}.items()}
-    run_device(bundle, kernel.name, dev, LANES)
-    return {k: dev[k].get() for k in sink}
+    """One run of ``kernel`` over ``planes`` into the zeroed ``sink`` planes, which come back as NumPy arrays."""
+    xp = _xp(target)
+    bound = {k: xp.asarray(v) for k, v in {**planes, **sink}.items()}
+    run_staged(bundle, kernel.name, bound, target)
+    return {k: np.array(bound[k].get() if hasattr(bound[k], "get") else bound[k]) for k in sink}
 
 
 def _lstsq_x(m, n):
@@ -637,16 +624,7 @@ def _build_sum(kernel, tmp, target, form="auto"):
 
 def _run_sum(bundle, kernel, planes, outs, target):
     """``{name: array}`` of the output planes after one run (``outs`` gives their zero arrays)."""
-    lanes = KEYS * ROWS
-    if target == "host":
-        rt.run(rt.load(bundle.directory, kernel.name, sidecar_of(bundle, kernel.name)), **planes, **outs)
-        return outs
-    import cupy as cp
-    from _team_stages import run_device
-
-    dev = {k: cp.asarray(v) for k, v in {**planes, **outs}.items()}
-    run_device(bundle, kernel.name, dev, lanes)
-    return {k: dev[k].get() for k in outs}
+    return _launch(bundle, kernel, planes, outs, target)
 
 
 def _gram_planes(j, r):
@@ -776,7 +754,7 @@ def test_a_block_sum_read_back_feeds_a_cholesky_solve(cache, target):
     bundle = _build_sum(kernel, cache / f"blk_step_{target}", target)
     assert [bool(s.get("team")) for s in sidecar_of(bundle, kernel.name)["stages"]] == [
         False, True, True, False, True, False]
-    out = _run_sum_n(bundle, kernel, {"j": np.ascontiguousarray(j.T), "r": r}, {"x": np.zeros((p, n))}, target, n)
+    out = _run_sum(bundle, kernel, {"j": np.ascontiguousarray(j.T), "r": r}, {"x": np.zeros((p, n))}, target)
     for k in range(KEYS):
         a = jk[k].T @ jk[k] 
         want = np.linalg.solve(a, jk[k].T @ rk[k])
@@ -794,18 +772,6 @@ def test_entries_of_a_block_sum_are_read_back_per_lane(cache, target):
                    _gram_planes(j, r), {"out": np.zeros((2, KEYS * ROWS))}, target)["out"]
     assert np.allclose(got[0], np.repeat(gram[:, 1, 2], ROWS), rtol=0, atol=SUM_BOUND * EPS * 10 * ROWS)
     assert np.allclose(got[1], np.repeat(grad[:, 3], ROWS), rtol=0, atol=SUM_BOUND * EPS * 10 * ROWS)
-
-
-def _run_sum_n(bundle, kernel, planes, outs, target, lanes):
-    if target == "host":
-        rt.run(rt.load(bundle.directory, kernel.name, sidecar_of(bundle, kernel.name)), **planes, **outs)
-        return outs
-    import cupy as cp
-    from _team_stages import run_device
-
-    dev = {k: cp.asarray(v) for k, v in {**planes, **outs}.items()}
-    run_device(bundle, kernel.name, dev, lanes)
-    return {k: dev[k].get() for k in outs}
 
 
 @pytest.mark.parametrize("target", [pytest.param("host", id="host"), pytest.param("cuda", marks=DEVICE, id="cuda")])
@@ -954,16 +920,7 @@ def test_a_transpose_product_sum_under_an_index_set_sums_the_live_lanes_rows(cac
     bundle = build_bundle([kernel], cache / f"tgram_set_{target}", targets=(target if target == "host" else "cuda",),
                           host_profile="native")
     planes = {"mat": _plane_of(mat), "active_map": live, "active_count": np.array([len(live)], np.uint32)}
-    out = {"out": np.zeros((p, p, KEYS))}
-    if target == "host":
-        rt.run(rt.load(bundle.directory, kernel.name, sidecar_of(bundle, kernel.name)), **planes, **out)
-    else:
-        import cupy as cp
-        from _team_stages import run_device
-
-        dev = {k: cp.asarray(v) for k, v in {**planes, **out}.items()}
-        run_device(bundle, kernel.name, dev, lanes)
-        out = {"out": dev["out"].get()}
+    out = _launch(bundle, kernel, planes, {"out": np.zeros((p, p, KEYS))}, target)
     want = np.zeros((p, p, KEYS))
     for k in range(KEYS):
         rows = mat[[i for i in live if i // ROWS == k]].reshape(-1, p)

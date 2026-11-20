@@ -381,7 +381,10 @@ def test_deploy_run_broadcast_on_the_device(cache_dir, rng):
     plan = hawk.deploy(daffine, cache_dir=cache_dir)
     x = rng.random((A, 1, NC))
     got = plan(cp.asarray(x), a=A)
+    hawk.synchronize()              # a run over device memory is queued: the planes are read after the wait
     np.testing.assert_array_equal(cp.asnumpy(got), 2.0 * _full(x) + 1.0)
     out = cp.zeros(LANE)
-    plan.bind(x=cp.asarray(x), out=out, a=A).launch()
+    bound = plan.bind(x=cp.asarray(x), out=out, a=A)
+    bound.launch()
+    bound.wait()
     np.testing.assert_array_equal(cp.asnumpy(out), 2.0 * _full(x) + 1.0)

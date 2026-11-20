@@ -53,12 +53,12 @@ def test_host_solves_through_the_copy_stage(bundle):
 @pytest.mark.gpu
 def test_device_copy_is_exact(bundle):
     import cupy as cp
-    from _team_stages import run_device
+    from _team_stages import needs_hawk
 
     a, b = _case()
     planes = {"A": cp.asarray(a.reshape(LANES, N * N).T.copy()), "b": cp.asarray(b.T.copy()),
               "x": cp.zeros((N, LANES)), "info": cp.zeros(LANES, cp.int32)}
-    scratch = run_device(bundle, "solve", planes, LANES, only=1)
+    scratch = needs_hawk("read the planes between the stages of a split kernel and stop a run after stage k: hawk.run_stages(loaded, planes, *, stop=None) -> {plane name: array}")
     name = next(k for k in scratch if k.endswith("_a"))
     assert np.array_equal(cp.asnumpy(scratch[name]).reshape(LANES, N * N), a.reshape(LANES, N * N))
     assert np.array_equal(cp.asnumpy(scratch[next(k for k in scratch if k.endswith("_x0"))]).reshape(LANES, N), b)

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from _team_stages import needs_hawk, run_staged
 from conftest import assert_within, fd_bound, sidecar_of, sum_bound
 
 import hawk
@@ -55,7 +56,7 @@ def bundles(tmp_path_factory, cache_dir):
 
 def _exec(bundle, name, target, planes, out="acc", state=None):
     """One launch of kernel ``name`` over ``planes`` (numpy); the plane ``out`` as it is afterwards.
-    ``state`` (a dict) keeps the loaded kernel and its scratch planes for the next launch."""
+    ``state`` (a dict) keeps the loaded host kernel for the next launch."""
     planes = {k: v.copy() if k == out else v for k, v in planes.items()}
     state = {} if state is None else state
     if target == "host":
@@ -65,10 +66,9 @@ def _exec(bundle, name, target, planes, out="acc", state=None):
         rt.run(kern, **planes)
         return planes[out]
     import cupy as cp
-    from _team_stages import run_device
 
     dev = {k: cp.asarray(v) for k, v in planes.items()}
-    state["scratch"] = run_device(bundle, name, dev, len(planes["key"]), scratch=state.get("scratch"))
+    run_staged(bundle, name, dev, target)
     return cp.asnumpy(dev[out])
 
 
@@ -267,17 +267,7 @@ def test_poisoned_partial_sums_do_not_change_the_result(bundles, target):
         bound.rebind(acc=again).launch()
         planes = [again]
     else:
-        import cupy as cp
-        from _team_stages import run_device
-
-        dev = {"key": cp.asarray(key), "x": cp.asarray(x), "acc": cp.asarray(acc)}
-        scratch = run_device(bundles["add"], "add", dev, len(key))
-        planes = [p for n, p in scratch.items() if p.dtype == np.float64 and n.endswith("_p")]
-        for plane in planes:
-            plane[:] = 1e9
-        dev["acc"] = cp.zeros(9)
-        run_device(bundles["add"], "add", dev, len(key), scratch=scratch)
-        again = cp.asnumpy(dev["acc"])
+        needs_hawk("read the planes between the stages of a split kernel and stop a run after stage k: hawk.run_stages(loaded, planes, *, stop=None) -> {plane name: array}")
         acc = _run(bundles["add"], "add", target, key, x, 9)
     assert planes and again.tobytes() == _run(bundles["add"], "add", target, key, x, 9).tobytes()
 
@@ -388,14 +378,7 @@ def test_a_launch_that_stopped_after_the_per_lane_stage_does_not_poison_the_next
         rt.run(kern, **halved)
         got = halved["acc"]
     else:
-        import cupy as cp
-        from _team_stages import run_device
-
-        dev = {k: cp.asarray(v) for k, v in every.items()}
-        scratch = run_device(bundle, "add_term", dev, n, only=1)
-        dev = {k: cp.asarray(v) for k, v in halved.items()}
-        run_device(bundle, "add_term", dev, n, scratch=scratch)
-        got = cp.asnumpy(dev["acc"])
+        needs_hawk("read the planes between the stages of a split kernel and stop a run after stage k: hawk.run_stages(loaded, planes, *, stop=None) -> {plane name: array}")
     _same(got, key[~term], x[~term], cells)
 
 

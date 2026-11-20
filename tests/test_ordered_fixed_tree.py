@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from conftest import sidecar_of
+from _team_stages import run_staged
+from conftest import _xp, sidecar_of
 
 import hawk
 from hawk import Grid, Index, Mutable, Scalar, kernel
@@ -53,18 +54,11 @@ def add(key: Index, x: Scalar, acc: Mutable[Scalar]):
 
 
 def _exec(bundle, name, target, planes, out):
-    planes = {k: v.copy() if k == out else v for k, v in planes.items()}
-    if target == "host":
-        from hawk import runtime as rt
-
-        rt.run(rt.load(bundle.directory, name, sidecar_of(bundle, name)), **planes)
-        return planes[out]
-    import cupy as cp
-    from _team_stages import run_device
-
-    dev = {k: cp.asarray(v) for k, v in planes.items()}
-    run_device(bundle, name, dev, len(next(iter(planes.values()))) if "key" not in planes else len(planes["key"]))
-    return cp.asnumpy(dev[out])
+    """``out`` of one run of ``name`` over ``planes`` (NumPy arrays) in ``target``'s memory; ``out`` starts as the caller's copy."""
+    xp = _xp(target)
+    bound = {k: xp.asarray(v.copy() if k == out else v) for k, v in planes.items()}
+    run_staged(bundle, name, bound, target)
+    return np.array(bound[out].get() if hasattr(bound[out], "get") else bound[out])
 
 
 @pytest.mark.parametrize("target", TARGETS)

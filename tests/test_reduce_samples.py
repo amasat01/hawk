@@ -115,31 +115,29 @@ def _x(n, mode):
     return np.random.default_rng(n).uniform(-2.0, 2.0, n).astype(mode)
 
 
+def _ran(bound):
+    """``bound`` after one launch that has run: a launch over device memory is queued, so the cell is read only after the wait."""
+    bound.launch()
+    bound.wait()
+    return bound
+
+
 def _read(planes):
     return {k: np.array(a.get() if hasattr(a, "get") else a) for k, a in planes.items()}
 
 
 def _run_cell(bundle, op, target, n, mode):
     xp = _xp(target)
-    rows = -(-n // 32)
-    # the host library folds the rows of 32 samples into the one cell and owns the compensation plane
-    names = ("t", "t_comp") if op in ("sum", "mean") and target != "host" else ("t",)
-    planes = {k: xp.full(1 if target == "host" else rows, np.nan, dtype=mode) for k in names}
-    planes["x"] = xp.asarray(_x(n, mode))
+    # the library folds the rows of 32 samples into the one cell and owns the compensation plane
+    planes = {"t": xp.full(1, np.nan, dtype=mode), "x": xp.asarray(_x(n, mode))}
     bound = _launch(bundle, f"cell_{op}", target, planes)
-    bound.launch()
+    _ran(bound)
     return _read(planes), (bound, planes)
 
 
 def _terms(op, n, mode):
     x = _x(n, mode).astype(np.float64)
     return {"sum": x * x, "mean": x * x / n, "max": x * 1.5, "min": x * 1.5}[op]
-
-
-def _per_row(t, fill):
-    pad = np.full(-(-t.size // 32) * 32, fill)
-    pad[:t.size] = t
-    return pad.reshape(-1, 32)
 
 
 @pytest.mark.parametrize("n", SIZES)
@@ -150,20 +148,13 @@ def test_cells_equal_the_float64_reference(built, target, op, n):
     got, _ = _run_cell(bundle, op, target, n, mode)
     t = _terms(op, n, mode)
     if op in ("sum", "mean"):
-        rows, scale = _per_row(t, 0.0).sum(1), np.abs(_per_row(t, 0.0)).sum(1)
-        if target == "host":
-            rows, scale = rows.sum(keepdims=True), scale.sum(keepdims=True)
-        row = got["t"].astype(np.float64) + (got["t_comp"].astype(np.float64) if "t_comp" in got else 0.0)
+        total, scale = t.sum(keepdims=True), np.abs(t).sum(keepdims=True)
         assert np.all(np.isfinite(got["t"]))
-        assert np.all(np.abs(row - rows) <= TOL[mode] * scale + 1e-300)
+        assert np.all(np.abs(got["t"].astype(np.float64) - total) <= TOL[mode] * scale + 1e-300)
     else:
-        fill = -np.inf if op == "max" else np.inf
-        xs = _x(n, mode)
         # the term is computed in the plane's precision
-        ref = _per_row((xs * 1.5).astype(np.float64), fill)
-        ref = ref.max(1) if op == "max" else ref.min(1)
-        if target == "host":
-            ref = ref.max(keepdims=True) if op == "max" else ref.min(keepdims=True)
+        terms = (_x(n, mode) * 1.5).astype(np.float64)
+        ref = terms.max(keepdims=True) if op == "max" else terms.min(keepdims=True)
         assert np.array_equal(got["t"].astype(np.float64), ref)
 
 
@@ -183,7 +174,7 @@ def test_device_cells_are_bitwise_across_launches(built, op):
     for _ in range(5):
         for k in first:
             planes[k].fill(np.nan)  # the rows only; ``first`` holds the outputs
-        bound.launch()
+        _ran(bound)
         again = _read(planes)
         for k in first:
             assert again[k].tobytes() == first[k].tobytes(), k
@@ -196,19 +187,14 @@ def test_a_written_sum_is_the_derived_parameter_gradient(built, target):
     xp = _xp(target)
     rng = np.random.default_rng(1)
     x, gy = (xp.asarray(rng.standard_normal(n).astype(mode)) for _ in range(2))
-    rows = -(-n // 32)
 
     def planes(name):
-        p = {"x": x, "bar_y": gy, "bar_k": xp.full(1 if target == "host" else rows, np.nan, dtype=mode)}
-        if target != "host":
-            p["bar_k_comp"] = xp.full(rows, np.nan, dtype=mode)
-        _launch(bundle, name, target, p).launch()
+        p = {"x": x, "bar_y": gy, "bar_k": xp.full(1, np.nan, dtype=mode)}
+        _ran(_launch(bundle, name, target, p))
         return _read(p)
 
     a, b = planes("kx_vjp"), planes("user_grad")
     assert a["bar_k"].tobytes() == b["bar_k"].tobytes()
-    if target != "host":
-        assert a["bar_k_comp"].tobytes() == b["bar_k_comp"].tobytes()
     assert sidecar_of(bundle, "kx_vjp")["cells"]["bar_k"] == \
         sidecar_of(bundle, "user_grad")["cells"]["bar_k"]
 

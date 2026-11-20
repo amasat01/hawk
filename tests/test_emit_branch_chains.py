@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from conftest import _xp
 
 import hawk
 import hawk.math as m
@@ -61,17 +62,14 @@ def _hoisted_want(p):
 
 
 def _run(kernel, planes, out_shape, cache_dir, target):
+    """``kernel`` deployed for ``target`` and run over ``planes`` in that target's memory; its ``out`` plane, read after the run."""
+    xp = _xp(target)
     sink = np.zeros(out_shape)
     args = {**{k: v for k, v in planes.items() if k in {n for _, n in kernel.arg_spec}}, "out": sink}
-    if target == "cuda":
-        import cupy as cp
-
-        eplan = pytest.importorskip("eagle.plan")
-        dev = {k: cp.asarray(v) for k, v in args.items()}
-        eplan.auto([kernel], targets=("cuda",), cache_dir=cache_dir, scalar_type="float64")[0].run(**dev)
-        return dev["out"].get()
-    hawk.deploy(kernel, targets=("host",), cache_dir=cache_dir).run(**args)
-    return sink
+    args = {k: xp.asarray(v) for k, v in args.items()}
+    hawk.deploy(kernel, targets=(target,), cache_dir=cache_dir).run(**args)
+    hawk.synchronize()                  # a run over device memory is queued: the plane is read after the wait
+    return np.array(args["out"].get() if hasattr(args["out"], "get") else args["out"])
 
 
 TARGETS = [pytest.param("host", id="host"), pytest.param("cuda", marks=pytest.mark.gpu, id="cuda")]

@@ -229,6 +229,14 @@ def test_the_forward_derivative_reads_one_tangent_for_all_lanes():
 # --------------------------------------------------------------------------- #
 # Device (run through the GPU pool).
 # --------------------------------------------------------------------------- #
+def _read(array):
+    """``array`` (device memory) as a NumPy array: a run over device memory is queued, so the read comes after the wait."""
+    import cupy as cp
+
+    hawk.synchronize()
+    return cp.asnumpy(array)
+
+
 @pytest.mark.gpu
 def test_every_shared_type_on_the_device():
     cp = pytest.importorskip("cupy")
@@ -236,24 +244,24 @@ def test_every_shared_type_on_the_device():
     x = _lanes()
     plan = hawk.deploy(rotate)
     got = plan(cp.asarray(np.ascontiguousarray(x)), cp.asarray(A22))
-    np.testing.assert_allclose(cp.asnumpy(got), A22 @ x, rtol=1e-14)
+    np.testing.assert_allclose(_read(got), A22 @ x, rtol=1e-14)
     # the device contracts to FMA, so the host's bits are not its bits: the 4-cell twin is
     cells = hawk.deploy(rotate_cells)(cp.asarray(np.ascontiguousarray(x)), cp.asarray(A22.ravel()))
-    np.testing.assert_array_equal(cp.asnumpy(got), cp.asnumpy(cells))
+    np.testing.assert_array_equal(_read(got), _read(cells))
 
     x6, w = _lanes(w=6), RNG.random(6)
     got = hawk.deploy(dot_loop)(cp.asarray(np.ascontiguousarray(x6)), cp.asarray(w))
-    np.testing.assert_allclose(cp.asnumpy(got), w @ x6, rtol=1e-13)
+    np.testing.assert_allclose(_read(got), w @ x6, rtol=1e-13)
     got = hawk.deploy(dot_whole)(cp.asarray(np.ascontiguousarray(x6)), cp.asarray(w))
-    np.testing.assert_allclose(cp.asnumpy(got), w @ x6, rtol=1e-13)
+    np.testing.assert_allclose(_read(got), w @ x6, rtol=1e-13)
 
     s, T = RNG.random(LANES), RNG.random((3, 4))
     got = hawk.deploy(grid_table)(cp.asarray(s), cp.asarray(T))
-    np.testing.assert_allclose(cp.asnumpy(got), T[1, 2] * s + T[2, 3], rtol=1e-14)
+    np.testing.assert_allclose(_read(got), T[1, 2] * s + T[2, 3], rtol=1e-14)
 
     xs, bf, wm = RNG.random(LANES), RNG.random(512), RNG.random((24, 512))
     got = hawk.deploy(wide_matvec)(cp.asarray(xs), cp.asarray(bf), cp.asarray(wm))
-    np.testing.assert_allclose(cp.asnumpy(got), (wm[3] @ bf) * xs, rtol=1e-12)
+    np.testing.assert_allclose(_read(got), (wm[3] @ bf) * xs, rtol=1e-12)
 
 
 @pytest.mark.gpu
@@ -261,6 +269,6 @@ def test_the_shared_gradient_sums_over_the_lanes_on_the_device():
     cp = pytest.importorskip("cupy")
     x, w, cot = np.linspace(0.5, 2.0, LANES), np.array([1.5, -0.7]), np.linspace(1.0, 2.0, LANES)
     d = Kernel("poly_vjp_dev", vjp(poly))
-    got = d._deploy()(x=cp.asarray(x), w=cp.asarray(w), bar_y=cp.asarray(cot))
-    np.testing.assert_allclose(cp.asnumpy(got["bar_w"]), [np.sum(cot * x), np.sum(cot * x * x)],
+    got = hawk.deploy(d)(x=cp.asarray(x), w=cp.asarray(w), bar_y=cp.asarray(cot))
+    np.testing.assert_allclose(_read(got["bar_w"]), [np.sum(cot * x), np.sum(cot * x * x)],
                                rtol=1e-13)

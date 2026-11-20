@@ -17,6 +17,7 @@ from __future__ import annotations
 import _net_axis_kernels as N
 import numpy as np
 import pytest
+from _team_stages import run_staged
 from conftest import _launch, _xp, sidecar_of
 
 import hawk
@@ -138,20 +139,13 @@ def test_perturbing_one_net_moves_no_other_net(bundles, target):
 def _grad(bundles, target, w, x, y, mask, contract, launches=1):
     """The gradient from ``launches`` launches. The ordered kernel has a fold stage, which the host
     runtime runs and the device driver of ``_team_stages`` launches."""
-    from hawk import runtime as rt
     k, s = w.shape[0], x.shape[1]
     name = f"net_grad_{s}_{contract}"
     seen = []
     for _ in range(launches):
         planes = _planes(target, w, x, y, mask)
         back = {n: planes[n] for n in ("W", "mask", "x", "y", "bar_out", "bar_W")}
-        if contract == "compensated":
-            _plan(bundles, name, target, back, k).launch()
-        elif target == "host":
-            rt.run(rt.load(bundles[name].directory, name, sidecar_of(bundles[name], name)), **back)
-        else:
-            from _team_stages import run_device
-            run_device(bundles[name], name, back, k * s)
+        run_staged(bundles[name], name, {"net": k, **back}, target)
         seen.append(_host(planes["bar_W"]).reshape(k, P))
     return seen
 
@@ -189,25 +183,13 @@ def test_sixteen_thousand_nets_compensated_match_the_loop_and_replay_when_aligne
 def _loss(bundles, target, w, x, y, mask, contract):
     """The loss from 3 launches; the ordered one has team stages, which the host runtime runs and
     the device driver of ``_team_stages`` launches."""
-    from hawk import runtime as rt
     k, s = w.shape[0], x.shape[1]
     name = f"net_loss_{s}_{contract}"
     seen = []
     for _ in range(3):
-        if contract == "compensated":
-            planes = _planes(target, w, x, y, mask)
-            _plan(bundles, name, target, {n: planes[n] for n in ("W", "mask", "x", "y", "out")}, k).launch()
-            seen.append(_host(planes["out"]))
-        elif target == "host":
-            out = np.zeros(k)
-            rt.run(rt.load(bundles[name].directory, name, sidecar_of(bundles[name], name)),
-                   W=w.ravel(), mask=mask.ravel(), x=x, y=y, out=out)
-            seen.append(out)
-        else:
-            from _team_stages import run_device
-            planes = _planes(target, w, x, y, mask)
-            run_device(bundles[name], name, {n: planes[n] for n in ("W", "mask", "x", "y", "out")}, k * s)
-            seen.append(_host(planes["out"]))
+        planes = _planes(target, w, x, y, mask)
+        run_staged(bundles[name], name, {"net": k, **{n: planes[n] for n in ("W", "mask", "x", "y", "out")}}, target)
+        seen.append(_host(planes["out"]))
     return seen
 
 

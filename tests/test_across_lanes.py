@@ -236,6 +236,7 @@ def _run(bundle, name, target, ins, outs, **extent):
     planes = {k: xp.asarray(v) for k, v in {**ins, **outs}.items()}
     bound = _launch(bundle, name, target, planes, **extent)
     bound.launch()
+    bound.wait()                    # a launch over device memory is queued: the planes are read after the wait
     return ({k: np.array(planes[k].get() if hasattr(planes[k], "get") else planes[k])
              for k in outs}, bound, planes)
 
@@ -269,20 +270,6 @@ def _scaled(got, exact, magnitude, mode):
 TARGETS = ["host", pytest.param("cuda", marks=pytest.mark.gpu)]
 
 
-def _cell_planes(n, mode, target, *names):
-    """Empty planes of the sum cells ``names``: a row per 32 samples with a companion plane on the device; on the host the
-    library folds the rows into one cell and makes the companion itself."""
-    if target == "host":
-        return _empty(n, mode, **{name: 1 for name in names})
-    rows = -(-n // 32)
-    return _empty(n, mode, **{name + s: rows for name in names for s in ("", "_comp")})
-
-
-def _cell_total(got, name):
-    """The value of sum cell ``name``: its rows plus their companions, added in float64."""
-    return (got[name].astype(np.float64) + got.get(name + "_comp", 0.0)).sum()
-
-
 @pytest.mark.parametrize("n", SIZES)
 @pytest.mark.parametrize("target", TARGETS)
 def test_at_equals_take(built, target, n):
@@ -301,12 +288,12 @@ def test_at_equals_take(built, target, n):
 def test_where_reduce_equals_numpy(built, target, n):
     bundle, mode = built
     x = _data(n, mode)["x"]
-    got, *_ = _run(bundle, "positive", target, {"x": x}, _cell_planes(n, mode, target, "s", "c"))
-    top, *_ = _run(bundle, "positive_max", target, {"x": x}, _empty(n, mode, top=1 if target == "host" else -(-n // 32)))
+    got, *_ = _run(bundle, "positive", target, {"x": x}, _empty(n, mode, s=1, c=1))
+    top, *_ = _run(bundle, "positive_max", target, {"x": x}, _empty(n, mode, top=1))
     xs = x.astype(np.float64)
     tol = TOL[mode] * 10 * max(1.0, np.abs(xs).sum())
-    assert abs(_cell_total(got, "s") - xs[xs > 0].sum()) <= tol
-    assert _cell_total(got, "c") == (xs > 0).sum()
+    assert abs(float(got["s"][0]) - xs[xs > 0].sum()) <= tol
+    assert float(got["c"][0]) == (xs > 0).sum()
     want = xs[xs > 0].max() if (xs > 0).any() else -np.inf
     assert top["top"].astype(np.float64).max() == want
 
@@ -349,17 +336,14 @@ def test_vector_and_matrix_cells_equal_columnwise_numpy(built, target, n):
     rng = np.random.default_rng(n + 1)
     v = rng.uniform(-2, 2, (3, n)).astype(mode)
     mm = rng.uniform(-2, 2, (2, 3, n)).astype(mode)
-    # the host library folds the rows into the cell: one value per column, bound under the cell's own name
-    outs = (_empty(n, mode, t=3, u=3) if target == "host"
-            else _cell_planes(n, mode, target, *(f"{c}_{k}" for c in "tu" for k in range(3))))
-    got, *_ = _run(bundle, "vcell", target, {"v": v, "mm": mm.reshape(6, n)}, outs)
+    # the library folds the rows into the cell: one value per column, bound under the cell's own name
+    got, *_ = _run(bundle, "vcell", target, {"v": v, "mm": mm.reshape(6, n)}, _empty(n, mode, t=3, u=3))
     sidecar = sidecar_of(bundle["vcell"], "vcell")
     assert sidecar["cells"] == {"t": {"op": "sum", "columns": 3},
                                 "u": {"op": "sum", "columns": 3}}
     for c, want in (("t", v.astype(np.float64).sum(axis=1)),
                     ("u", mm.astype(np.float64).sum(axis=(0, 2)))):
-        cell = (got[c].astype(np.float64) if target == "host"
-                else np.array([_cell_total(got, f"{c}_{k}") for k in range(3)]))
+        cell = got[c].astype(np.float64)
         columns = (v, mm.transpose(1, 0, 2).reshape(3, -1))[c == "u"]
         bound = [sum_bound(column, mode) for column in columns]
         assert_within(cell, want, bound)
@@ -441,16 +425,13 @@ def test_the_mean_over_an_axis_divides_by_its_extent(built, target):
 @pytest.mark.parametrize("target", TARGETS)
 def test_a_sum_over_8192_lanes_is_within_the_contract(built, target, contract):
     """Against ``math.fsum`` per key, scaled by ``eps * sum|t_i|``: at most 8
-    plain, 1 compensated (the compensated value is the plane plus its companion
-    ``out_c``). The error in ULP is printed as a card line."""
+    plain, 1 compensated (the library folds the companion into the plane). The error in ULP is printed as a card line."""
     bundle, mode = built
     name = "ksum_a" if contract == "auto" else "ksum_c"
     x = np.random.default_rng(8).uniform(-1, 1, (KP, 8192)).astype(mode)
-    outs = {"out": np.zeros(KP, mode)}
-    if contract == "compensated" and target != "host":      # the host library makes the companion itself
-        outs["out_c"] = np.zeros(KP, mode)
-    got, *_ = _run(bundle, name, target, {"x": x.ravel()}, outs, key=KP)
-    total = got["out"].astype(np.float64) + got.get("out_c", 0.0)
+    # the library makes the companion plane and folds it into ``out``
+    got, *_ = _run(bundle, name, target, {"x": x.ravel()}, {"out": np.zeros(KP, mode)}, key=KP)
+    total = got["out"].astype(np.float64)
     terms = x.astype(np.float64)
     exact = [math.fsum(r) for r in terms]
     scaled = _scaled(total, exact, np.abs(terms).sum(axis=1), mode)
@@ -760,6 +741,7 @@ def test_order_free_device_forms_are_bitwise_across_launches(built, name):
     for _ in range(3):
         planes[out].fill(np.nan)
         bound.launch()
+        bound.wait()
         assert planes[out].get().tobytes() == first[out].tobytes()
 
 

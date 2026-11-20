@@ -1,43 +1,26 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""The consumer side of a HAWK artifact: LOAD it through eagle, then run it.
+"""The consumer side of a HAWK artifact: LOAD it through hawk, then run it.
 
-Deliberately in ``hawk/tests/`` and not in ``hawk/hawk/``: HAWK imports no
-eagle at runtime, and it holds no launch path at all —
-a device artifact is loaded and launched by ``eagle.registry.load_manifest`` ->
-``eagle.plan``, a host one by ``eagle.exec.HostTeam``. What this module does is
-exactly what any consumer must:
+Deliberately in ``hawk/tests/`` and not in ``hawk/hawk/``: what this module does is what any consumer must, through
+hawk's own verbs (:func:`hawk.load`, :func:`hawk.plan`):
 
-1. ``eagle.registry.load_manifest`` — the manifest-level gates (schema version,
-   the v2 execution axis, the ABI tag) plus each entry's sidecar validation and
-   the driver module load;
-2. the SELF-CHECK: read the artifact's OWN exported ``eagle_abi_tag`` and
-   ``eagle_layout_sizes`` and refuse a mismatch NAMING THE FIELD. The
-   HOST half of that check is not written here at all — it is
-   :class:`hawk._core.HostLibrary`'s constructor (dlopen, the tag, the
-   layout, all in C++), so the check a consumer gets is the one HAWK's own
-   execution path performs and not a second Python transcription of it that
-   could drift. The DEVICE half stays here in ctypes/cupy, because there is no
-   dlsym on a PTX module and HAWK's host path never loads
-   one;
-3. project the sidecar into the plan-able declaration with
-   ``hawk.artifact.plan_view`` (zero eagle import on HAWK's side) and attach the
-   loaded entry point.
+1. :func:`load_bundle` loads each kernel of a bundle's manifest, which runs the load-time gates of the library (the
+   layout sizes, the ABI tag) and refuses a mismatch NAMING THE FIELD;
+2. the SELF-CHECK: read the artifact's OWN exported ``eagle_abi_tag`` and ``eagle_layout_sizes`` and refuse a mismatch
+   NAMING THE FIELD. The HOST half is :class:`hawk._core.HostLibrary`'s constructor (dlopen, the tag, the layout, all
+   in C++), so the check a consumer gets is the one HAWK's own execution path performs and not a second Python
+   transcription of it. The DEVICE half stays here in cupy, because there is no dlsym on a PTX module and HAWK's host
+   path never loads one; it compares against the sizes and the tag of this build (:mod:`hawk._core`,
+   :mod:`hawk._contracts`);
+3. project the sidecar into the plan-able declaration with ``hawk.artifact.plan_view`` and attach the loaded entry
+   point.
 
-A fourth, narrower check: :func:`check_declared_planes` is HAWK's
-OWN re-owning of the previous code generator's ``vec_widths`` bind rule
-(its ``declare_block`` helper, and eagle v1's
-``PureKernel._vec_widths``), asked of the v2 sidecar's new ``arg_widths``/
-``arg_dtypes`` fields instead. It exists BESIDE ``eagle.plan.Plan.bind``'s own
-``_check_plane`` (already strengthened for FLOAT-typed vec_in/
-mat_in planes purely by making ``arg_widths`` complete — no eagle edit was
-needed for that half) rather than instead of it, because ``_check_plane``
-explicitly exempts every integer- or bool-dtyped array from its dtype check
-("an integer or bool array is passed at its own dtype"): a ``lookup``/
-``per_sample`` plane bound at the wrong INTEGER width has no eagle-side gate
-at all, on either era's sidecar. Since the v2 sidecar now knows every such
-slot's wire dtype, a HAWK consumer can close that gap on its own side.
+A fourth, narrower check: :func:`check_declared_planes` is HAWK's OWN bind rule for the width and the dtype of a declared
+plane, asked of the v2 sidecar's ``arg_shapes``/``arg_dtypes`` fields. A plane bound at the wrong INTEGER width has no
+gate in the float planes' dtype check (an integer or bool array is passed at its own dtype); since the v2 sidecar knows
+every slot's wire dtype, a consumer can close that gap on its own side.
 """
 
 from __future__ import annotations
@@ -46,9 +29,12 @@ import ctypes
 import pathlib
 from types import MappingProxyType, SimpleNamespace
 
-from hawk import _core
+import json
+
 from conftest import refuse_device_row
 
+import hawk
+from hawk import _contracts, _core
 from hawk.artifact import fold_entries, plan_view
 
 #: How many entries the layout-sizes array carries (``gref_abi.h``'s own constant).
@@ -56,10 +42,15 @@ LAYOUT_FIELDS = 5
 
 
 def load_bundle(directory):
-    """``eagle.registry.load_manifest`` over a HAWK bundle -> its registry."""
-    from eagle.registry import load_manifest
-
-    return load_manifest(pathlib.Path(directory) / "manifest.json")
+    """The kernels of a HAWK bundle's manifest, loaded: ``{id: entry}`` with ``entry.loaded`` the kernel :func:`hawk.load` made and
+    ``entry.derivative`` the derivative block its sidecar states (``None`` for a primal)."""
+    directory = pathlib.Path(directory)
+    plugins = json.loads((directory / "manifest.json").read_text())["plugins"]
+    entries = {}
+    for plugin in plugins:
+        loaded = hawk.load(directory, plugin["id"])
+        entries[plugin["id"]] = SimpleNamespace(loaded=loaded, derivative=loaded.sidecar.get("derivative"))
+    return entries
 
 
 def host_selfcheck(so_path) -> tuple:
@@ -68,15 +59,14 @@ def host_selfcheck(so_path) -> tuple:
     THE CHECK IS ``hawk._core``'s. Constructing a
     :class:`hawk._core.HostLibrary` dlopens the artifact ``RTLD_LOCAL|RTLD_NOW``,
     reads its exported ``eagle_abi_tag`` and ``eagle_layout_sizes``, and refuses a
-    mismatch through eagle's own ``check_layout_sizes`` comparison — so the
-    refusal names the field in the one spelling every other door uses, and a
-    consumer gets the check HAWK's execution path actually performs rather than a
-    Python re-statement of it.
+    mismatch, so the refusal names the field in the one spelling every other door
+    uses, and a consumer gets the check HAWK's execution path actually performs
+    rather than a Python re-statement of it.
 
-    Returns ``(tag, sizes, cdll)``. The CDLL is still opened, because eagle's
-    plan surface takes the entry as a raw ADDRESS and the object that address
-    points into has to be kept alive by something the caller holds; the
-    ``HostLibrary`` is returned as its keepalive too."""
+    Returns ``(tag, sizes, cdll)``. The CDLL is opened because a plugin view takes
+    the entry as a raw ADDRESS, and the object that address points into has to be
+    kept alive by something the caller holds; the ``HostLibrary`` is attached to it
+    as its keepalive too."""
     lib = _core.HostLibrary(str(so_path))                # refuses, naming the field
     tag_value, sizes = lib.abi_tag, list(lib.layout_sizes)
     cdll = ctypes.CDLL(str(so_path))
@@ -89,79 +79,28 @@ def device_selfcheck(module) -> tuple:
     cupy's ``RawModule.get_global`` (there is no dlsym on a
     PTX module)."""
     import cupy as cp
-    import eagle.exec as eexec
 
     sizes = [int(v) for v in cp.ndarray(
         (LAYOUT_FIELDS,), dtype=cp.uint64,
         memptr=module.get_global("eagle_layout_sizes")).get()]
-    raw = bytes(cp.ndarray((_tag_bytes(),), dtype=cp.uint8,
+    raw = bytes(cp.ndarray((len(_contracts.AETHER_ABI_VERSION) + 1,), dtype=cp.uint8,
                            memptr=module.get_global("eagle_abi_tag")).get())
     tag_value = raw.split(b"\0", 1)[0].decode()
-    _check_tag(tag_value, "the device module")
-    eexec.check_layout_sizes(sizes)
+    if tag_value != _contracts.AETHER_ABI_VERSION:
+        raise ValueError(f"the device module: exported eagle_abi_tag is {tag_value!r}, this build speaks "
+                         f"{_contracts.AETHER_ABI_VERSION!r}")
+    for field, (got, want) in enumerate(zip(sizes, _core.layout_sizes())):
+        if got != want:
+            raise ValueError(f"the device module: layout field {_core.layout_field_name(field)} is {got} bytes, "
+                             f"this build expects {want}")
     return tag_value, sizes
 
 
-def _tag_bytes() -> int:
-    """The exported ``eagle_abi_tag`` array's own length: the literal plus its
-    NUL. Reading past it is a real out-of-bounds on the device, where the global
-    is exactly ``sizeof("aether-abi/2")`` wide."""
-    import eagle.exec as eexec
-
-    return len(eexec.ABI_TAG_V2) + 1
-
-
-def _check_tag(tag: str, subject) -> None:
-    import eagle.exec as eexec
-
-    if tag != eexec.ABI_TAG_V2:
-        raise ValueError(
-            f"{subject}: exported eagle_abi_tag is {tag!r}, this build speaks "
-            f"{eexec.ABI_TAG_V2!r} (L9)"
-        )
-
-
-class _EagleModule:
-    """The module eagle loaded for ``loaded`` (its handle, an int), with the two lookups the tests make:
-    a function's driver handle (``.kernel.ptr``) and a device global as a cupy memory pointer."""
-
-    def __init__(self, loaded):
-        loaded.function(loaded.device_id)               # loads the module on first use
-        self.handle = loaded._modules[loaded.device_id]
-
-    def get_function(self, name):
-        from cupy.cuda import driver
-        from types import SimpleNamespace
-
-        return SimpleNamespace(kernel=SimpleNamespace(ptr=driver.moduleGetFunction(self.handle, name)))
-
-    def get_global(self, name):
-        import cupy as cp
-        from cupy.cuda import driver
-
-        ptr = driver.moduleGetGlobal(self.handle, name)           # the global's address; the callers' globals are 16 bytes
-        return cp.cuda.MemoryPointer(cp.cuda.UnownedMemory(ptr, 16, self), 0)
-
-
-def module_of(loaded):
-    """:class:`_EagleModule` of an eagle ``LoadedPure`` (its own module, so a device global is the one its launches use)."""
-    return _EagleModule(loaded)
-
-
-def device_plugin(bundle_dir, name, sidecar):
-    """The plan-able view of a bundle's DEVICE entry, self-checked."""
+def device_plugin(bundle_dir, name, sidecar=None):
+    """The loaded kernel of a bundle's DEVICE entry, for ``hawk.plan(loaded, hawk.DeviceKernel)``: the load runs the library's
+    own self-check, and a row that needs a device is skipped under ``--host-only``."""
     refuse_device_row()
-    reg = load_bundle(bundle_dir)
-    loaded = reg[name]
-    # eagle loads the module through its own seam; the self-check reads the globals off a cupy load of the same image
-    import cupy as cp
-    device_selfcheck(cp.RawModule(path=loaded.image_path))
-    view = plan_view(sidecar)
-    view.pop("host_entry", None)
-    # the sidecar travels with the view, read-only, as it does on a plugin of ``hawk.artifact.plugins``: the runtime reads from
-    # it the facts the view does not repeat (the row width of a kernel that reduces over samples)
-    return SimpleNamespace(device_function=loaded.fn.kernel.ptr, sidecar=MappingProxyType(sidecar),
-                           _keepalive=(reg, loaded), **view)
+    return hawk.load(bundle_dir, name, sidecar)
 
 
 def host_plugin(bundle_dir, name, sidecar):
@@ -191,15 +130,12 @@ _NUMPY_OF_WIRE = {"float64": "float64", "float32": "float32", "int64": "int64",
 def check_declared_planes(sidecar: dict, arrays: dict, n_samples: int) -> None:
     """HAWK's OWN bind-time width/dtype guard — the previous code generator's
     ``vec_widths`` bind rule, re-owned on HAWK's v2 sidecar (see this module's
-    docstring for why it exists beside, not instead of, ``eagle.plan``'s own
-    ``_check_plane``).
+    docstring).
 
     Every declared plane in ``arrays`` is checked against the sidecar's
     ``arg_shapes``/``arg_dtypes`` and a mismatch is refused NAMING THE SLOT,
-    before anything is packed or launched — exactly the discipline
-    ``eagle.plan.bind``'s own door applies, extended to the ONE case it cannot
-    reach (an integer- or bool-typed plane, which ``_check_plane`` exempts
-    from its own dtype check outright). Read from ``arg_shapes`` rather than
+    before anything is packed or launched, including the ONE case the float
+    planes' dtype check does not reach (an integer- or bool-typed plane). Read from ``arg_shapes`` rather than
     ``arg_widths``: the two agree on every statically-shaped role, but only
     ``arg_shapes`` is COMPLETE enough to say, for a runtime-length role, that
     there IS no static width to check (``arg_shapes[name] is None``) rather

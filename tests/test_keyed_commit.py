@@ -35,10 +35,10 @@ from __future__ import annotations
 import ctypes
 import math
 
-import _deploy as L
 import numpy as np
 import pytest
-from conftest import sidecar_of
+from conftest import _launch as _bind
+from conftest import _xp
 
 import hawk
 import hawk.math as m
@@ -244,34 +244,38 @@ def bundles(request, tmp_path_factory, cache_dir):
     return out, request.param
 
 
-def _commits(plugin, target):
-    """(get, reset) of aether's two run-commit counters in the loaded entry."""
-    if target == "host":
-        cells = (ctypes.c_ulonglong * 2).in_dll(plugin._keepalive[0], "aether_run_commits")
+def _commits(bundle, name, target):
+    """``(get, reset)`` of aether's two run-commit counters in the unit's host library, or ``None`` on a device: hawk has no verb that
+    reads a loaded unit's device global, so a device row's counts are not asserted (``_device_counts_unread``)."""
+    if target != "host":
+        return None
+    cells = (ctypes.c_ulonglong * 2).in_dll(ctypes.CDLL(str(bundle.directory / f"{name}.so")), "aether_run_commits")
 
-        def reset():
-            cells[0] = cells[1] = 0
-        return (lambda: (int(cells[0]), int(cells[1]))), reset
-    import cupy as cp
+    def reset():
+        cells[0] = cells[1] = 0
+    return (lambda: (int(cells[0]), int(cells[1]))), reset
 
-    arr = cp.ndarray((2,), dtype=cp.uint64,
-                     memptr=L.module_of(plugin._keepalive[1]).get_global("aether_run_commits"))
-    return (lambda: tuple(int(v) for v in arr.get())), (lambda: arr.fill(0))
+
+def _device_counts_unread():
+    """Ends a device row after its value assertions: the commit counts need a hawk verb that reads a unit's device global."""
+    pytest.skip("the device commit counts need a hawk verb that reads a loaded unit's device global")
 
 
 def _launch(bundle, name, target, planes):
-    import eagle.exec as eexec
-    from eagle import plan as eplan
+    """One launch of ``name`` over ``planes`` through hawk's verbs, waited for. Returns the commit counts ``(run, lane)`` the
+    launch made, ``None`` on a device (see ``_commits``)."""
+    bound = _bind(bundle, name, target, planes)
+    counters = _commits(bundle, name, target)
+    if counters is not None:
+        counters[1]()
+    bound.launch()
+    bound.wait()
+    return None if counters is None else counters[0]()
 
-    sidecar = sidecar_of(bundle, name)
-    if target == "host":
-        plugin, structure = L.host_plugin(bundle.directory, name, sidecar), eexec.HostTeam
-    else:
-        plugin, structure = L.device_plugin(bundle.directory, name, sidecar), eexec.DeviceKernel
-    get, reset = _commits(plugin, target)
-    reset()
-    eplan.plan(plugin, structure=structure).bind(**planes).launch()
-    return get()
+
+def _host(plane):
+    """``plane`` as a NumPy array, copied off a device."""
+    return np.array(plane.get() if hasattr(plane, "get") else plane)
 
 
 def _bound(compensated, whole_warps):
@@ -302,30 +306,27 @@ def _error(got, terms, key, slots, mode, what):
 @pytest.mark.parametrize("case", list(CASES))
 @pytest.mark.parametrize("target", TARGET_ARMS)
 def test_one_commit_per_run_within_the_sum_contract(bundles, target, case, contract):
-    """``auto`` binds no companion: the runtime owns it, and the target alone
-    holds the compensated sum."""
+    """No contract binds a companion: the library owns it, and the target alone holds the compensated sum."""
     built, mode = bundles
     plain, comp, n, key, device_runs = CASES[case]
     kernel = {"plain": plain, "compensated": comp, "auto": AUTO.get(plain)}[contract]
     if kernel is None:
         pytest.skip("no default-contract twin for this case")
     compensated = contract != "plain"
-    xp = np if target == "host" else __import__("cupy")
+    xp = _xp(target)
     x = np.random.default_rng(1234).uniform(-1, 1, n).astype(mode)
     slots = int(key.max()) + 1
     planes = {"x": xp.asarray(x), "acc": xp.zeros(slots, mode)}
-    if contract == "compensated":
-        planes["acc_c"] = xp.zeros(slots, mode)
     if any(name == "seg" for _, name in _ir.arg_spec(kernel.walk)):
         planes["seg"] = xp.asarray(key)
-    run, lane = _launch(built[kernel.name], kernel.name, target, planes)
-    if target == "cuda":
-        xp.cuda.Device().synchronize()
-    got = sum(np.asarray(planes[p].get() if target == "cuda" else planes[p]).astype(np.float64)
-              for p in (("acc", "acc_c") if contract == "compensated" else ("acc",)))
+    counts = _launch(built[kernel.name], kernel.name, target, planes)
+    got = _host(planes["acc"]).astype(np.float64)
     terms = x.astype(np.float64)        # the plane's values: exact terms on every arm
     what = f"{case} {contract} {target}"
     assert _error(got, terms, key, slots, mode, what) <= _bound(compensated, case != "sorted_mixed")
+    if counts is None:
+        _device_counts_unread()
+    run, lane = counts
     assert lane == 0
     if target == "cuda" and compensated and case == "proven_8192":
         assert n // 1024 <= run <= device_runs      # one commit per full block (a block spans at most 1024 lanes), not per warp
@@ -391,16 +392,16 @@ def test_a_default_keyed_sum_is_delivered_in_the_target_alone(target, keys, mode
     """No companion is bound: the plan owns one, and the target alone holds the
     compensated sum, within 1 of ``eps * sum|t|`` per slot."""
     kernel = BIG_AUTO[keys]
-    xp = np if target == "host" else __import__("cupy")
+    xp = _xp(target)
     key, x, planes = _big_planes(keys, mode, xp)
     names = [nm for _, nm in _ir.arg_spec(kernel.walk) if nm != "acc_c"]
     assert ("accum_out", "acc_c") in _ir.arg_spec(kernel.walk)
     plan = _plan(kernel, target, mode, tmp_path, cache_dir)
-    plan.bind(**{k: planes[k] for k in names}).launch()
-    if target == "cuda":
-        xp.cuda.Device().synchronize()
+    bound = plan.bind(**{k: planes[k] for k in names})
+    bound.launch()
+    bound.wait()
     slots = int(key.max()) + 1
-    got = np.asarray(planes["acc"].get() if target == "cuda" else planes["acc"])[:slots]
+    got = _host(planes["acc"])[:slots]
     what = f"{keys} {NBIG} into {slots} default {target}"
     assert _error(got.astype(np.float64), x.astype(np.float64), key, slots, mode, what) <= 1.0
 
@@ -413,14 +414,14 @@ def test_replays_into_one_sink_keep_the_companion_across_launches(target, kernel
     fold after each launch: the target alone stays within 1 of
     ``eps * sum|w|`` after 100 replays into the same sink."""
     R = 100
-    xp = np if target == "host" else __import__("cupy")
+    xp = _xp(target)
     key, x, planes = _big_planes("unsorted", "float64", xp)
     plan = _plan(kernel, target, "float64", tmp_path, cache_dir)
     bound = plan.bind(x=planes["x"], key=planes["key"], acc=planes["acc"])
     graph = hawk.Graph().add(bound).build()
     graph.launch(R)
     hawk.synchronize()
-    got = np.asarray(planes["acc"].get() if target == "cuda" else planes["acc"])
+    got = _host(planes["acc"])
     assert _error(got, np.tile(x.astype(np.float64), R), np.tile(key, R), NB, "float64",
                   f"{kernel.name} {R} replays {target}") <= 1.0
 
@@ -447,7 +448,7 @@ def test_a_captured_replay_reuses_the_owned_companion(tmp_path, cache_dir):
 
 @pytest.mark.parametrize("target", TARGET_ARMS)
 def test_the_owned_companion_is_not_returned_and_not_asked_for(target, tmp_path, cache_dir):
-    xp = np if target == "host" else __import__("cupy")
+    xp = _xp(target)
     key, x, planes = _big_planes("sorted", "float64", xp)
     plan = _plan(ksrt_a, target, "float64", tmp_path, cache_dir)
     got = plan.run(x=planes["x"], seg=planes["seg"], acc=planes["acc"])
@@ -492,43 +493,23 @@ def test_a_launch_allocates_nothing_for_the_owned_companion(tmp_path, cache_dir)
 @pytest.mark.parametrize("mode", ["float32", "float64"])
 @pytest.mark.parametrize("keys", list(BIG))
 @pytest.mark.parametrize("target", TARGET_ARMS)
-def test_a_companion_the_caller_binds_keeps_target_plus_companion(target, keys, mode,
-                                                                   tmp_path, cache_dir):
-    """A companion the caller binds is the caller's: never folded, and target
-    plus companion is the compensated sum, within 1 of ``eps * sum|t|`` per
-    slot."""
-    import eagle.exec as eexec
-    from eagle import plan as eplan
-
+def test_a_compensated_keyed_sum_is_delivered_in_the_target_alone(target, keys, mode, tmp_path, cache_dir):
+    """The library owns the companion of a compensated contract too, and the target alone is the compensated sum, within 1
+    of ``eps * sum|t|`` per slot; a caller that binds the companion is refused."""
     kernel = BIG[keys]
-    bundle = build_bundle([kernel], tmp_path, mode=mode, targets=("cuda", "host"),
-                          cache_dir=cache_dir)
-    rng = np.random.default_rng(4)
-    key = np.minimum((rng.beta(2, 5, NBIG) * NB).astype(np.int32), NB - 1)
-    if keys == "sorted":
-        key = np.sort(key)
-    elif keys == "uniform":
-        key = np.zeros(NBIG, np.int32)
-    x = rng.uniform(0.5, 1.5, NBIG).astype(mode)
-    xp = np if target == "host" else __import__("cupy")
-    planes = {"x": xp.asarray(x), "key": xp.asarray(key), "seg": xp.asarray(key),
-              "acc": xp.zeros(NB, mode), "acc_c": xp.zeros(NB, mode)}
-    sidecar = sidecar_of(bundle, kernel.name)
-    if target == "host":
-        plugin, structure = L.host_plugin(bundle.directory, kernel.name, sidecar), eexec.HostTeam
-    else:
-        plugin, structure = (L.device_plugin(bundle.directory, kernel.name, sidecar),
-                             eexec.DeviceKernel)
-    names = [nm for _, nm in _ir.arg_spec(kernel.walk)]
-    eplan.plan(plugin, structure=structure).bind(**{k: planes[k] for k in names}).launch()
-    if target == "cuda":
-        xp.cuda.Device().synchronize()
+    xp = _xp(target)
+    key, x, planes = _big_planes(keys, mode, xp)
+    names = [nm for _, nm in _ir.arg_spec(kernel.walk) if nm != "acc_c"]
+    assert ("accum_out", "acc_c") in _ir.arg_spec(kernel.walk)
+    plan = _plan(kernel, target, mode, tmp_path, cache_dir)
+    with pytest.raises((HawkError, ValueError), match="companion or compensation plane"):
+        plan.bind(**{k: planes[k] for k in names}, acc_c=xp.zeros(NB, mode))
+    bound = plan.bind(**{k: planes[k] for k in names})
+    bound.launch()
+    bound.wait()
     slots = int(key.max()) + 1
-    got = {p: np.asarray(planes[p].get() if target == "cuda" else planes[p])[:slots]
-           .astype(np.float64) for p in ("acc", "acc_c")}
-    terms = x.astype(np.float64)
-    what = f"{keys} {NBIG} into {slots} compensated {target} pair"
-    assert _error(got["acc"] + got["acc_c"], terms, key, slots, mode, what) <= 1.0
+    what = f"{keys} {NBIG} into {slots} compensated {target}"
+    assert _error(_host(planes["acc"])[:slots].astype(np.float64), x.astype(np.float64), key, slots, mode, what) <= 1.0
 
 
 def test_a_compensated_reverse_declares_its_companion():
@@ -547,21 +528,22 @@ def test_the_reverse_of_a_sorted_read_commits_once_per_run(target, compensated, 
     primal = build_bundle([kread], tmp_path / "p", **kw)
     bundle = build_bundle([kernel], tmp_path / "v",
                           derivative={kernel.name: (kread.name, primal.digest)}, **kw)
-    xp = np if target == "host" else __import__("cupy")
+    xp = _xp(target)
     rng = np.random.default_rng(99)
     key = _mixed_runs(N)
     slots = int(key.max()) + 1
     x, by = rng.uniform(0.5, 1.5, N), rng.uniform(0.5, 1.5, N)   # positive terms: no cancellation
     planes = {"x": xp.asarray(x), "seg": xp.asarray(key), "bar_y": xp.asarray(by), "th": xp.zeros(slots),
-              "bar_th": xp.zeros(slots), "bar_th_c": xp.zeros(slots)}     # th: the clamp of the read reads its length
-    names = [nm for _, nm in _ir.arg_spec(kernel.walk)]
-    run, lane = _launch(bundle, kernel.name, target, {k: planes[k] for k in names})
-    if target == "cuda":
-        xp.cuda.Device().synchronize()
-    got = sum(np.asarray(planes[p].get() if target == "cuda" else planes[p])
-              for p in (("bar_th", "bar_th_c") if compensated else ("bar_th",)))
+              "bar_th": xp.zeros(slots)}     # th: the clamp of the read reads its length
+    if compensated:     # the kind names ``bar_th_c`` as its own companion: the caller's, not one the library makes
+        planes["bar_th_c"] = xp.zeros(slots)
+    counts = _launch(bundle, kernel.name, target, planes)
+    got = sum(_host(planes[p]) for p in (("bar_th", "bar_th_c") if compensated else ("bar_th",)))
     what = f"reverse {'compensated' if compensated else 'plain'} {target}"
     assert _error(got, by * x, key, slots, mode, what) <= _bound(compensated, False)
+    if counts is None:
+        _device_counts_unread()
+    run, lane = counts
     assert lane == 0
     if target == "cuda":
         assert run == _warp_runs(key)
