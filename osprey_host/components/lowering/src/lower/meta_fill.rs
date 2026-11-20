@@ -275,6 +275,19 @@ fn block_threads(parts: &Parts) -> i64 {
     }
 }
 
+/// Marks the launch with the slots of the kernel's index set. A set of lanes the caller builds is the launch's `index_*` pair; the
+/// set the runtime fills for a run-until-done runner is its `active_*` pair. A count alone marks a prefix set.
+pub(super) fn mark_set(launch: &mut m::Launch, request: &KernelRequest, slots: &[m::Slot]) {
+    let map =
+        slot_at(slots, MAP_PLANE).filter(|_| request.kind.lanes.is_none_or(|lanes| !lanes.prefix));
+    let count = slot_at(slots, COUNT_PLANE);
+    if request.kind.lanes.is_some() {
+        (launch.index_map_slot, launch.index_count_slot) = (map, count);
+    } else {
+        (launch.active_map_slot, launch.active_count_slot) = (map, count);
+    }
+}
+
 /// The launch record: the group, the boxes and the slots of the index maps the unit runs over.
 fn launch(parts: &Parts, slots: &[m::Slot]) -> m::Launch {
     // a later stage that runs on a team runs over its blocks, not over the caller's lanes: its space is one axis with
@@ -303,17 +316,8 @@ fn launch(parts: &Parts, slots: &[m::Slot]) -> m::Launch {
         },
         ..m::Launch::default()
     };
-    if let Some(active) = &parts.pending.active {
-        let map = active
-            .map_binding
-            .as_ref()
-            .and_then(|_| slot_at(slots, MAP_PLANE));
-        let count = slot_at(slots, COUNT_PLANE);
-        if parts.request.kind.lanes.is_some() {
-            (found.index_map_slot, found.index_count_slot) = (map, count);
-        } else {
-            (found.active_map_slot, found.active_count_slot) = (map, count);
-        }
+    if parts.pending.active.is_some() {
+        mark_set(&mut found, parts.request, slots);
     }
     found
 }

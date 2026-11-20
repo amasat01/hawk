@@ -2,6 +2,7 @@
 //! run in sequence, and a kernel the host runs with interchanged loops has its wide values placed in scratch planes (shared by
 //! name across the stages). The IR decisions are the wing's; this module turns each stage into a pending unit and notes what the
 //! answer's stage block says of it.
+use super::active::{self, COUNT_PLANE, MAP_PLANE};
 use super::card::BuildCard;
 use super::meta_fill;
 use super::placed::{interchanged, place_sinks, place_unit};
@@ -238,10 +239,18 @@ fn source_unit(
     request: &KernelRequest,
     member: &Member,
 ) -> Result<UnitMeta, Refusal> {
-    let (walk, digest) = canonical(ctx, member)?;
+    // An index set is the caller's: the source lists the planes of it that the stages read, so each stage's plane joins a source slot.
+    let mut member = member.clone();
+    if active::reads_set(request) {
+        member
+            .declared
+            .retain(|slot| slot.name != MAP_PLANE && slot.name != COUNT_PLANE);
+        member.declared.extend(active::index_planes(request));
+    }
+    let (walk, digest) = canonical(ctx, &member)?;
     let typed = typed_walk(ctx, walk)?;
     let slots = meta_fill::slots(ctx, walk, &typed, request)?;
-    let launch = Launch {
+    let mut launch = Launch {
         group: request.group,
         lane_labels: request.lane_space.iter().map(|a| a.label.clone()).collect(),
         lane_extents: request
@@ -252,6 +261,9 @@ fn source_unit(
         plane_axes: meta_fill::plane_axes(request, &slots),
         ..Launch::default()
     };
+    if active::reads_set(request) {
+        meta_fill::mark_set(&mut launch, request, &slots);
+    }
     Ok(UnitMeta {
         name: format!("{}_source", member.name),
         digest,
@@ -553,4 +565,108 @@ pub(super) fn team_form(
         active,
     };
     Ok((Some(Form::TeamStage(stage)), shape))
+}
+
+#[cfg(test)]
+mod tests {
+    //! The source unit of a cut kernel is the caller's face of it: it lists the index set the stages read and marks it.
+    use super::*;
+    use crate::lower::request::Body as RequestBody;
+    use raptor_ir::door::{rx_ctx_free, rx_ctx_new, RX_OK};
+
+    /// The source unit of a kernel that reads one per-sample plane `x` and writes `y`, under the kind the JSON member `kind` states.
+    fn source_under(kind: &str) -> UnitMeta {
+        let ctx = rx_ctx_new();
+        // SAFETY: `ctx` is the live context just made, and is not used after the free below.
+        let context = unsafe { &mut *ctx };
+        assert_eq!(
+            unsafe { raptor_wings::declare::rw_declare_kinds(ctx) },
+            RX_OK
+        );
+        let x = context
+            .make(
+                "Leaf",
+                "f64",
+                &[],
+                None,
+                &[],
+                "(('kind', 'vocab_read'), ('role', 'per_sample'), ('name', 'x'), ('quantity', None), ('wire_index', 0), ('sorted', False))",
+            )
+            .unwrap();
+        let out = context
+            .make(
+                "Assign",
+                "f64",
+                &[],
+                None,
+                &[x],
+                "(('kind', 'assign'), ('role', 'mutable'), ('name', 'y'))",
+            )
+            .unwrap();
+        let request = KernelRequest::from_json(&format!(
+            r#"{{"v": 1, "name": "k", "scalar": "Float64", "targets": ["Host"], "kind": {kind}, "body": {{"Plain": {{"name": "k", "sinks": [{out}], "declared": [], "exempt": []}}}}, "facts": {{"Host": "{{}}"}}}}"#
+        ))
+        .unwrap();
+        let RequestBody::Plain(member) = &request.body else {
+            panic!("a plain body");
+        };
+        let source = source_unit(ctx, &request, member).unwrap();
+        // SAFETY: `ctx` is the live context made above and is not used after.
+        unsafe { rx_ctx_free(ctx) };
+        source
+    }
+
+    /// The index of the slot of that name in the source unit.
+    fn slot_of(source: &UnitMeta, name: &str) -> Option<usize> {
+        source.body.slots.iter().position(|s| s.name == name)
+    }
+
+    #[test]
+    fn the_source_of_a_kernel_under_a_prefix_set_lists_the_count_and_marks_it_as_the_index_count() {
+        let source = source_under(
+            r#"{"guard": "Default", "active_set": false, "sink": "Plain", "lanes": {"bits": 32, "prefix": true}}"#,
+        );
+        let launch = &source.launch;
+        assert_eq!(launch.index_count_slot, slot_of(&source, "active_count"));
+        assert!(launch.index_count_slot.is_some());
+        assert_eq!(launch.index_map_slot, None);
+        assert_eq!(slot_of(&source, "active_map"), None);
+        assert_eq!(
+            (launch.active_map_slot, launch.active_count_slot),
+            (None, None)
+        );
+    }
+
+    #[test]
+    fn the_source_of_a_kernel_under_a_mapped_set_lists_the_map_and_the_count_and_marks_both_as_the_index_set(
+    ) {
+        let source = source_under(
+            r#"{"guard": "Default", "active_set": false, "sink": "Plain", "lanes": {"bits": 32, "prefix": false}}"#,
+        );
+        let launch = &source.launch;
+        assert!(launch.index_map_slot.is_some());
+        assert_eq!(launch.index_map_slot, slot_of(&source, "active_map"));
+        assert_eq!(launch.index_count_slot, slot_of(&source, "active_count"));
+        assert!(launch.index_count_slot.is_some());
+        assert_eq!(
+            (launch.active_map_slot, launch.active_count_slot),
+            (None, None)
+        );
+    }
+
+    #[test]
+    fn the_source_of_a_kernel_without_an_index_set_lists_and_marks_none() {
+        let source = source_under(r#"{"guard": "Default", "active_set": false, "sink": "Plain"}"#);
+        let launch = &source.launch;
+        assert_eq!(slot_of(&source, "active_count"), None);
+        assert_eq!(
+            (
+                launch.index_map_slot,
+                launch.index_count_slot,
+                launch.active_map_slot,
+                launch.active_count_slot
+            ),
+            (None, None, None, None)
+        );
+    }
 }

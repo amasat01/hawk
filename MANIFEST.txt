@@ -13,12 +13,12 @@ Every file with its line count (this file excluded):
       8  osprey_host/binding/fixture/contract0.c
      11  osprey_host/binding/gen/Cargo.toml
    1408  osprey_host/binding/gen/src/main.rs
-   1592  osprey_host/binding/template/door.c
+   1698  osprey_host/binding/template/door.c
      45  osprey_host/binding/template/module.h
     116  osprey_host/binding/template/types.c
    1051  osprey_host/binding/test_binding.py
    1264  osprey_host/binding/test_door.py
-    263  osprey_host/binding/test_end_to_end.py
+    292  osprey_host/binding/test_end_to_end.py
      96  osprey_host/binding/test_sideways.py
      27  osprey_host/check_exports.sh
      19  osprey_host/ci/dist.sh
@@ -38,7 +38,7 @@ Every file with its line count (this file excluded):
     120  osprey_host/components/lowering/src/index_width.rs
      21  osprey_host/components/lowering/src/lib.rs
     146  osprey_host/components/lowering/src/local_memory.rs
-    162  osprey_host/components/lowering/src/lower/active.rs
+    180  osprey_host/components/lowering/src/lower/active.rs
      51  osprey_host/components/lowering/src/lower/blocks.rs
      35  osprey_host/components/lowering/src/lower/boxed.rs
    1217  osprey_host/components/lowering/src/lower/card.rs
@@ -50,14 +50,14 @@ Every file with its line count (this file excluded):
     334  osprey_host/components/lowering/src/lower/links.rs
     178  osprey_host/components/lowering/src/lower/merge.rs
     871  osprey_host/components/lowering/src/lower/meta_c.rs
-   1189  osprey_host/components/lowering/src/lower/meta_fill.rs
+   1193  osprey_host/components/lowering/src/lower/meta_fill.rs
    1778  osprey_host/components/lowering/src/lower/mod.rs
      89  osprey_host/components/lowering/src/lower/peer.rs
     121  osprey_host/components/lowering/src/lower/placed.rs
    2032  osprey_host/components/lowering/src/lower/request.rs
     377  osprey_host/components/lowering/src/lower/segment.rs
     116  osprey_host/components/lowering/src/lower/stage_block.rs
-    556  osprey_host/components/lowering/src/lower/stages.rs
+    672  osprey_host/components/lowering/src/lower/stages.rs
     929  osprey_host/components/lowering/src/lower/unit_meta.rs
     247  osprey_host/components/lowering/src/lower/warp.rs
     153  osprey_host/components/lowering/src/testing.rs

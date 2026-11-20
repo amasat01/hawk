@@ -91,6 +91,35 @@ def run_through_runtime(o, lib, library, unit):
     door.bind(plan, [0, 1, 2], planes)
     assert door.launch(plan) >= 1
     assert list(y_lanes) == [a + b for a, b in zip(a_values, b_values)], list(y_lanes)
+
+    # an array that exports DLPack states its layout without being taken as a plane
+    class Exporter:
+        """An array that exports DLPack and nothing else: the tensor of the first plane."""
+
+        def __dlpack__(self, *, max_version=None, stream=None):
+            return door.plane_dlpack(planes[0])
+
+    layout = door.array_layout(Exporter())
+    assert (layout["shape"], layout["strides"], layout["dtype"]) == ((count,), None, (2, 64, 1))
+    assert layout["device"][0] == 1 and layout["read_only"] is False, layout
+    # a kernel that finishes nothing, takes no steps and picks no branch has no counter to read
+    assert door.plan_counters(plan) == {"finished": None, "steps": None, "mix": ()}
+    # the same range in two even parts runs every lane once: the values are those of the whole range
+    for i in range(count):
+        y_lanes[i] = 0.0
+    serial, compensated = o.EG_STRUCTURE_HOST_SERIAL, o.EG_REDUCE_COMPENSATED
+    halves = door.plan_new(loaded, serial, compensated, count, split_evenly=2)
+    door.bind(halves, [0, 1, 2], planes)
+    assert door.launch(halves) >= 1
+    assert list(y_lanes) == [a + b for a, b in zip(a_values, b_values)], list(y_lanes)
+    try:
+        door.plan_new(
+            loaded, serial, compensated, count, part_base=[0], part_count=[count], split_evenly=2
+        )
+    except ValueError as two_ways:
+        assert "two ways to partition" in str(two_ways)
+    else:
+        raise AssertionError("split_evenly beside part_base and part_count was accepted")
     door.ctx_free()
 
 

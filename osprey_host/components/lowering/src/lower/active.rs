@@ -25,6 +25,35 @@ const LEAF_ROLES: [Role; 9] = [
     Role::Mutable,
 ];
 
+/// Whether the kernel's kind reads an index map: an active set or a set of lanes.
+pub(super) fn reads_set(request: &KernelRequest) -> bool {
+    request.kind.active_set || request.kind.lanes.is_some()
+}
+
+/// The index set the kernel's kind reads: the caller's set of lanes, else the active set (a map of 32-bit words).
+fn index_set(request: &KernelRequest) -> IndexSet {
+    request.kind.lanes.unwrap_or(IndexSet {
+        bits: MapBits::B32,
+        prefix: false,
+    })
+}
+
+/// The planes a unit that reads the kernel's index set binds: the map (none for a prefix) and the count.
+pub(super) fn index_planes(request: &KernelRequest) -> Vec<DeclaredSlot> {
+    let IndexSet { bits, prefix } = index_set(request);
+    let map = (!prefix).then(|| {
+        let word = if bits == MapBits::B64 {
+            Dtype::I64
+        } else {
+            Dtype::Int32
+        };
+        DeclaredSlot::lookup(MAP_PLANE, word)
+    });
+    map.into_iter()
+        .chain([DeclaredSlot::lookup(COUNT_PLANE, Dtype::Uint32)])
+        .collect()
+}
+
 /// The step: every unit of a kernel whose kind reads an index map gets the map and count planes declared and its active set.
 pub(super) fn set(
     ctx: *mut Ctx,
@@ -32,7 +61,7 @@ pub(super) fn set(
     _cards: &Cards,
     pending: Vec<Pending>,
 ) -> Result<Vec<Pending>, Refusal> {
-    if !request.kind.active_set && request.kind.lanes.is_none() {
+    if !reads_set(request) {
         return Ok(pending);
     }
     pending
@@ -93,10 +122,7 @@ fn with_map(ctx: *mut Ctx, request: &KernelRequest, mut unit: Pending) -> Result
             )));
         }
     }
-    let IndexSet { bits, prefix } = lane_set.unwrap_or(IndexSet {
-        bits: MapBits::B32,
-        prefix: false,
-    });
+    let IndexSet { bits, prefix } = index_set(request);
     let reserved: &[&str] = if prefix {
         &[COUNT_PLANE]
     } else {
@@ -115,15 +141,7 @@ fn with_map(ctx: *mut Ctx, request: &KernelRequest, mut unit: Pending) -> Result
         .into_iter()
         .filter(|slot| LEAF_ROLES.contains(&slot.role))
         .collect();
-    if !prefix {
-        let word = if bits == MapBits::B64 {
-            Dtype::I64
-        } else {
-            Dtype::Int32
-        };
-        declared.push(DeclaredSlot::lookup(MAP_PLANE, word));
-    }
-    declared.push(DeclaredSlot::lookup(COUNT_PLANE, Dtype::Uint32));
+    declared.extend(index_planes(request));
     // The companions the caller declared (a compensated total's low word) follow the map planes.
     declared.extend(
         unit.member

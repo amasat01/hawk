@@ -60,6 +60,7 @@
     X(eg_banded_unpack)                                                                            \
     X(eg_banded_pack_scalar)                                                                       \
     X(eg_plan_entry_figures)                                                                       \
+    X(eg_plan_counters)                                                                            \
     X(eg_runner_reset)                                                                             \
     X(eg_runner_figures)                                                                           \
     X(eg_fft_new)                                                                                  \
@@ -585,6 +586,31 @@ static PyObject* m_unit_load(PyObject* self, PyObject* args, PyObject* kw)
     return res;
 }
 
+/* The array's DLPack 1.0 capsule (a new reference), asked with max_version (1, 0) and the stream
+ * when one is given; NULL with a Python error set when the array gives none. */
+static PyObject* dlpack_capsule(PyObject* array, PyObject* stream)
+{
+    PyObject* producer = PyObject_GetAttrString(array, "__dlpack__");
+    PyObject* none     = PyTuple_New(0);
+    PyObject* options  = PyDict_New();
+    PyObject* version  = Py_BuildValue("(ii)", 1, 0);
+    PyObject* capsule  = NULL;
+    if (producer && none && options && version
+        && PyDict_SetItemString(options, "max_version", version) == 0
+        && (stream == Py_None || PyDict_SetItemString(options, "stream", stream) == 0))
+        capsule = PyObject_Call(producer, none, options);
+    if (capsule && !PyCapsule_IsValid(capsule, DLPACK_NAME)) {
+        PyErr_SetString(
+            PyExc_TypeError, "the array gave no DLPack 1.0 capsule (dltensor_versioned)");
+        Py_CLEAR(capsule);
+    }
+    Py_XDECREF(version);
+    Py_XDECREF(options);
+    Py_XDECREF(none);
+    Py_XDECREF(producer);
+    return capsule;
+}
+
 /* plane_wrap(array, stream=None): takes the array's DLPack 1.0 tensor as a plane. The door owns
  * the tensor once the wrap succeeded (the capsule is marked used, so its producer does not free
  * it too); on a refusal the capsule keeps it and the producer frees it with the capsule. */
@@ -595,51 +621,75 @@ static PyObject* m_plane_wrap(PyObject* self, PyObject* args, PyObject* kw)
     PyObject *array, *stream = Py_None;
     if (!PyArg_ParseTupleAndKeywords(args, kw, "O|O", names, &array, &stream) || !door_ready(d))
         return NULL;
-    PyObject* producer = PyObject_GetAttrString(array, "__dlpack__");
-    PyObject* none     = PyTuple_New(0);
-    PyObject* options  = PyDict_New();
-    PyObject* version  = Py_BuildValue("(ii)", 1, 0);
-    PyObject *capsule = NULL, *res = NULL;
-    if (!producer || !none || !options || !version
-        || PyDict_SetItemString(options, "max_version", version) < 0
-        || (stream != Py_None && PyDict_SetItemString(options, "stream", stream) < 0))
-        goto done;
-    capsule = PyObject_Call(producer, none, options);
+    PyObject* capsule = dlpack_capsule(array, stream);
     if (!capsule)
-        goto done;
-    if (!PyCapsule_IsValid(capsule, DLPACK_NAME)) {
-        PyErr_SetString(
-            PyExc_TypeError, "the array gave no DLPack 1.0 capsule (dltensor_versioned)");
-        goto done;
-    }
+        return NULL;
     struct DLManagedTensorVersioned* tensor = PyCapsule_GetPointer(capsule, DLPACK_NAME);
     eg_plane* plane                         = NULL;
-    if (door_check(d, d->fn.eg_plane_wrap(d->ctx, tensor, &plane)) < 0)
-        goto done;
-    PyCapsule_SetName(capsule, DLPACK_USED);
-    res = handle_make(d, KIND_PLANE, plane);
-done:
-    Py_XDECREF(capsule);
-    Py_XDECREF(version);
-    Py_XDECREF(options);
-    Py_XDECREF(none);
-    Py_XDECREF(producer);
+    PyObject* res                           = NULL;
+    if (door_check(d, d->fn.eg_plane_wrap(d->ctx, tensor, &plane)) == 0) {
+        PyCapsule_SetName(capsule, DLPACK_USED);
+        res = handle_make(d, KIND_PLANE, plane);
+    }
+    Py_DECREF(capsule);
+    return res;
+}
+
+/* A new tuple of `count` integers read from `values`; NULL with a Python error set. */
+static PyObject* tuple_of_int64(const int64_t* values, int32_t count)
+{
+    PyObject* tuple = PyTuple_New(count);
+    for (int32_t i = 0; tuple && i < count; ++i) {
+        PyObject* number = PyLong_FromLongLong(values[i]);
+        if (!number || PyTuple_SetItem(tuple, i, number) < 0)
+            Py_CLEAR(tuple);
+    }
+    return tuple;
+}
+
+/* array_layout(array): what the array's DLPack 1.0 tensor states, without taking it: `shape`,
+ * `strides` in elements (None when the array is compact in C order), `dtype` as (code, bits,
+ * lanes), `device` as (type, id) and `read_only`. The tensor goes back to its producer. */
+static PyObject* m_array_layout(PyObject* self, PyObject* args)
+{
+    (void)self;
+    PyObject* array;
+    if (!PyArg_ParseTuple(args, "O", &array))
+        return NULL;
+    PyObject* capsule = dlpack_capsule(array, Py_None);
+    if (!capsule)
+        return NULL;
+    const struct DLManagedTensorVersioned* tensor = PyCapsule_GetPointer(capsule, DLPACK_NAME);
+    const DLTensor* t                             = &tensor->dl_tensor;
+    PyObject* shape                               = tuple_of_int64(t->shape, t->ndim);
+    PyObject* strides = t->strides ? tuple_of_int64(t->strides, t->ndim) : NULL;
+    PyObject* res     = NULL;
+    if (shape && (strides || !t->strides))
+        res = Py_BuildValue("{s:O,s:O,s:(iii),s:(ii),s:O}", "shape", shape, "strides",
+            strides ? strides : Py_None, "dtype", (int)t->dtype.code, (int)t->dtype.bits,
+            (int)t->dtype.lanes, "device", (int)t->device.device_type, (int)t->device.device_id,
+            "read_only", tensor->flags & DLPACK_FLAG_BITMASK_READ_ONLY ? Py_True : Py_False);
+    Py_XDECREF(strides);
+    Py_XDECREF(shape);
+    Py_DECREF(capsule);
     return res;
 }
 
 /* ---- plans and launches -------------------------------------------------------------------- */
 
-/* plan_new(unit, structure, policy, n_samples, part_base=None, part_count=None). */
+/* plan_new(unit, structure, policy, n_samples, part_base=None, part_count=None, split_evenly=0):
+ * the partitions are given by base and count, or the range is split evenly into `split_evenly`
+ * parts; not both. */
 static PyObject* m_plan_new(PyObject* self, PyObject* args, PyObject* kw)
 {
-    static char* names[]
-        = { "unit", "structure", "policy", "n_samples", "part_base", "part_count", NULL };
-    Door* d = (Door*)self;
+    static char* names[] = { "unit", "structure", "policy", "n_samples", "part_base", "part_count",
+        "split_evenly", NULL };
+    Door* d              = (Door*)self;
     PyObject *ounit, *obase = NULL, *ocount = NULL;
     int structure, policy;
-    long long n_samples;
-    if (!PyArg_ParseTupleAndKeywords(
-            args, kw, "OiiL|OO", names, &ounit, &structure, &policy, &n_samples, &obase, &ocount)
+    long long n_samples, split_evenly = 0;
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "OiiL|OOL", names, &ounit, &structure, &policy,
+            &n_samples, &obase, &ocount, &split_evenly)
         || !door_ready(d))
         return NULL;
     void* unit;
@@ -656,13 +706,17 @@ static PyObject* m_plan_new(PyObject* self, PyObject* args, PyObject* kw)
     PyObject* res = NULL;
     if (n_base != n_count) {
         PyErr_SetString(PyExc_ValueError, "part_base and part_count must have one length");
+    } else if (split_evenly != 0 && n_base != 0) {
+        PyErr_SetString(
+            PyExc_ValueError, "split_evenly and part_base / part_count are two ways to partition");
     } else {
         struct eg_plan_desc desc = { .struct_size = sizeof desc,
             .unit                                 = unit,
             .structure                            = structure,
             .policy                               = policy,
             .n_samples                            = n_samples,
-            .n_partitions                         = n_base,
+            .flags                                = split_evenly != 0 ? EG_PLAN_SPLIT_EVENLY : 0,
+            .n_partitions                         = split_evenly != 0 ? split_evenly : n_base,
             .part_base                            = base,
             .part_count                           = count };
         eg_plan* plan            = NULL;
@@ -1230,6 +1284,56 @@ static PyObject* m_plan_entry_figures(PyObject* self, PyObject* args)
         "const_bytes", f.const_bytes);
 }
 
+/* Sets dict[key] to the integer `value`; -1 with a Python error set when that fails. */
+static int dict_set_int64(PyObject* dict, const char* key, int64_t value)
+{
+    PyObject* number = PyLong_FromLongLong(value);
+    if (!number)
+        return -1;
+    int status = PyDict_SetItemString(dict, key, number);
+    Py_DECREF(number);
+    return status;
+}
+
+/* plan_counters(plan): the plan's counters now: `finished` and `steps` (None when the unit has
+ * none) and `mix`, the mix counters of every dispatch group that picks its branch at run time, in
+ * the unit's dispatch order. */
+static PyObject* m_plan_counters(PyObject* self, PyObject* args)
+{
+    Door* d = (Door*)self;
+    PyObject* oplan;
+    void* plan;
+    struct eg_plan_counters c = { .struct_size = sizeof c };
+    int32_t n_mix             = 0;
+    if (!PyArg_ParseTuple(args, "O", &oplan) || !door_ready(d)
+        || handle_ptr(d, oplan, KIND_PLAN, &plan) < 0)
+        return NULL;
+    if (door_check(d, d->fn.eg_plan_counters(d->ctx, plan, &c, NULL, 0, &n_mix)) < 0)
+        return NULL;
+    uint32_t* mix = n_mix > 0 ? PyMem_Malloc((size_t)n_mix * sizeof *mix) : NULL;
+    if (n_mix > 0 && !mix)
+        return PyErr_NoMemory();
+    if (n_mix > 0
+        && door_check(d, d->fn.eg_plan_counters(d->ctx, plan, &c, mix, n_mix, &n_mix)) < 0) {
+        PyMem_Free(mix);
+        return NULL;
+    }
+    PyObject* counts = PyTuple_New(n_mix);
+    for (int32_t i = 0; counts && i < n_mix; ++i)
+        PyTuple_SetItem(counts, i, PyLong_FromUnsignedLong(mix[i]));
+    PyMem_Free(mix);
+    if (!counts)
+        return NULL;
+    /* "O" takes its own reference of None; "N" hands over the one PyLong_FromLongLong made. */
+    PyObject* res
+        = Py_BuildValue("{s:O,s:O,s:N}", "finished", Py_None, "steps", Py_None, "mix", counts);
+    if (res && c.finished >= 0 && dict_set_int64(res, "finished", c.finished) < 0)
+        Py_CLEAR(res);
+    if (res && c.steps >= 0 && dict_set_int64(res, "steps", c.steps) < 0)
+        Py_CLEAR(res);
+    return res;
+}
+
 /* runner_figures(runner): the mode and resolved launch of the runner's last run. */
 static PyObject* m_runner_figures(PyObject* self, PyObject* args)
 {
@@ -1399,6 +1503,7 @@ static PyMethodDef door_methods[] = {
     { "unit_free", m_unit_free, METH_VARARGS, NULL },
     { "plane_wrap", KEYWORD_CALL(m_plane_wrap), METH_VARARGS | METH_KEYWORDS, NULL },
     { "plane_free", m_plane_free, METH_VARARGS, NULL },
+    { "array_layout", m_array_layout, METH_VARARGS, NULL },
     { "plan_new", KEYWORD_CALL(m_plan_new), METH_VARARGS | METH_KEYWORDS, NULL },
     { "plan_free", m_plan_free, METH_VARARGS, NULL },
     { "bind", KEYWORD_CALL(m_bind), METH_VARARGS | METH_KEYWORDS, NULL },
@@ -1430,6 +1535,7 @@ static PyMethodDef door_methods[] = {
     { "banded_unpack", m_banded_unpack, METH_VARARGS, NULL },
     { "banded_pack_scalar", m_banded_pack_scalar, METH_VARARGS, NULL },
     { "plan_entry_figures", m_plan_entry_figures, METH_VARARGS, NULL },
+    { "plan_counters", m_plan_counters, METH_VARARGS, NULL },
     { "runner_reset", m_runner_reset, METH_VARARGS, NULL },
     { "runner_figures", m_runner_figures, METH_VARARGS, NULL },
     { "fft_new", KEYWORD_CALL(m_fft_new), METH_VARARGS | METH_KEYWORDS, NULL },
