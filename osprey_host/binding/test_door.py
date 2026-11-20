@@ -980,10 +980,11 @@ def run(done, raises, not_run, backends):
         "record_cond_begin, record_cond_end: a conditional opened and closed inside a recording"
     )
 
-    # ---- the device group on a door built without it: NOT_WRITTEN everywhere, sync excepted ----
+    # ---- the device group on a door built without it: no device is counted, the calls that
+    # need one are NOT_WRITTEN, sync answers ----
     if device is None:
+        assert door.device_count() == 0
         for call in (
-            door.device_count,
             lambda: door.device_props(0),
             lambda: door.stream_use(0),
             lambda: door.record_child(0),
@@ -997,7 +998,7 @@ def run(done, raises, not_run, backends):
             "Door: a device context without a device",
         )
         assert "EG_CTX_DEVICE" in str(e), str(e)
-        done.append("the device group without a device: NOT_WRITTEN by reason, sync answers")
+        done.append("the device group without a device: none counted, NOT_WRITTEN by reason")
     else:
         not_run.append("the device group without a device: this door has a device group")
 
