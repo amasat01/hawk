@@ -234,10 +234,7 @@ def asarray(x):
     import numpy as np
 
     if hasattr(x, "__dlpack__") and not isinstance(x, np.ndarray):
-        try:
-            memoryview(x)
-        except TypeError:
-            return to_numpy(x)
+        return to_numpy(x)
     return np.asarray(x)
 
 

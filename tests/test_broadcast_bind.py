@@ -465,3 +465,25 @@ def test_a_broadcast_input_returns_its_twin_and_the_compacted_arguments(run_cach
     assert run is not affine and run.planes["x"].form == "table"
     assert args == () and kwargs["a"] == A
     assert np.shares_memory(kwargs["x"], x)
+
+
+def test_a_hawk_plan_rebind_of_a_broadcast_plane_keeps_its_pattern_and_shape(tmp_path, cache_dir):
+    """A twin that reads ``x`` along ``[a, c]`` is bound with the compact buffer; a rebind may swap another buffer of that
+    shape and refuses another pattern, the exact lane shape and another shape, each by name."""
+    a, b, c = A, NB, NC
+    twin = B.twin(affine, {"x": B.kept_axes((a, 1, c), (), affine.lane_space, a)})
+    bundle = build_bundle([twin], tmp_path, targets=("host",), cache_dir=cache_dir)
+    plan = hawk.plan(hawk.load(bundle.directory, twin.name), hawk.HostSerial)
+    rng = np.random.default_rng(3)
+    out = np.zeros(a * b * c)
+    bound = plan.bind(x=rng.random(a * c), out=out, a=a)
+    bound.launch()
+    x2 = rng.random(a * c)
+    bound.rebind(x=x2).launch()
+    np.testing.assert_array_equal(out, 2.0 * np.broadcast_to(x2.reshape(a, 1, c), (a, b, c)).reshape(-1) + 1.0)
+    with pytest.raises(HawkError, match=r"varying along \[a, c\].*rebound varying along \[c\]"):
+        bound.rebind(x=rng.random(c))
+    with pytest.raises(HawkError, match=r"varying along \[a, c\].*rebound the exact lane shape"):
+        bound.rebind(x=rng.random(a * b * c))
+    with pytest.raises(HawkError, match=r"was bound with shape \(18,\).*cannot be rebound with shape \(3, 1, 6\)"):
+        bound.rebind(x=rng.random((a, 1, c)))

@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from conftest import _launch, _xp, sidecar_of
+from conftest import _launch, _xp, refuse_device_row, sidecar_of
 
 import hawk
 from hawk import Kernel, Mutable, Param, Scalar, kernel
@@ -80,9 +80,9 @@ def _inputs(n, mode):
 def _run(bundle, target, n, mode):
     xp = _xp(target)
     x, gy, k, b = _inputs(n, mode)
-    rows = -(-n // 32)
+    rows = 1 if target == "host" else -(-n // 32)       # the host library folds the rows into the one cell
     planes = {name: xp.full(rows, np.nan, dtype=mode)
-              for name in ("bar_k", "bar_k_comp", "bar_b", "bar_b_comp")}
+              for name in ("bar_k", "bar_k_comp", "bar_b", "bar_b_comp") if target != "host" or not name.endswith("_comp")}
     planes.update(x=xp.asarray(x), bar_y=xp.asarray(gy), k=xp.asarray([k]),
                   b=xp.asarray([b]), bar_x=xp.zeros(n, dtype=mode))
     bound = _launch(bundle, "law_ss", target, planes)
@@ -112,8 +112,10 @@ def test_rows_equal_the_float64_reference(built, target, n):
     got, _ = _run(bundle, target, n, mode)
     for name, t in _terms(n, mode).items():
         ref, scale = _per_row(t).sum(1), np.abs(_per_row(t)).sum(1)
-        row = got[name].astype(np.float64) + got[name + "_comp"].astype(np.float64)
-        assert np.all(np.isfinite(got[name])) and np.all(np.isfinite(got[name + "_comp"]))
+        if target == "host":
+            ref, scale = ref.sum(keepdims=True), scale.sum(keepdims=True)
+        row = got[name].astype(np.float64) + (got[name + "_comp"].astype(np.float64) if name + "_comp" in got else 0.0)
+        assert np.all(np.isfinite(got[name])) and np.all(np.isfinite(got.get(name + "_comp", 0.0)))
         assert np.all(np.abs(row - ref) <= TOL[mode] * scale + 1e-300), name
     x, gy, k, b = (np.asarray(v, dtype=np.float64) for v in _inputs(n, mode))
     np.testing.assert_allclose(got["bar_x"], gy * (2 * k * x + b * np.cos(x)),
@@ -131,8 +133,9 @@ def test_ten_columns_equal_the_per_sample_gradients_summed(built, target, n):
     cells = {c: rng.standard_normal() * 0.3 for c in COEFFS}
     summed = dict(common, bar_x=xp.zeros(n, dtype=mode))
     summed.update({c: xp.asarray(np.array([v], dtype=mode)) for c, v in cells.items()})
-    summed.update({f"bar_{c}{t}": xp.full(rows, np.nan, dtype=mode)
-                   for c in COEFFS for t in ("", "_comp")})
+    cell_rows = 1 if target == "host" else rows     # the host library folds the rows into the one cell
+    summed.update({f"bar_{c}{t}": xp.full(cell_rows, np.nan, dtype=mode)
+                   for c in COEFFS for t in ("", "_comp") if target != "host" or not t})
     plain = dict(common, bar_x=xp.zeros(n, dtype=mode), **cells)
     plain.update({f"bar_{c}": xp.zeros(n, dtype=mode) for c in COEFFS})
     _launch(bundle, "rat_ss", target, summed).launch()
@@ -143,9 +146,11 @@ def test_ten_columns_equal_the_per_sample_gradients_summed(built, target, n):
                                atol=64 * np.finfo(mode).eps * np.abs(want["bar_x"]).max())
     for c in COEFFS:
         t = want[f"bar_{c}"].astype(np.float64)
-        row = got[f"bar_{c}"].astype(np.float64) + got[f"bar_{c}_comp"]
-        err = np.abs(row - _per_row(t).sum(1))
-        assert np.all(err <= TOL[mode] * np.abs(_per_row(t)).sum(1) + 1e-300), c
+        row = got[f"bar_{c}"].astype(np.float64) + (got[f"bar_{c}_comp"] if f"bar_{c}_comp" in got else 0.0)
+        ref, scale = _per_row(t).sum(1), np.abs(_per_row(t)).sum(1)
+        if target == "host":
+            ref, scale = ref.sum(keepdims=True), scale.sum(keepdims=True)
+        assert np.all(np.abs(row - ref) <= TOL[mode] * scale + 1e-300), c
 
 
 @pytest.mark.gpu
@@ -231,17 +236,24 @@ def folded(tmp_path_factory):
 def _fold_rows_run(bundle, name, target, n):
     xp, rng = _xp(target), np.random.default_rng(n)
     _, cols = FOLDS[name]
-    rows = -(-n // 32)
-    planes = {c + s: xp.full(rows, np.nan) for c in cols for s in ("", "_comp") if not name.startswith(("foldm",)) or not s}
+    rows = 1 if target == "host" else -(-n // 32)       # the host library folds the rows into the one cell
+    planes = {c + s: xp.full(rows, np.nan) for c in cols for s in ("", "_comp")
+              if (not name.startswith(("foldm",)) or not s) and (target != "host" or not s)}
     wide = name == "foldv"
+    if target == "host" and wide:       # the host library takes the six columns of a vector sum as one cell
+        planes = {"t": xp.full(6, np.nan)}
     planes["v" if wide else "x"] = xp.asarray(rng.uniform(-2, 2, (6, n) if wide else n))
     _launch(bundle, name, target, planes).launch()
-    return {c: np.array(a.get() if hasattr(a, "get") else a) for c, a in planes.items() if c not in ("x", "v")}
+    out = {c: np.array(a.get() if hasattr(a, "get") else a) for c, a in planes.items() if c not in ("x", "v")}
+    if target == "host" and wide:
+        out = {f"t_{k}": out["t"][k:k + 1] for k in range(6)}
+    return out
 
 
 @pytest.mark.parametrize("k, rows", [(None, 4), (1, 1), (8, 8)])
 def test_a_forced_k_reaches_the_built_text(folded, k, rows):
     """A bundle built under ``fold_rows(k)`` carries that k (a shared compile cache would hand every k the first text)."""
+    refuse_device_row()
     text = (folded[k].directory / "fold1.cu").read_text()
     assert f"sampleSumWarp_<{rows}," in text
 
@@ -268,14 +280,14 @@ def test_the_host_twin_rows_equal_the_float64_reference(folded, name, n):
     def per_row(t, fill=0.0):
         return np.pad(t, (0, rows * 32 - n), constant_values=fill).reshape(rows, 32)
     if name == "foldmax":
-        assert np.array_equal(got["hi"], per_row(np.where(x > 0, x, -np.inf), -np.inf).max(1))
+        assert np.array_equal(got["hi"], [per_row(np.where(x > 0, x, -np.inf), -np.inf).max()])
     elif name == "foldmin":
-        assert np.array_equal(got["lo"], per_row(np.where(x < 0, x, np.inf), np.inf).min(1))
+        assert np.array_equal(got["lo"], [per_row(np.where(x < 0, x, np.inf), np.inf).min()])
     else:
         want = {"fold1": lambda: {"s": x}, "fold2": lambda: {"s": x, "c": x * x},
                 "foldv": lambda: {f"t_{k}": x[k] for k in range(6)}}[name]()
         for c, t in want.items():
-            assert np.all(np.abs(got[c] + got[c + "_comp"] - per_row(t).sum(1)) <= 1e-14 * np.abs(per_row(t)).sum(1) + 1e-300), c
+            assert np.all(np.abs(got[c] - per_row(t).sum()) <= 1e-14 * np.abs(per_row(t)).sum() + 1e-300), c
 
 
 def _awkward(n):

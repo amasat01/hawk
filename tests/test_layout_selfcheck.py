@@ -30,6 +30,7 @@ from __future__ import annotations
 import _deploy as L
 import _deployable as D
 import pytest
+from conftest import refuse_device_row
 from _device_file import device_artifact
 
 from hawk.artifact import build_bundle
@@ -49,6 +50,7 @@ def test_the_override_reaches_the_library_the_units_are_linked_into(bad_bundle):
     """A build's host unit text carries no self-check block: the text of the set the units are linked with carries it once, and the
     override replaces the DERIVED sizes there. So the host override is read from the sizes the library exports, or the row would
     be asserting a refusal that cannot happen. The device text keeps its block, as it always did."""
+    refuse_device_row()
     import ctypes
 
     assert "eagle_layout_sizes" not in (bad_bundle.directory / "axpb.cpp").read_text()

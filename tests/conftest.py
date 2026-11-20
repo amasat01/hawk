@@ -12,6 +12,7 @@ piece they need.
 
 from __future__ import annotations
 
+import functools
 import os
 import pathlib
 import platform
@@ -22,10 +23,73 @@ import numpy as np
 import pytest
 
 import hawk
-from hawk.artifact import build_bundle
+import hawk.artifact
 from hawk.errors import ToolchainAbsent
 
 BOTH = ("cuda", "host")
+
+
+# --------------------------------------------------------------------------------------------------------------------------
+# ``--host-only``: run the host rows of every fixture that also builds for a device.
+#
+# A fixture or a row that builds ``targets=("cuda", "host")`` needs the device toolchain for its device half, and without it the
+# whole row reports toolchain-absent, its host half unrun. With ``--host-only`` every build of the tests (``hawk.artifact.build``
+# and ``build_bundle``) keeps its host targets only, and a row that needs a device (``refuse_device_row``) is skipped with the
+# reason. The default run builds what the test asks.
+# --------------------------------------------------------------------------------------------------------------------------
+_HOST_ONLY = False
+
+
+def pytest_addoption(parser):
+    parser.addoption("--host-only", action="store_true", default=False,
+                     help="build only the host targets of every fixture and skip the rows that need a device")
+
+
+def refuse_device_row() -> None:
+    """Skip the calling row when the session is ``--host-only``: it needs a device build or a device array."""
+    if _HOST_ONLY:
+        pytest.skip("--host-only: this row needs a device")
+
+
+#: The settings of a build that mean something to a device only.
+_DEVICE_SETTINGS = ("fold_rows", "fast_entries", "launch_bounds")
+
+
+def _host_targets_only(build):
+    """``build`` (``hawk.artifact.build`` or ``build_bundle``) asked for its host targets only: the device targets, and the
+    settings and options that name a device, are left out of the call."""
+    @functools.wraps(build)
+    def host_only(*args, **kwargs):
+        import dataclasses
+
+        from hawk.targets import DEFAULT_TARGETS, TARGETS
+
+        asked = tuple(kwargs.pop("targets", DEFAULT_TARGETS))
+        device = tuple(t for t in asked if t != "c" and TARGETS.get(t) is not None and not TARGETS[t].host_entry)
+        kept = tuple(t for t in asked if t not in device)
+        if not kept:
+            pytest.skip("--host-only: this row builds for a device only")
+        if device:
+            for key in ("launch_bounds", "device_arch", "literal_table"):
+                kwargs.pop(key, None)
+            if kwargs.get("options"):
+                kwargs["options"] = {k: v for k, v in kwargs["options"].items() if k.partition(".")[0] not in device}
+            if kwargs.get("settings") is not None:
+                kwargs["settings"] = dataclasses.replace(kwargs["settings"], **dict.fromkeys(_DEVICE_SETTINGS))
+        return build(*args, targets=kept, **kwargs)
+
+    return host_only
+
+
+def pytest_configure(config):
+    global _HOST_ONLY
+    _HOST_ONLY = config.getoption("--host-only")
+    if _HOST_ONLY:
+        import hawk.artifact
+
+        # the test modules import these names after this hook, so each gets the host-only form
+        hawk.artifact.build = _host_targets_only(hawk.artifact.build)
+        hawk.artifact.build_bundle = _host_targets_only(hawk.artifact.build_bundle)
 
 #: ``(bundle name, kernels, kwargs)`` — the fixture set rows ///
 #: / build between them.
@@ -78,7 +142,7 @@ def built(tmp_path_factory, cache_dir) -> dict:
     root = tmp_path_factory.mktemp("hawk_artifacts")
     out = {}
     for name, kernels, kw in _UNITS:
-        out[name] = build_bundle(kernels, pathlib.Path(root) / name,
+        out[name] = hawk.artifact.build_bundle(kernels, pathlib.Path(root) / name,
                                  targets=BOTH, cache_dir=cache_dir,
                                  host_profile="native", **kw)
     return out
@@ -110,6 +174,7 @@ def _launch(bundle, name, target, planes):
     """The plan of ``name`` bound over ``planes``: a host row through hawk's own verbs, a device row through eagle's."""
     if target == "host":
         return hawk.plan(hawk.load(bundle.directory, name)).bind(**planes)
+    refuse_device_row()
     import _deploy as L
     import eagle.exec as eexec
     from eagle import plan as eplan
@@ -121,6 +186,7 @@ def _launch(bundle, name, target, planes):
 def _xp(target):
     if target == "host":
         return np
+    refuse_device_row()
     try:
         import cupy
     except ModuleNotFoundError as absent:
@@ -193,7 +259,6 @@ def avx512() -> bool:
 # "N toolchain-absent" is always printed. Every other failure, including one in a row that needs an absent toolchain but fails
 # for another reason, stays failed.
 # --------------------------------------------------------------------------------------------------------------------------
-import functools
 import shutil
 import sys
 

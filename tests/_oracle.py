@@ -71,10 +71,12 @@ def planes(kernel, n: int, kw: dict) -> dict:
     # by name, `hawk/_bind_checks.py`'s `_n_from` docstring).
     int_mutables = {m["name"] for m in kernel.sidecar.get("mutables", ())
                     if m.get("dtype") == "int"}
+    group_planes = {entry[key] for entry in kernel.sidecar.get("dispatch", ()) if entry["strategy"] == "segmented"
+                    for key in ("class", "stale", "offsets")}
     bound = {}
-    for role, name in kernel.arg_spec:
-        if name in (kernel.sidecar.get("team_planes") or ()):
-            continue                    # the scratch between stages is the library's
+    for role, name in kernel.bind_spec:     # the unit's own planes and those of the units its group runs with
+        if name in (kernel.sidecar.get("team_planes") or ()) or name in group_planes:
+            continue                    # the scratch between stages and a segmented group's planes are the library's
         if role in OUTPUT_ROLES:
             out_dtype = np.dtype(np.int64) if name in int_mutables else dtype
             bound[name] = (np.ascontiguousarray(kw[name]) if name in kw

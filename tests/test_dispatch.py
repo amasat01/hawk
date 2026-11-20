@@ -418,31 +418,19 @@ def _seg_plane(offs_name: str, what: str) -> str:
 
 @pytest.mark.parametrize("K", [2, 5, 16])
 def test_segmented_forward_matches_the_serial_oracle_on_the_host(segmented_bundle, K):
-    """A `segmented` dispatch's K units, launched per-unit with the offsets BUILT ON
-    THE HOST here, reproduce the SAME serial oracle predicated/switch match —
-    one bucket EMPTY, and every unit's `cap_j` PADDED past its true run
-    length (the idle tail)."""
+    """A `segmented` dispatch's group runs from ONE launch of any of its branch units: the library classifies the samples
+    (the selector plane ``k`` is the caller's) and plans the class, stale and offsets planes itself. With one bucket EMPTY
+    the launch reproduces the SAME serial oracle predicated/switch match."""
     import _oracle as O
 
     base_name = _SEG_BASE[K]
-    kinds, counts = _sorted_kind_with_empty_run(K, N)
-    offsets = _seg_offsets(counts)
+    kinds, _counts = _sorted_kind_with_empty_run(K, N)
     bs = _seg_bs(K)
     want = bs[kinds, np.arange(N)]
-    offs_name = _seg_offsets_name(segmented_bundle, base_name)
+    uname = f"{base_name}__k0"
+    kernel = O.load(segmented_bundle.directory, uname, sidecar_of(segmented_bundle, uname))
     y = np.zeros(N, dtype=np.float64)
-    for j in range(K):
-        uname = f"{base_name}__k{j}"
-        sidecar = sidecar_of(segmented_bundle, uname)
-        kernel = O.load(segmented_bundle.directory, uname, sidecar)
-        cap = counts[j] + _SEG_PAD               # cap_j > run length
-        O.run_kernel(kernel, N, base=0, count=cap, bs=bs, y=y, **{offs_name: offsets})
-    # a static selector's classes come from the classify kernel
-    cname = f"{base_name}__cls"
-    classes = np.full(N, -1, dtype=np.int64)
-    O.run_kernel(O.load(segmented_bundle.directory, cname, sidecar_of(segmented_bundle, cname)),
-                 N, base=0, count=N, k=kinds, **{_seg_plane(offs_name, "class"): classes})
-    np.testing.assert_array_equal(classes, kinds)
+    O.run_kernel(kernel, N, bs=bs, y=y, k=kinds)
     np.testing.assert_array_equal(y, want, err_msg=f"K={K}: segmented host run")
 
 
@@ -498,18 +486,21 @@ def test_segmented_units_carry_distinct_unit_digests(segmented_bundle):
 
 
 def test_segmented_sidecar_carries_the_group_and_its_offsets_plane(segmented_bundle):
-    """Each unit's own sidecar lists ``{name, K, strategy, units}`` for the
+    """Each unit's own sidecar lists ``{name, K, strategy, units, group_units}`` for the
     GROUP it belongs to (its own walk carries no Dispatch node any more —
      already replaced it), and its ``offsets`` plane like any other
     ``lookup`` plane (the ordinary ``arg_spec``/``buffers`` machinery, no
     special case)."""
     sidecar = sidecar_of(segmented_bundle, "disp_r0_k5_seg__k2")
+    members = [f"disp_r0_k5_seg__k{j}" for j in range(5)] + ["disp_r0_k5_seg__cls"]
     assert sidecar["dispatch"] == [{
         "name": "dispatch0", "K": 5, "strategy": "segmented",
         "static_selector": True, "selector_reads": [["per_sample", "k"]],
         "class": "dispatch0_class", "stale": "dispatch0_stale",
         "offsets": "dispatch0_offsets", "classify": "disp_r0_k5_seg__cls",
         "units": [f"disp_r0_k5_seg__k{j}" for j in range(5)],
+        # the units the library plans together with this one: every branch and the classify unit, each by name and digest
+        "group_units": [{"name": name, "digest": sidecar_of(segmented_bundle, name)["digest"]} for name in members],
     }]
     assert ("lookup", "dispatch0_offsets") in [tuple(p) for p in sidecar["arg_spec"]]
 

@@ -133,6 +133,9 @@ class UnitFile:
                 tmp.write_bytes(self.blob)
             else:
                 shutil.copyfile(self.source_path, tmp)
+                if _digest_file(tmp) != self.digest:
+                    raise HawkError(f"{self.source_path} changed while {self.name} was being published: its bytes are not the ones "
+                                    "the unit was digested from; build again")
             os.replace(tmp, path)
         except BaseException:
             tmp.unlink(missing_ok=True)
@@ -466,8 +469,10 @@ def _link_set(drafts, answers, built, *, targets, stem: str, exports, root: Path
         metas.append(unit["meta"])
         if unit["texts"]:
             parts.append(next(written)[host])
-    path = Path(linker.link(parts, linker.set_text(metas, exports), f"{stem}.so", root)["library"])
-    name = path.name
+    name = f"{stem}.so"
+    # The store keys a link by what it links, never by the name asked: another build's name may be the one its file carries, so the
+    # published file is named here, from the name this call asked for.
+    path = Path(linker.link(parts, linker.set_text(metas, exports), name, root)["library"])
     digest = _digest_file(path)
     links = tuple(UnitFile(d.entries[host][1], digest, link_to=name) for d in drafts if d.entries[host][1] != name)
     return _Library(name, host, (UnitFile(name, digest, source_path=path), *links))

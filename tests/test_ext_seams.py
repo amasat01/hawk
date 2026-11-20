@@ -46,7 +46,7 @@ import _deploy as L
 import _deployable as D
 import numpy as np
 import pytest
-from conftest import sidecar_of
+from conftest import refuse_device_row, sidecar_of
 
 import hawk
 from hawk import Mutable as _Mutable
@@ -410,6 +410,7 @@ def contraction_probe(a: _Scalar, b: _Scalar, z: _Mutable[_Scalar]):
 
 
 def test_store_compensated_appears_once_inside_the_guard(tmp_path, cache_dir):
+    refuse_device_row()
     bundle = _build_bundle([own_column_compensated_solo], tmp_path / "guard_once",
                            targets=("cuda", "host"), cache_dir=cache_dir)
     for src in ("own_column_compensated_solo.cpp", "own_column_compensated_solo.cu"):

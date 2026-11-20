@@ -47,6 +47,8 @@ import pathlib
 from types import MappingProxyType, SimpleNamespace
 
 from hawk import _core
+from conftest import refuse_device_row
+
 from hawk.artifact import fold_entries, plan_view
 
 #: How many entries the layout-sizes array carries (``gref_abi.h``'s own constant).
@@ -148,6 +150,7 @@ def module_of(loaded):
 
 def device_plugin(bundle_dir, name, sidecar):
     """The plan-able view of a bundle's DEVICE entry, self-checked."""
+    refuse_device_row()
     reg = load_bundle(bundle_dir)
     loaded = reg[name]
     # eagle loads the module through its own seam; the self-check reads the globals off a cupy load of the same image

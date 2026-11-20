@@ -43,7 +43,7 @@ import _deployable as D
 import numpy as np
 import pytest
 from _device_file import device_artifact
-from conftest import sidecar_of
+from conftest import refuse_device_row, sidecar_of
 
 from hawk.artifact import build_bundle
 
@@ -64,6 +64,7 @@ def wide_bundle(tmp_path_factory, cache_dir):
 # -- the include order.
 # --------------------------------------------------------------------------- #
 def test_the_mandated_include_order_is_aether_first(built):
+    refuse_device_row()
     for suffix in (".cu", ".cpp"):
         text = (built["fraction"].directory / f"fraction{suffix}").read_text()
         lines = text.splitlines()
@@ -107,6 +108,7 @@ def _layout(so):
 # -- the nsamples ROLE's width.
 # --------------------------------------------------------------------------- #
 def test_the_nsamples_role_is_spelled_at_the_abi_index_width(built):
+    refuse_device_row()
     cu = (built["fraction"].directory / "fraction.cu").read_text()
     entry = cu.split('extern "C" __global__ void fraction(')[1].split(")")[0]
     assert "EAGLE_ABI_INDEX_T p_nsm_n_samples" in entry, entry
@@ -124,6 +126,7 @@ def test_the_role_width_tracks_the_macro_not_a_literal(built, wide_bundle):
     """The SAME emitted spelling under both builds; only the macro moved. That
     is what makes the width a property of the build rather than of the emitter
     (and the exported field above is the measurement)."""
+    refuse_device_row()
     narrow = (built["fraction"].directory / "fraction.cu").read_text()
     wide = (wide_bundle.directory / "fraction.cu").read_text()
     assert "EAGLE_ABI_INDEX_T p_nsm_n_samples" in narrow

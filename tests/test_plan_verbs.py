@@ -368,9 +368,36 @@ class _HostCapsule:
         return self._array.__dlpack_device__()
 
 
+class _Foreign(_HostCapsule):
+    """An array of another library: it exports the buffer protocol AND DLPack, and its ``reshape`` is not NumPy's."""
+
+    def __buffer__(self, flags):
+        return memoryview(self._array)
+
+    def reshape(self, *, shape):
+        raise AssertionError("an array that is not a NumPy array is handed over as it is: NumPy's reshape is never called on it")
+
+
 class _OnADevice(_HostCapsule):
     def __dlpack_device__(self):
         return (2, 0)
+
+
+def test_an_array_of_another_library_that_exports_both_protocols_runs_through_dlpack(loaded):
+    base = np.arange(N, dtype=np.float64)
+    y = np.zeros(N)
+    hawk.run(loaded["axpb"], x=_Foreign(base), a=3.0, b=-2.0, y=_Foreign(y))
+    np.testing.assert_array_equal(y, 3.0 * base - 2.0)
+    out = np.zeros(N)
+    hawk.plan(loaded["axpb"]).bind(x=_Foreign(base), a=3.0, b=-2.0, y=_Foreign(out)).launch()
+    np.testing.assert_array_equal(out, 3.0 * base - 2.0)
+
+
+def test_a_plain_buffer_is_refused_by_name(loaded):
+    import array
+
+    with pytest.raises(HawkError, match=r"a plain buffer — wrap it in numpy.asarray\(x"):
+        hawk.run(loaded["axpb"], x=array.array("d", [1.0, 2.0]), a=1.0, b=0.0, y=np.zeros(2))
 
 
 def test_asarray_shares_the_memory_of_an_array_and_copies_a_sequence():

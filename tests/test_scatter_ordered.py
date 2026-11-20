@@ -258,13 +258,14 @@ def test_poisoned_partial_sums_do_not_change_the_result(bundles, target):
     if target == "host":
         from hawk import runtime as rt
 
-        kern = rt.load(bundles["add"].directory, "add", sidecar_of(bundles["add"], "add"))
-        rt.run(kern, key=key, x=x, acc=acc)
-        planes = [p for p in kern.__dict__["_split"]["team"].values() if p.dtype == np.float64]
+        # the library makes the scratch planes between the stages and keeps them in the plan: the partial sums of the first
+        # launch are what the second launch starts over, and its first stage must zero them
+        bound = hawk.plan(rt.load(bundles["add"].directory, "add", sidecar_of(bundles["add"], "add"))).bind(
+            key=key, x=x, acc=acc)
+        bound.launch()
         again = np.zeros(9)
-        for plane in planes:
-            plane[:] = 1e9
-        rt.run(kern, key=key, x=x, acc=again)
+        bound.rebind(acc=again).launch()
+        planes = [again]
     else:
         import cupy as cp
         from _team_stages import run_device
@@ -287,7 +288,7 @@ def test_a_vector_payload_adds_each_component_into_its_own_plane_of_cells(more, 
     rng = np.random.default_rng(13)
     key = rng.integers(0, 9, n).astype(np.int32)
     v = rng.normal(size=(3, n))
-    planes = {"key": key, "v": np.ascontiguousarray(v), "acc": np.zeros(27)}
+    planes = {"key": key, "v": np.ascontiguousarray(v), "acc": np.zeros((3, 9) if target == "host" else 27)}
     got = _bits([_exec(more["add_vec"], "add_vec", target, planes) for _ in range(3)])
     want = np.zeros((3, 9))
     for e in range(3):

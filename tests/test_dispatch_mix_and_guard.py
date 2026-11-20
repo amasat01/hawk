@@ -138,39 +138,6 @@ def test_the_mix_is_the_bincount_of_the_live_classes_on_the_device(built):
     np.testing.assert_array_equal(cp.asnumpy(mix), want)
 
 
-def test_a_stale_sort_is_guarded_and_a_switch_sweep_completes_it(built):
-    """The class sort ran on ``k_sorted``; then the selector drifted for a few
-    samples. The units still run over the OLD runs."""
-    rng = np.random.default_rng(9)
-    counts = [20, 25, 16]
-    k_sorted = np.concatenate([np.full(c, j, dtype=np.int64) for j, c in enumerate(counts)])
-    offsets = np.concatenate([[0], np.cumsum(counts)]).astype(np.int64)
-    k_now = k_sorted.copy()
-    drift = rng.choice(N, 9, replace=False)
-    k_now[drift] = (k_sorted[drift] + rng.integers(1, K, 9)) % K
-    bs = rng.uniform(0.5, 2.0, (K, N))
-    y0 = rng.uniform(-1.0, 1.0, N)
-    y = y0.copy()
-    cls = np.full(N, -1, dtype=np.int64)
-    stale = np.zeros(N, dtype=bool)
-    seg = built["seg"]
-    for j in range(K):
-        name = f"mix_seg__k{j}"
-        kern = O.load(seg.directory, name, _sidecar(seg, name))
-        O.run_kernel(kern, N, base=0, count=counts[j], k=k_now, bs=bs, y=y,
-                     dispatch0_offsets=offsets, dispatch0_class=cls,
-                     dispatch0_stale=stale)
-    np.testing.assert_array_equal(np.flatnonzero(stale), np.sort(drift))
-    np.testing.assert_array_equal(y[drift], y0[drift])       # kept, not committed
-    np.testing.assert_array_equal(cls, k_now)
-    # the sweep: the switch kernel over just the stale samples
-    swept = y.copy()
-    full = np.zeros(N)
-    hawk.run(hawk.load(built["local"].directory, "plain_switch"), k=k_now.astype(np.int32), bs=bs, y=full)
-    swept[stale] = full[stale]
-    assert int(np.sum(swept != full)) == 0
-
-
 def test_an_automatic_kernel_resolves_on_its_single_step():
     @hawk.kernel
     def walker(k: Index, bs: Vector[K], terminated: Terminated, x: Mutable[Scalar]):
@@ -303,21 +270,3 @@ def test_auto_segmented_runs_unfused(tmp_path, cache_dir):
                  terminated=np.zeros(N, dtype=bool))
         np.testing.assert_array_equal(x_split, x_ref)
     assert (x_ref > 0).all()
-
-
-def test_static_units_write_no_class_and_a_classify_kernel_does(built):
-    static = built["static"]
-    for j in range(K):
-        spec = _sidecar(static, f"mix_static__k{j}")["arg_spec"]
-        assert all(nm not in ("dispatch0_class", "dispatch0_stale", "k") for _, nm in spec)
-    # the units of the group, in order, as the build names them: K segment units, the classify kernel last
-    units = _sidecar(static, "mix_static__k0")["dispatch"][0]["units"]
-    assert units + [_sidecar(static, "mix_static__k0")["dispatch"][0]["classify"]] == [
-        *(f"mix_static__k{j}" for j in range(K)), "mix_static__cls"]
-    assert all(_sidecar(static, u)["exec_access"] == "sample_local" for u in units)
-    rng = np.random.default_rng(5)
-    k = rng.integers(-2, K + 2, N).astype(np.int32)
-    cls = np.full(N, -1, dtype=np.int64)
-    kern = O.load(static.directory, "mix_static__cls", _sidecar(static, "mix_static__cls"))
-    O.run_kernel(kern, N, base=0, count=N, k=k, dispatch0_class=cls)
-    np.testing.assert_array_equal(cls, np.clip(k, 0, K - 1))

@@ -247,7 +247,7 @@ def bundles(request, tmp_path_factory, cache_dir):
 def _commits(plugin, target):
     """(get, reset) of aether's two run-commit counters in the loaded entry."""
     if target == "host":
-        cells = (ctypes.c_ulonglong * 2).in_dll(plugin._keepalive, "aether_run_commits")
+        cells = (ctypes.c_ulonglong * 2).in_dll(plugin._keepalive[0], "aether_run_commits")
 
         def reset():
             cells[0] = cells[1] = 0

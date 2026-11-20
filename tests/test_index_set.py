@@ -27,7 +27,7 @@ from hawk.artifact import build_bundle
 from hawk.build_settings import default_settings
 from hawk.ext import DEFAULT_KIND, IndexSet, Kind
 from hawk.errors import HawkError
-from conftest import sidecar_of
+from conftest import refuse_device_row, sidecar_of
 
 B = importlib.import_module("hawk.artifact.bundle")
 
@@ -64,6 +64,7 @@ def _exports_block(kernel, root) -> str:
 @pytest.mark.parametrize("kind", [SET, Kind("p", lanes=IndexSet(prefix=True)), Kind("w", lanes=IndexSet(width=64))],
                          ids=["map", "prefix", "width64"])
 def test_emit_source_is_the_text_build_publishes_with_the_exports_block_and_the_same_sidecar(kind, tmp_path, cache_dir):
+    refuse_device_row()
     k = hawk.kernel(_square, kind=kind)
     # both ask the same machines: the sidecar's ``stated`` records the options asked, so a build and its emit state alike only when
     # they are given the same ones
@@ -168,6 +169,7 @@ def bounded(tmp_path_factory, cache_dir):
 
 
 def test_launch_bounds_bound_the_kernel_and_name_the_block(bounded):
+    refuse_device_row()
     (plain, k), (tight, _) = bounded[1]["set", "plain"], bounded[1]["bounded", "plain"]
     text = lambda b, ext: (b.directory / f"{k.name}.{ext}").read_text()     # noqa: E731
     assert "__launch_bounds__" not in text(plain, "cu") and "__launch_bounds__(128, 4)" in text(tight, "cu")

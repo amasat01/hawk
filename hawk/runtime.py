@@ -16,10 +16,10 @@ here.
 Arrays are NumPy arrays or anything else that exports DLPack and the buffer protocol; the plane is the caller's
 memory, written in place. A plain buffer (``array.array``, ``bytes``) exports no DLPack and is refused by name.
 Every bound argument is validated against the sidecar's declaration before the door is called
-(:func:`_check_bind`): dtype is exact and fixed by role (every integer-valued role rides a 64-bit wire, and
+(:meth:`HostKernel.arguments`, which :func:`run` and :meth:`hawk.plans.Plan.bind` both call): dtype is exact and fixed by role (every integer-valued role rides a 64-bit wire, and
 ``Terminated`` is always ``bool``), a per-sample plane holds exactly ``n_samples`` samples, every plane is
 C-contiguous and a sink role's plane writable, except a sample-major plane whose transpose is C-contiguous,
-which binds as that view (:func:`plane_layout`). A ``(w, w)`` plane reads both ways and is refused unless
+which binds as that view (the rule is ``hawk._plane_layout``'s). A ``(w, w)`` plane reads both ways and is refused unless
 ``layout="samples_first"``/``"samples_last"`` (per call) or ``hawk.samples_first(x)``/``hawk.samples_last(x)``
 (per array, which wins) says which axis holds the samples.
 
@@ -66,9 +66,9 @@ from typing import NamedTuple
 
 import _osprey
 
-from . import _cells, _ir, _lane_bind, ospreys
+from . import _broadcast, _cells, _ir, _lane_bind, ospreys
 from ._bind_checks import _PER_SAMPLE_ROLES, _check_bind, _n_from, narrow_index, refuse_index_width, widen_index
-from ._plane_layout import LayoutChoice, describe, is_buffered, samples_last, split_marks
+from ._plane_layout import LayoutChoice, describe, is_ndarray, samples_last, split_marks
 from .errors import HawkError
 from .targets import ENTRY_KINDS, host_target
 
@@ -344,10 +344,10 @@ class HostKernel:
         for cell, spec in cells.items():
             if cell not in arrays:
                 continue
-            if not is_buffered(arrays[cell]):
+            if not is_ndarray(arrays[cell]):
                 if spec["columns"] != 1 or tuple(describe(arrays[cell]).shape) != (1,):
                     raise HawkError(
-                        f"kernel {self.declared.get('kernel', '?')!r}: the cell {cell!r} exports DLPack and no buffer, so "
+                        f"kernel {self.declared.get('kernel', '?')!r}: the cell {cell!r} exports DLPack and is not a NumPy array, so "
                         f"hawk cannot slice it per column; pass shape ({spec['columns']},) as a one-cell array of one "
                         f"column, or wrap it with numpy.asarray({cell})")
                 out[cell] = arrays[cell]
@@ -371,7 +371,7 @@ class HostKernel:
 
         A sample-major plane whose transpose is contiguous is bound as that transpose, one sample as a batch of one,
         and a plane of per-sample payload axes (a vector, a matrix) as ``(*payload, samples)``. Any other role is
-        handed over as the caller passed it. An array that exports DLPack and no buffer is always handed over as
+        handed over as the caller passed it. An array that exports DLPack and is not a NumPy array (whether or not it also exports a buffer) is always handed over as
         passed: hawk has no array library to make a view of it with, so one that needs a view is refused by name.
         """
         if role not in _PER_SAMPLE_ROLES:
@@ -383,11 +383,11 @@ class HostKernel:
         kind = choice.of(name, view, width)
         shape = tuple(view.shape)
         native = (*payload, shape[0] if kind == "view" else shape[-1]) if shape else ()
-        if not is_buffered(value):
+        if not is_ndarray(value):
             if kind != "native" or (payload and shape != native):
                 want = (*payload, "N") if payload else ("N",)
                 raise HawkError(
-                    f"kernel {sidecar.get('kernel', '?')!r}: argument {name!r} exports DLPack and no buffer, so hawk can "
+                    f"kernel {sidecar.get('kernel', '?')!r}: argument {name!r} exports DLPack and is not a NumPy array, so hawk can "
                     f"hand it over as it is and no other way, but this plane needs a view ({kind}, shape {shape}); "
                     f"pass it as {want}, or wrap it with numpy.asarray({name})")
             return value
@@ -526,6 +526,8 @@ class BoundPlan:
         The same checks as :meth:`hawk.plans.Plan.bind` run over the whole set; the sample count cannot change.
         """
         n_samples, layout = self._stated
+        for name, value in planes.items():
+            _broadcast.guard_rebind(self._kernel.declared, name, self._arguments.given.get(name), value)
         arguments = self._kernel.arguments({**self._arguments.given, **planes}, n_samples, layout, keep=True)
         if arguments.n_samples != self._n:
             raise HawkError(f"{self._kernel.path.name}: rebind cannot change the sample count, bound for {self._n}, "

@@ -6,6 +6,7 @@ view, single sample), and the refusal texts for the rest."""
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from types import MappingProxyType
 
@@ -94,7 +95,7 @@ _FORMAT_OF_DLPACK = MappingProxyType({(0, 8): "b", (0, 16): "h", (0, 32): "i", (
 
 
 class _Described:
-    """What the host library states of an array that exports DLPack and no buffer: the members of a ``memoryview`` that
+    """What the host library states of an array that is not a NumPy array and exports DLPack: the members of a ``memoryview`` that
     hawk's checks read (``shape``, ``ndim``, ``format``, ``itemsize``, ``readonly``, the two contiguities)."""
 
     def __init__(self, layout: dict) -> None:
@@ -125,28 +126,27 @@ class _Described:
         return self._contiguous("F")
 
 
+def is_ndarray(value) -> bool:
+    """Whether ``value`` is a NumPy array: the one kind of array hawk makes views of (transpose, reshape, slice) with NumPy's own
+    methods. An array of any other library is handed over as it is. NumPy is not imported here: a value cannot be one of its
+    arrays before the process has loaded it."""
+    numpy = sys.modules.get("numpy")
+    return numpy is not None and isinstance(value, numpy.ndarray)
+
+
 def describe(value):
-    """The shape, dtype and flags of ``value``: its ``memoryview``, or, for an array that exports DLPack and no buffer, what
-    the host library reads from its DLPack tensor (:class:`_Described`)."""
-    try:
-        return memoryview(value)
-    except TypeError:
-        pass
-    if not hasattr(value, "__dlpack__"):
-        raise TypeError(f"{type(value).__name__} exports neither the buffer protocol nor DLPack")
+    """The shape, dtype and flags of ``value``: its ``memoryview`` for a NumPy array (or a plain buffer, which the checks refuse
+    by name), else what the host library reads from the DLPack tensor of an array of another library, whether or not it also
+    exports a buffer (:class:`_Described`)."""
+    if is_ndarray(value) or not hasattr(value, "__dlpack__"):
+        try:
+            return memoryview(value)
+        except TypeError:
+            raise TypeError(f"{type(value).__name__} exports neither the buffer protocol nor DLPack") from None
     from . import ospreys
     from .targets import host_target
 
     return _Described(ospreys.serving(host_target().id).runtime_door().array_layout(value))
-
-
-def is_buffered(value) -> bool:
-    """Whether ``value`` exports the buffer protocol, so hawk can make a view of it (transpose, reshape, slice)."""
-    try:
-        memoryview(value)
-    except TypeError:
-        return False
-    return True
 
 
 def _is_single(shape: tuple, width: int) -> bool:

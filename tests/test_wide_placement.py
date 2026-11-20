@@ -22,7 +22,7 @@ import warnings
 import _wide_kernels as W
 import numpy as np
 import pytest
-from conftest import sidecar_of
+from conftest import refuse_device_row, sidecar_of
 
 import hawk
 from hawk import HawkError, Mutable, Scalar, Table, Vector
@@ -90,6 +90,7 @@ def test_the_team_form_is_refused_by_name(tmp_path, cache_dir):
 # -- what the build writes -----------------------------------------------------------------------
 
 def test_the_sidecar_names_every_plane_and_the_runtime_makes_the_scratch_ones(tmp_path, cache_dir):
+    refuse_device_row()
     _, bundle = _build("fill_mask", tmp_path, cache_dir, targets=TARGETS_BOTH, host_profile="native")     # a host target keeps the placed form
     side = sidecar_of(bundle, "fill_mask")
     assert side["launch"]["wide"] == {"hwd0": {"layout": "warp_tiled"}}     # the one fact a run reads: which scratch plane is tiled by warp
@@ -152,11 +153,13 @@ def test_the_host_arm_of_the_warp_form_corpus_is_exact(name, mode, tmp_path, cac
 @pytest.mark.parametrize("mode", ["float32", "float64"])
 def test_a_placed_corpus_kernel_holds_no_local_memory(entry, mode, tmp_path, cache_dir):
     # with a host target in the bundle ``auto`` keeps the placed form (the host has no warp)
+    refuse_device_row()
     _, bundle = _build(entry, tmp_path, cache_dir, mode=mode, targets=TARGETS_BOTH, host_profile="native")
     assert sidecar_of(bundle, W.CORPUS[entry].kernel.name)["launch"]["local_bytes"] == 0
 
 
 def test_the_device_text_writes_the_plane_in_a_loop_and_reads_it_back_by_the_rolled_sum(tmp_path, cache_dir):
+    refuse_device_row()
     _, bundle = _build("matvec_in", tmp_path, cache_dir, targets=TARGETS_BOTH, host_profile="native")
     text = _unit(bundle, "matvec_in")
     assert "hawk_abi::tiled<Real, 512>" in text and "aether::rt::sum(win_hwd0_i)" in text
@@ -194,6 +197,7 @@ def test_a_derivative_corpus_kernel_holds_only_the_local_memory_the_register_for
 
 @pytest.mark.parametrize("entry", ["fill_mask_seg", "matvec_in_seg"])
 def test_an_automatic_kernel_places_the_wide_values_of_its_fused_and_its_single_step_body(entry, tmp_path, cache_dir):
+    refuse_device_row()
     kernel, bundle = _build(entry, tmp_path, cache_dir, mode="float64", targets=TARGETS_BOTH, host_profile="native")   # a host target keeps the placed form
     side = sidecar_of(bundle, kernel.name)
     assert side["launch"]["local_bytes"] == 0

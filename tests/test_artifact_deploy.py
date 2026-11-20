@@ -47,7 +47,7 @@ import _deploy as L
 import _deployable as D
 import numpy as np
 import pytest
-from conftest import sidecar_of
+from conftest import refuse_device_row, sidecar_of
 
 N = 16
 
@@ -108,6 +108,7 @@ def test_every_gap_row_of_h51_is_closed(built):
     version, the manifest exec keys, the exported layout self-check, the SERIAL
     host entry, the device entry's TRIPLE, the declared access class, and the
     index width (the triple int64, the ``nsamples`` ROLE its own)."""
+    refuse_device_row()
     import eagle.exec as eexec
 
     bundle = built["fraction"]

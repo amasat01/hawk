@@ -24,7 +24,7 @@ from __future__ import annotations
 import _deploy as L
 import numpy as np
 import pytest
-from conftest import sidecar_of
+from conftest import refuse_device_row, sidecar_of
 
 import hawk
 from hawk import Mutable, Scalar, Terminated, Vector
@@ -132,6 +132,7 @@ def test_named_sink_commits_plain_while_the_returned_slot_accumulates(tmp_path, 
 # --------------------------------------------------------------------------- #
 def test_a_scattered_diagnostic_beside_a_compensated_returned_target_commits_plain(
         tmp_path, cache_dir):
+    refuse_device_row()
     bundle = _build_bundle([returned_with_scatter_diagnostic], tmp_path / "b3",
                            targets=("host", "cuda"), cache_dir=cache_dir)
     for src in ("returned_with_scatter_diagnostic.cpp", "returned_with_scatter_diagnostic.cu"):

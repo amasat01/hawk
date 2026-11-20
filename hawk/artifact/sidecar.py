@@ -455,6 +455,9 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str, steps: int | st
         # a Matrix read only at lane indices is the caller's compact plane: its
         # column count is not the lane count (a broadcast input)
         **({"gather_mats": _gather_mats(walk, broadcast)} if walk.gather_mats else {}),
+        # a broadcast twin: the lane axes each per-lane input varies along (one bool per axis of the lane space), which a plan
+        # keeps when it rebinds the plane
+        **({"broadcast": {name: [bool(k) for k in kept] for name, kept in broadcast.items()}} if broadcast else {}),
         # one step's operation count, for a kernel whose body steps (absent
         # otherwise): read by the launching runtime, never by the body
         **({"step_ops": step_ops} if step_ops is not None else {}),

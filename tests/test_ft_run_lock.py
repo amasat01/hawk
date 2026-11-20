@@ -15,13 +15,19 @@ the pytest session.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
+import hawk
+
 pytestmark = pytest.mark.ft
+
+#: The folder that holds the ``hawk`` this process imported: the child must import the same one.
+_HAWK_ROOT = str(Path(hawk.__file__).resolve().parent.parent)
 
 _CHILD = r"""
 import faulthandler, json, sys, threading
@@ -62,6 +68,7 @@ def test_run_on_one_kernel_is_atomic(built, sizes):
          json.dumps(sizes), "1500"],
         capture_output=True, text=True, timeout=240, check=False,
         cwd=str(Path(__file__).resolve().parent),
+        env={**os.environ, "PYTHONPATH": os.pathsep.join([_HAWK_ROOT, *filter(None, [os.environ.get("PYTHONPATH")])])},
     )
     assert proc.returncode == 0, f"child died (rc={proc.returncode}):\n{proc.stderr[-2000:]}"
     bad = json.loads(proc.stdout.strip().splitlines()[-1])["bad"]

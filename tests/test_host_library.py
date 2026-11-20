@@ -74,6 +74,20 @@ def test_a_single_kernel_build_is_a_library_named_for_its_unit(tmp_path, cache_d
     assert not (tmp_path / "axpb.so").is_symlink() and not (tmp_path / "units.so").exists()
 
 
+@pytest.mark.parametrize("first_is_the_bundle", [True, False])
+def test_a_library_is_named_by_the_build_that_asks_whatever_build_filled_the_cache(tmp_path, first_is_the_bundle):
+    """Oracle: a set of one unit and a single-kernel build link the same objects with the same text, so the cache serves both one
+    library; each published directory still names it as its own call does (the bundle's name, the unit's name)."""
+    cache = str(tmp_path / "cache")
+    calls = {"bundle": lambda: build_bundle([D.axpb], tmp_path / "bundle", targets=("host",), cache_dir=cache),
+             "single": lambda: build(D.axpb, tmp_path / "single", targets=("host",), cache_dir=cache)}
+    for call in ("bundle", "single") if first_is_the_bundle else ("single", "bundle"):
+        calls[call]()
+    assert (tmp_path / "bundle" / "units.so").is_file() and (tmp_path / "bundle" / "axpb.so").is_symlink()
+    assert (tmp_path / "single" / "axpb.so").is_file() and not (tmp_path / "single" / "axpb.so").is_symlink()
+    assert not (tmp_path / "single" / "units.so").exists()
+
+
 
 
 

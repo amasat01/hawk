@@ -122,8 +122,9 @@ def _read(planes):
 def _run_cell(bundle, op, target, n, mode):
     xp = _xp(target)
     rows = -(-n // 32)
-    names = ("t", "t_comp") if op in ("sum", "mean") else ("t",)
-    planes = {k: xp.full(rows, np.nan, dtype=mode) for k in names}
+    # the host library folds the rows of 32 samples into the one cell and owns the compensation plane
+    names = ("t", "t_comp") if op in ("sum", "mean") and target != "host" else ("t",)
+    planes = {k: xp.full(1 if target == "host" else rows, np.nan, dtype=mode) for k in names}
     planes["x"] = xp.asarray(_x(n, mode))
     bound = _launch(bundle, f"cell_{op}", target, planes)
     bound.launch()
@@ -149,16 +150,20 @@ def test_cells_equal_the_float64_reference(built, target, op, n):
     got, _ = _run_cell(bundle, op, target, n, mode)
     t = _terms(op, n, mode)
     if op in ("sum", "mean"):
-        rows, scale = _per_row(t, 0.0), np.abs(_per_row(t, 0.0)).sum(1)
-        row = got["t"].astype(np.float64) + got["t_comp"].astype(np.float64)
+        rows, scale = _per_row(t, 0.0).sum(1), np.abs(_per_row(t, 0.0)).sum(1)
+        if target == "host":
+            rows, scale = rows.sum(keepdims=True), scale.sum(keepdims=True)
+        row = got["t"].astype(np.float64) + (got["t_comp"].astype(np.float64) if "t_comp" in got else 0.0)
         assert np.all(np.isfinite(got["t"]))
-        assert np.all(np.abs(row - rows.sum(1)) <= TOL[mode] * scale + 1e-300)
+        assert np.all(np.abs(row - rows) <= TOL[mode] * scale + 1e-300)
     else:
         fill = -np.inf if op == "max" else np.inf
         xs = _x(n, mode)
         # the term is computed in the plane's precision
         ref = _per_row((xs * 1.5).astype(np.float64), fill)
         ref = ref.max(1) if op == "max" else ref.min(1)
+        if target == "host":
+            ref = ref.max(keepdims=True) if op == "max" else ref.min(keepdims=True)
         assert np.array_equal(got["t"].astype(np.float64), ref)
 
 
@@ -194,14 +199,16 @@ def test_a_written_sum_is_the_derived_parameter_gradient(built, target):
     rows = -(-n // 32)
 
     def planes(name):
-        p = {"x": x, "bar_y": gy, "bar_k": xp.full(rows, np.nan, dtype=mode),
-             "bar_k_comp": xp.full(rows, np.nan, dtype=mode)}
+        p = {"x": x, "bar_y": gy, "bar_k": xp.full(1 if target == "host" else rows, np.nan, dtype=mode)}
+        if target != "host":
+            p["bar_k_comp"] = xp.full(rows, np.nan, dtype=mode)
         _launch(bundle, name, target, p).launch()
         return _read(p)
 
     a, b = planes("kx_vjp"), planes("user_grad")
     assert a["bar_k"].tobytes() == b["bar_k"].tobytes()
-    assert a["bar_k_comp"].tobytes() == b["bar_k_comp"].tobytes()
+    if target != "host":
+        assert a["bar_k_comp"].tobytes() == b["bar_k_comp"].tobytes()
     assert sidecar_of(bundle, "kx_vjp")["cells"]["bar_k"] == \
         sidecar_of(bundle, "user_grad")["cells"]["bar_k"]
 

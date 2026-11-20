@@ -294,7 +294,7 @@ def test_an_array_that_exports_dlpack_without_a_buffer_and_needs_a_view_is_refus
     kernel = O.load(bundle.directory, "vec3_scale", sidecar_of(bundle, "vec3_scale"))
     x = np.arange(3 * N, dtype=float).reshape(3, N)
     y = np.zeros((3, N))
-    with pytest.raises(HawkError, match=r"'x' exports DLPack and no buffer.*pass it as \(3, 'N'\).*numpy.asarray\(x\)"):
+    with pytest.raises(HawkError, match=r"'x' exports DLPack and is not a NumPy array.*pass it as \(3, 'N'\).*numpy.asarray\(x\)"):
         rt.run(kernel, x=_DlpackOnly(np.asfortranarray(x.T)), a=2.0, y=y)
     rt.run(kernel, x=_DlpackOnly(x), a=2.0, y=_DlpackOnly(y))
     np.testing.assert_array_equal(y, 2.0 * x)

@@ -30,7 +30,7 @@ from collections import Counter
 
 import numpy as np
 import pytest
-from conftest import sidecar_of
+from conftest import refuse_device_row, sidecar_of
 
 import _deploy as L
 import hawk
@@ -436,6 +436,7 @@ def _doubles(text: str) -> list:
 
 
 def test_the_float32_source_of_every_derivative_names_no_double(bundle):
+    refuse_device_row()
     mode, built = bundle
     if mode != "float32":
         pytest.skip("the float32 row")
@@ -517,6 +518,7 @@ def test_a_float32_vector_derivative_agrees_with_the_float64_one(
 
 
 def test_the_float32_source_of_a_vector_derivative_names_no_double(vbundle):
+    refuse_device_row()
     mode, built = vbundle
     if mode != "float32":
         pytest.skip("the float32 row")

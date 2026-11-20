@@ -149,19 +149,20 @@ def check_rebind(name: str, held: tuple, got: tuple | None, axes) -> None:
             f"it cannot be rebound {now}. Bind afresh for the new pattern")
 
 
-def guard_rebind(kernel, name: str, bound, value) -> None:
-    """The check of a plan rebinding plane ``name`` of the broadcast ``kernel``
-    (a twin): a rebound plane keeps the shape it was bound with."""
+def guard_rebind(sidecar: dict, name: str, bound, value) -> None:
+    """The check of a plan rebinding plane ``name`` of a broadcast twin (``sidecar``: its ``broadcast`` and lane space):
+    a rebound plane keeps the pattern it was bound with, and the shape. A plane the twin does not broadcast is not checked."""
+    held = (sidecar.get("broadcast") or {}).get(name)
     old, new = shape_of(bound), shape_of(value)
-    if old == new or new is None:
+    if held is None or old == new or new is None:
         return
-    dims = getattr(kernel.planes.get(name), "dims", ())
-    head = (dims[0][1],) if dims and dims[0][0].startswith("component") else ()
+    axes = [(ax["label"], ax["extent"]) for ax in sidecar["launch"]["lane_space"]["axes"]]
+    width = int(sidecar.get("arg_shapes", {}).get(name) or 1)
     try:
-        got = kept_axes(new, head, kernel.lane_space, extent=0, strict=False)   # size 1 is not the runtime extent
+        got = kept_axes(new, (width,) if width > 1 else (), axes, extent=0, strict=False)   # size 1 is not the runtime extent
     except ValueError:
         got = None
-    check_rebind(name, kernel.broadcast[name], got, kernel.lane_space)
+    check_rebind(name, tuple(held), got, axes)
     raise HawkError(f"argument {name!r} was bound with shape {old}; it cannot be "
                     f"rebound with shape {new}")
 

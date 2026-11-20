@@ -104,7 +104,7 @@ Scalar planes are one-dimensional and are not affected.
 a `Scalar` plane, `(3,)` for a `Vector[3]`, `(R, C)` (or the flat `(R*C,)`) for
 a `Matrix[R, C]`. Its bytes are the `(3, 1)` plane, so `hawk.runtime` binds it
 at its own address as a batch of one, and the kernel writes land in the
-caller's 0-d or `(3,)` array (`plane_layout` answers `"single"`). A shape that
+caller's 0-d or `(3,)` array. A shape that
 is also a batch stays a batch: `(1,)` on a scalar plane, `(3, 1)`, `(1, 3)` and
 `(3, 3)`. A call that mixes one sample with a batch is refused, naming both,
 and so is a Python number bound to a plane (there is no address to bind:

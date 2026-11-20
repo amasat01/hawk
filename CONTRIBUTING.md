@@ -26,10 +26,13 @@ hawk has a compiled half (`hawk._core`) and builds against two sibling checkouts
 pip install <wheels>/*.whl              # the OSPREY wheels, first
 pip install -e .[test]                  # builds hawk._core; $HAWK_AETHER_INCLUDE / $HAWK_EAGLE_INCLUDE override the sibling paths
 python -m pytest tests -q -m "not gpu"  # the gate (.github/workflows/ci.yml)
+python -m pytest tests -q -m "not gpu" --host-only  # the same on a machine with no device toolchain: see below
 ```
 
 Most tests also need `eagle` installed as a Python package to run traced kernels. Without it, host artifacts still run through
 `hawk.load` and `hawk.run`. The free-threading rows run with `python -m pytest tests -m ft -W error::RuntimeWarning`.
+
+`--host-only` (an option of `tests/conftest.py`) builds only the host targets of every fixture and test that also builds for a device, so a machine without a device toolchain runs their host rows instead of reporting the whole row `toolchain-absent`. A row that needs a device array or a device build is skipped with the reason `--host-only: this row needs a device`. Without the option, every build is what the test asks.
 
 The embedded-C rows (`tests/test_embedded_*.py`) compile the emitted C and run cppcheck's MISRA addon over it, so they need a C
 compiler and cppcheck (`brew install cppcheck`, or `apt-get install cppcheck`). Without them the rows fail rather than skip: a
