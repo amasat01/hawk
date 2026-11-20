@@ -27,6 +27,8 @@ Releases after 0.6.5 are on [GitHub](https://github.com/amasat01/hawk/releases):
 - **A per-sample plane holds exactly `n_samples` samples.** A longer or a shorter plane is refused before the launch, naming the plane, its declared width, the shape it must have and the slice to pass (`x[:n]`). A prefix of a longer plane used to be run on.
 - **The library owns a sum's compensation plane** (`<target>_c`, and a cell's rows): binding one is refused by name; the target alone holds the compensated sum after the run.
 - **`base=` and `count=` mean what the library says for the kernel.** A thread-box kernel's range counts threads, and a kernel that reads an index set takes one range of positions; hawk no longer computes a thread count.
+- **A kernel call runs through `hawk.deploy`.** `k(...)` is `hawk.deploy(k)(...)`, the plan kept on the kernel; hawk no longer imports `eagle` anywhere. `Kernel.broadcast_call` is removed: a plan classifies a broadcast shape itself. An argument a call refuses is a `HawkError` (it was a `ValueError` from eagle), and the gradient of a Python number given for a per-lane input is refused by name (pass a one-element array); an array that varies along no axis is bound as one cell of its own memory.
+- **`HostKernel` is `LoadedKernel`**, the object `hawk.load` returns. There is no alias.
 
 ### Changed
 
@@ -37,6 +39,8 @@ Releases after 0.6.5 are on [GitHub](https://github.com/amasat01/hawk/releases):
 
 ### Added
 
+- **A plan from `hawk.deploy` takes a read-only per-lane input of a `Grid` kernel broadcast in `bind`, `run` and a call**, and `rebind` keeps its kind: any shape of it, or the compact buffer it holds, is taken, another kind is refused by name. The first bind of a new shape builds that shape's kernel once (cached on disk, with the options of the deploy). A plan made from a loaded artifact refuses a broadcast shape by name.
+- **`Plan.bound(planes, ...)`** is the one function every run form binds through (a call, `Plan.run`, `Plan.bind`, `hawk.run`, a runner).
 - **`hawk.plan(loaded, structure=hawk.HostTeam, *, npartitions=None, partitions=None)`** plans a loaded kernel (`hawk.load`) under `hawk.HostTeam` or `hawk.HostSerial`; `npartitions=k` splits the range evenly and `partitions=[hawk.Partition(base, count, n), ...]` states the partitions, `hawk.Partition.whole(n)` being the whole range. `hawk.DeviceKernel` names the device structure and is refused by name until the device runtime is in the build.
 - **`Plan.bind(**planes)`** checks the planes exactly as `hawk.run` does and returns a `BoundPlan`: `launch()` runs it and returns the host tiles the library ran, `rebind(**planes)` replaces the named planes, `planes` lists what is bound, `counters()` reads the library's counters and `close()` frees its handles. **`Plan.run(**planes, returns=None)`** binds, launches once and returns the output plane, or a dict by name for several; an output left out is made, and `returns="numpy"` hands NumPy arrays back.
 - **`hawk.deploy(kernel or [kernels], *, targets=None, scalar_type="float64", cache_dir=None, contraction=None)`** builds one kernel, or a list as one bundle, and returns a plan, or a tuple of plans in order. A device target and `scalar_type="banded"` are refused by name on the host.

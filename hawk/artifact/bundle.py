@@ -268,14 +268,14 @@ def reset(cache_dir=None) -> None:
 
 
 def build_key(kernels, *, targets, mode: str = "float64", options: Mapping | None = None, opt_level: str = "",
-              record: int | None = None) -> str:
+              record: int | None = None, derivative: Mapping | None = None) -> str:
     """One opaque text naming everything a build of ``kernels`` for ``targets`` is made of.
 
     Per kernel: its name, the text of its traced nodes, the request the lowering is asked (declarations, kind, sinks, settings)
     and its derivative tag; per target: the ``key`` the serving OSPREY states for the machine, which covers the level and the options
     as it resolves them (a default stated and a default left out are one key); and ``mode``. Equal requests give equal texts, and a change in any of these gives another. A caller that has choices of its
-    own (a folder name, say) hashes this text together with them. ``record`` is the window of :func:`build_bundle`'s, whose derived
-    units are part of what is built.
+    own (a folder name, say) hashes this text together with them. ``record`` and ``derivative`` are those of :func:`build_bundle`: the
+    window whose derived units are part of what is built, and the primal each derivative names.
     """
     options = _user_options(options, False, None, "", "")
     kernels, targets = list(kernels), _target_ids(targets)
@@ -289,7 +289,7 @@ def build_key(kernels, *, targets, mode: str = "float64", options: Mapping | Non
     keyed = {t: {"key": machines[t]["key"]} for t in targets}
     plans = _plans(kernels, names, kinds, mode=mode, targets=targets, settings=cfg, machines=keyed, sizes=None,
                    recordings=_recordings(kernels, record))
-    derivative = _per_kernel_derivative(kernels, names, None)
+    derivative = _per_kernel_derivative(kernels, names, derivative)
     return hashlib.sha256(json.dumps([plans, derivative], sort_keys=True, default=repr).encode()).hexdigest()
 
 

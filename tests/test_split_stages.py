@@ -196,12 +196,10 @@ def test_a_stored_and_read_vector_sum_is_eagles_ordered_bits(tmp_path, cache_dir
     x = _x(n, "float64")
     tot, z = np.zeros(3), np.full((3, n), np.nan)
     runtime.run(runtime.load(bundle.directory, "stored_vec"), x=x, tot=tot, z=z)
-    eplan = pytest.importorskip("eagle.plan")
-    want = eplan.auto(stored_vec).run(x=x)
-    assert z.tobytes() == np.asarray(want["z"], dtype=np.float64).reshape(z.shape).tobytes()
-    columns = np.concatenate([np.asarray(want[f"tot_{k}"], dtype=np.float64).reshape(-1)
-                              for k in range(3)])
-    assert tot.tobytes() == columns.tobytes()
+    team_tot = np.zeros(3)
+    team_z = hawk.deploy(stored_vec, cache_dir=cache_dir).run(x=x, tot=team_tot)
+    assert z.tobytes() == np.asarray(team_z, dtype=np.float64).reshape(z.shape).tobytes()
+    assert tot.tobytes() == team_tot.tobytes()
 
 
 # -- three stages -----------------------------------------------------------

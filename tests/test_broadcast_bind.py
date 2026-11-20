@@ -10,7 +10,7 @@ the exact shape runs the kernel untouched. Both hawk doors classify with the one
 module (:mod:`hawk._broadcast`): ``k(...)`` runs the twin; a loaded artifact is
 one kernel's and refuses a broadcast shape in the same words.
 
-* **Values** against NumPy's broadcast, through ``k(...)`` (eagle's host plan) and
+* **Values** against NumPy's broadcast, through ``k(...)`` (the plan ``hawk.deploy`` makes) and
   through ``hawk.runtime.run`` on the twin's own artifact.
 * **Refusals** name the given shape and the ``(head, *lane shape)`` it was checked
   against; written, masked and matrix planes take the exact shape.
@@ -94,14 +94,29 @@ def _artifact(kernel, root, cache_dir):
     return rt.load(bundle.directory, kernel.name, sidecar_of(bundle, kernel.name)), bundle
 
 
-# 1. a scalar binds as a uniform, no lane-shaped buffer
+def _routed(kernel, **given):
+    """``(kernel to run, the planes it binds)`` for a call over ``given``: the kernel as it came when every per-lane input has
+    the exact shape, else the twin of the pattern with the caller's buffers compacted."""
+    patterns, _shown, planes = B.routed(kernel, given, kernel.name)
+    return (B.twin(kernel, patterns) if patterns else kernel), planes
+
+
+# 1. a number binds as a uniform, an array that varies along no axis as a one-cell table
 
 def test_scalar_binds_as_uniform(run_cache):
-    for given in (0.5, np.float64(0.5), np.array(0.5)):
-        run, args, kw = affine.broadcast_call((), {"x": given, "a": A})
+    for given in (0.5, np.float64(0.5)):
+        run, planes = _routed(affine, x=given, a=A)
         assert run.planes["x"].form == "uniform"
-        assert isinstance(kw["x"], float) and kw["x"] == 0.5
+        assert isinstance(planes["x"], float) and planes["x"] == 0.5
     np.testing.assert_array_equal(affine(0.5, a=A), np.full(LANE, 2.0))
+
+
+def test_a_zero_dimensional_array_binds_as_a_one_cell_table_in_its_own_memory(run_cache):
+    cell = np.array(0.5)
+    run, planes = _routed(affine, x=cell, a=A)
+    assert run.planes["x"].form == "table" and run.planes["x"].dims == ()
+    assert planes["x"].shape == (1,) and np.shares_memory(planes["x"], cell)
+    np.testing.assert_array_equal(affine(cell, a=A), np.full(LANE, 2.0))
 
 
 def test_a_float_beside_a_grid_of_one_lane_equals_the_0d_array(run_cache):
@@ -111,16 +126,17 @@ def test_a_float_beside_a_grid_of_one_lane_equals_the_0d_array(run_cache):
 
 
 def test_a_cell_keeps_the_array_it_is_given():
-    """The plane a reverse sums into, given as a number or a 0-d array: one cell, on the given array's own device."""
-    for given in (0.5, np.array(0.5)):
-        cell = B.compact("bar_s", given, (), (), "test", cell=True)
-        assert isinstance(cell, np.ndarray) and cell.shape == (1,) and cell[0] == 0.5
+    """The plane a reverse sums into, given as a 0-d array: one cell, the given memory; a number stays a number."""
+    given = np.array(0.5)
+    cell = B.compact("bar_s", given, (False, False, False), (), "test")
+    assert isinstance(cell, np.ndarray) and cell.shape == (1,) and cell[0] == 0.5 and np.shares_memory(cell, given)
+    assert B.compact("bar_s", 0.5, B.BY_VALUE, (), "test") == 0.5
 
 
 @pytest.mark.gpu
 def test_a_device_cell_stays_on_the_device():
     cp = pytest.importorskip("cupy")
-    cell = B.compact("bar_s", cp.asarray(0.5), (), (), "test", cell=True)
+    cell = B.compact("bar_s", cp.asarray(0.5), (False, False, False), (), "test")
     assert isinstance(cell, cp.ndarray) and cell.shape == (1,) and float(cell[0]) == 0.5
 
 
@@ -129,9 +145,9 @@ def test_a_device_cell_stays_on_the_device():
 def test_size1_middle_axis_broadcasts(run_cache, rng):
     x = rng.random((A, 1, NC))
     np.testing.assert_array_equal(affine(x, a=A), 2.0 * _full(x) + 1.0)
-    run, _args, _kw = affine.broadcast_call((x,), {"a": A})
+    run, _planes = _routed(affine, x=x, a=A)
     assert run.planes["x"].form == "table" and run.planes["x"].dims == ()   # the runtime axis is kept
-    named, _a, _k = affine.broadcast_call((rng.random((1, NB, NC)),), {"a": A})
+    named, _planes = _routed(affine, x=rng.random((1, NB, NC)), a=A)
     assert [d[0] for d in named.planes["x"].dims] == ["b", "c"]
 
 
@@ -149,17 +165,18 @@ def test_column_view_keeps_runtime_axis(run_cache, rng):
     col = rng.random(A)
     x = col[:, None, None]
     np.testing.assert_array_equal(affine(x, a=A), 2.0 * _full(x) + 1.0)
-    run, _args, _kw = affine.broadcast_call((x,), {"a": A})
+    run, _planes = _routed(affine, x=x, a=A)
     assert run.planes["x"].form == "table" and run.planes["x"].dims == ()
 
 
-# 5. every axis of size 1 is a uniform
+# 5. every axis of size 1 is a one-cell table, a number a uniform
 
-def test_all_size1_is_uniform(run_cache):
+def test_all_size1_is_a_one_cell_table(run_cache):
     x = np.array([[[0.25]]])
-    run, _args, kw = affine.broadcast_call((x,), {"a": A})
-    assert run.planes["x"].form == "uniform" and kw["x"] == 0.25
+    run, planes = _routed(affine, x=x, a=A)
+    assert run.planes["x"].form == "table" and planes["x"].shape == (1,) and np.shares_memory(planes["x"], x)
     np.testing.assert_array_equal(affine(x, a=A), np.full(LANE, 1.5))
+    np.testing.assert_array_equal(affine(0.25, a=A), np.full(LANE, 1.5))
 
 
 # 6. a Vector keeps its component axis exact; the lane axes broadcast
@@ -203,23 +220,23 @@ def test_mutable_and_output_refuse_broadcast(run_cache, rng, tmp_path_factory, c
 
 def test_broadcast_binds_caller_buffer(run_cache, rng):
     x = rng.random((A, 1, NC))
-    _run, _args, kw = affine.broadcast_call((x,), {"a": A})
-    assert kw["x"].__array_interface__["data"][0] == x.__array_interface__["data"][0]
-    assert np.shares_memory(kw["x"], x)
+    _run, planes = _routed(affine, x=x, a=A)
+    assert planes["x"].__array_interface__["data"][0] == x.__array_interface__["data"][0]
+    assert np.shares_memory(planes["x"], x)
     strided = rng.random((A, 2, NC))[:, :1, :]
     with pytest.raises(HawkError, match="C-contiguous"):
-        affine.broadcast_call((strided,), {"a": A})
+        _routed(affine, x=strided, a=A)
 
 
 # 10. one twin per pattern; the exact shape is the kernel itself
 
 def test_one_twin_per_pattern(run_cache, rng):
     before = len(affine._twins)
-    first, _a, _k = affine.broadcast_call((rng.random((A, 1, NC)),), {"a": A})
-    again, _a, _k = affine.broadcast_call((rng.random((A, 1, NC)),), {"a": A})
-    other, _a, _k = affine.broadcast_call((rng.random(NC),), {"a": A})
+    first, _planes = _routed(affine, x=rng.random((A, 1, NC)), a=A)
+    again, _planes = _routed(affine, x=rng.random((A, 1, NC)), a=A)
+    other, _planes = _routed(affine, x=rng.random(NC), a=A)
     assert first is again and first is not other and first is not affine
-    exact, _a, _k = affine.broadcast_call((rng.random(LANE),), {"a": A})
+    exact, _planes = _routed(affine, x=rng.random(LANE), a=A)
     assert exact is affine
     assert len(affine._twins) - before <= 2
 
@@ -273,13 +290,10 @@ def _derived(primal, make, wrt, root, cache_dir):
     return rt.load(bundle.directory, d.name, sidecar_of(bundle, d.name))
 
 
-def _bound(kernel, name, value, head=(), cell=False):
-    """``(twin, kept, the buffer it binds)`` for ``value`` given to ``name``."""
+def _bound(kernel, name, value, head=()):
+    """``(twin, kept, the buffer it binds)`` for the array ``value`` given to ``name``."""
     kept = B.kept_axes(np.shape(value), head, kernel.lane_space, A)
-    var = B.twin(kernel, {name: kept}, reverse=(name,) if cell else ())
-    if cell and not any(kept) and not head:
-        return var, kept, np.ravel(value)[:1].copy()
-    return var, kept, B.compact(name, np.asarray(value), kept, head, "test")
+    return B.twin(kernel, {name: kept}), kept, B.compact(name, np.asarray(value), kept, head, "test")
 
 
 def _summed(g, shape):
@@ -303,7 +317,7 @@ def test_jvp_broadcast_input_equals_dense_jvp_of_broadcast_tangent(tmp_path_fact
 @pytest.mark.parametrize("shape", PATTERNS)
 def test_vjp_broadcast_input_sums_broadcast_axes_for_every_pattern(tmp_path_factory, cache_dir, rng, shape):
     x, g = rng.random(shape) + 0.5, rng.random(LANE) - 0.5
-    var, kept, xb = _bound(square, "x", x, cell=True)
+    var, kept, xb = _bound(square, "x", x)
     art = _derived(var, vjp, "x", tmp_path_factory.mktemp("bc_vjp_all"), cache_dir)
     bar = np.zeros(1 if not any(kept) else np.size(x))
     rt.run(art, x=xb, bar_out=g.reshape(-1), bar_x=bar, a=A)
@@ -393,10 +407,17 @@ def _differentiated(kernel, make, wrt):
 
 @pytest.mark.parametrize("shape", PATTERNS)
 def test_vjp_called_directly_returns_the_gradient_in_the_inputs_own_shape(run_cache, rng, shape):
-    x, g = rng.random(shape) + 0.5, rng.random(LANE) - 0.5
+    x, g = np.asarray(rng.random(shape) + 0.5), rng.random(LANE) - 0.5     # an array, also when it has no axis
     got = _differentiated(square, vjp, "x")(x=x, bar_out=g, a=A)
     assert got.shape == np.shape(x)
     np.testing.assert_allclose(got, _summed(2.0 * _full(x) * g, np.shape(x)), rtol=1e-12, atol=1e-13)
+
+
+def test_the_gradient_of_a_number_is_refused_by_name(run_cache, rng):
+    with pytest.raises(HawkError, match=r"argument 'x' is a Python number.*no gradient; pass a one-element array"):
+        _differentiated(square, vjp, "x")(x=0.5, bar_out=rng.random(LANE), a=A)
+    got = _differentiated(square, vjp, "x")(x=np.array([0.5]), bar_out=np.ones(LANE), a=A)
+    np.testing.assert_allclose(got, [2.0 * 0.5 * A * NB * NC], rtol=1e-12)
 
 
 @pytest.mark.parametrize("shape", PATTERNS)
@@ -434,41 +455,40 @@ def test_a_compensated_scatter_stays_compensated_under_a_terminated_mask():
 
 
 def test_rebinding_a_plan_to_another_pattern_is_refused(run_cache, rng):
-    var = B.twin(affine, {"x": B.kept_axes((A, 1, NC), (), affine.lane_space, A)})
-    bound = hawk.deploy(var).bind(x=rng.random(A * NC), out=np.zeros(LANE), a=A)
+    bound = hawk.deploy(affine).bind(x=rng.random((A, 1, NC)), out=np.zeros(LANE), a=A)
     bound.rebind(x=rng.random(A * NC))
     with pytest.raises(HawkError, match=r"varying along \[a, c\].*rebound varying along \[c\]"):
         bound.rebind(x=rng.random(NC))
 
 
-# 11. the public door of the routing: Kernel.broadcast_call
+# 11. the routing of a call's planes: hawk._broadcast.routed
 
 def test_a_kernel_without_a_grid_comes_back_unchanged():
     @hawk.kernel
     def plain(x: Scalar) -> Scalar:
         return x + 1.0
 
-    args, kwargs = (0.5,), {}
-    assert plain.broadcast_call(args, kwargs) == (plain, args, kwargs)
+    given = {"x": 0.5}
+    assert B.routed(plain, given, "plain") == ({}, given, given)
 
 
 def test_the_exact_shapes_come_back_unchanged(run_cache, rng):
-    x = rng.random(LANE)
-    run, args, kwargs = affine.broadcast_call((x,), {"a": A})
-    assert run is affine and args == (x,) and kwargs == {"a": A}
+    given = {"x": rng.random(LANE), "a": A}
+    patterns, shown, planes = B.routed(affine, given, "affine")
+    assert patterns == {} and shown is given and planes is given
 
 
-def test_a_broadcast_input_returns_its_twin_and_the_compacted_arguments(run_cache, rng):
+def test_a_broadcast_input_returns_its_twin_and_the_compacted_planes(run_cache, rng):
     x = rng.random((A, 1, NC))
-    run, args, kwargs = affine.broadcast_call((x,), {"a": A})
+    run, planes = _routed(affine, x=x, a=A)
     assert run is not affine and run.planes["x"].form == "table"
-    assert args == () and kwargs["a"] == A
-    assert np.shares_memory(kwargs["x"], x)
+    assert planes["a"] == A
+    assert np.shares_memory(planes["x"], x)
 
 
-def test_a_hawk_plan_rebind_of_a_broadcast_plane_keeps_its_pattern_and_shape(tmp_path, cache_dir):
-    """A twin that reads ``x`` along ``[a, c]`` is bound with the compact buffer; a rebind may swap another buffer of that
-    shape and refuses another pattern, the exact lane shape and another shape, each by name."""
+def test_a_loaded_twin_binds_its_compact_plane_as_the_exact_shape_it_is(tmp_path, cache_dir):
+    """A plan over a loaded twin has no source kernel: its compact table is an ordinary plane, so a rebind swaps another buffer
+    for it, as for any table."""
     a, b, c = A, NB, NC
     twin = B.twin(affine, {"x": B.kept_axes((a, 1, c), (), affine.lane_space, a)})
     bundle = build_bundle([twin], tmp_path, targets=("host",), cache_dir=cache_dir)
@@ -480,9 +500,19 @@ def test_a_hawk_plan_rebind_of_a_broadcast_plane_keeps_its_pattern_and_shape(tmp
     x2 = rng.random(a * c)
     bound.rebind(x=x2).launch()
     np.testing.assert_array_equal(out, 2.0 * np.broadcast_to(x2.reshape(a, 1, c), (a, b, c)).reshape(-1) + 1.0)
+
+
+def test_a_deployed_plan_rebind_keeps_the_pattern_and_takes_any_shape_of_it(run_cache, rng):
+    """A plan deployed from a kernel binds ``x`` varying along ``[a, c]`` as the caller's buffer, compact; a rebind swaps any
+    shape of that pattern, or the compact buffer, and refuses another pattern or the exact lane shape, each by name."""
+    out = np.zeros(LANE)
+    bound = hawk.deploy(affine).bind(x=rng.random((A, 1, NC)), out=out, a=A)
+    bound.launch()
+    for shape in ((A, 1, NC), (A * NC,)):
+        x2 = rng.random(shape)
+        bound.rebind(x=x2).launch()
+        np.testing.assert_array_equal(out, 2.0 * _full(x2.reshape(A, 1, NC)) + 1.0)
     with pytest.raises(HawkError, match=r"varying along \[a, c\].*rebound varying along \[c\]"):
-        bound.rebind(x=rng.random(c))
+        bound.rebind(x=rng.random(NC))
     with pytest.raises(HawkError, match=r"varying along \[a, c\].*rebound the exact lane shape"):
-        bound.rebind(x=rng.random(a * b * c))
-    with pytest.raises(HawkError, match=r"was bound with shape \(18,\).*cannot be rebound with shape \(3, 1, 6\)"):
-        bound.rebind(x=rng.random((a, 1, c)))
+        bound.rebind(x=rng.random(LANE))

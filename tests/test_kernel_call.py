@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """``k(x, a, b)``: a kernel called as a function runs one launch through the plan
-eagle deploys for it — the same artifact ``eagle.deploy(k).run`` uses."""
+``hawk.deploy`` makes for it, kept on the kernel: the same artifact ``hawk.deploy(k).run`` uses."""
 
 from __future__ import annotations
 
@@ -13,13 +13,14 @@ import numpy as np
 import pytest
 
 import hawk
-from hawk import Grid, Index, Mutable, Param, Scalar, Table, Vector
+from hawk import Grid, HawkError, Index, Mutable, Param, Scalar, Table, Vector
+from hawk import plans as plans_module
 from hawk.artifact import cache_stats
 
 
 @pytest.fixture
 def eagle():
-    """eagle, the runtime a kernel called as a function runs through: a row that needs it is skipped without it."""
+    """eagle, the array library the device rows hand their results through: a row that needs it is skipped without it."""
     return pytest.importorskip("eagle")
 
 
@@ -46,21 +47,20 @@ def _bundles(cache):
     return sorted(p.name for p in cache.rglob("*") if p.suffix == ".so")
 
 
-def test_kernel_call_cpu(private_cache, eagle):
+def test_kernel_call_cpu(private_cache):
     k = _scale()
     x = np.arange(8.0)
     y = k(x, 2.0, 1.0)
     np.testing.assert_array_equal(y, 2.0 * x + 1.0)
     built, first = _bundles(private_cache), _tool_runs()
     assert built and first >= 1
-    twin = eagle.deploy(k).run(x=x, a=2.0, b=1.0)
+    twin = hawk.deploy(k).run(x=x, a=2.0, b=1.0)
     np.testing.assert_array_equal(twin, y)
     assert _bundles(private_cache) == built and _tool_runs() == first
     assert k(x, 3.0, 0.0).tolist() == (3.0 * x).tolist()
     assert _tool_runs() == first
 
 
-@pytest.mark.usefixtures("eagle")
 def test_kernel_call_positional_and_keyword(private_cache):
     k = _scale()
     x = np.arange(4.0)
@@ -68,11 +68,14 @@ def test_kernel_call_positional_and_keyword(private_cache):
     np.testing.assert_array_equal(k(x, 2.0, 1.0), expect)
     np.testing.assert_array_equal(k(x, a=2.0, b=1.0), expect)
     np.testing.assert_array_equal(k(x=x, a=2.0, b=1.0), expect)
-    with pytest.raises(ValueError, match="scale"):
+    with pytest.raises(HawkError, match="scale"):
         k(x, 2.0)
+    with pytest.raises(HawkError, match=r"scale\(\): argument 'a' is given both by position and by name"):
+        k(x, 2.0, 1.0, a=2.0)
+    with pytest.raises(HawkError, match=r"scale\(\): 5 positional arguments, but the kernel declares 4 planes"):
+        k(x, 2.0, 1.0, np.zeros(4), 5.0)
 
 
-@pytest.mark.usefixtures("eagle")
 def test_kernel_call_returns_the_tree(private_cache):
     @hawk.kernel
     def kick(p: Vector[3], v: Vector[3], dt: Param):
@@ -85,16 +88,15 @@ def test_kernel_call_returns_the_tree(private_cache):
     np.testing.assert_allclose(got["vel"], v - 0.5 * p)
 
 
-def test_kernel_call_missing_eagle(monkeypatch):
+def test_a_kernel_call_needs_no_eagle(private_cache, monkeypatch):
     monkeypatch.setitem(sys.modules, "eagle", None)
-    with pytest.raises(ImportError, match=r"scale\(\.\.\.\) runs through eagle: pip install raptor-eagle"):
-        _scale()(np.arange(4.0), 2.0, 1.0)
+    np.testing.assert_array_equal(_scale()(np.arange(4.0), 2.0, 1.0), 2.0 * np.arange(4.0) + 1.0)
 
 
-def test_kernel_call_threads_first_call_builds_once(private_cache, monkeypatch, eagle):
+def test_kernel_call_threads_first_call_builds_once(private_cache, monkeypatch):
     k = _scale()
-    deploys, real = [], eagle.deploy
-    monkeypatch.setattr(eagle, "deploy", lambda *a, **kw: deploys.append(1) or real(*a, **kw))
+    deploys, real = [], plans_module.deploy
+    monkeypatch.setattr(plans_module, "deploy", lambda *a, **kw: deploys.append(1) or real(*a, **kw))
     x, out, gate = np.arange(16.0), [], threading.Barrier(6)
 
     def work():
@@ -106,6 +108,56 @@ def test_kernel_call_threads_first_call_builds_once(private_cache, monkeypatch, 
     [t.join() for t in threads]
     assert len(deploys) == 1 and len(out) == 6
     assert all(np.array_equal(o, 2.0 * x + 1.0) for o in out)
+
+
+def test_every_run_form_ends_in_one_plan_function(private_cache, monkeypatch, tmp_path):
+    """A call of the kernel, of its plan, ``Plan.run``, ``Plan.bind(...).launch()`` and ``hawk.run`` bind through the one
+    ``Plan.bound``, each once, whatever the rest of the form does."""
+    k = _scale()
+    plan = hawk.deploy(k)
+    loaded = hawk.load(plan.kernel.path.parent, "scale")
+    seen = []
+    real = plans_module.Plan.bound
+    monkeypatch.setattr(plans_module.Plan, "bound", lambda self, *a, **kw: seen.append(self) or real(self, *a, **kw))
+    x = np.arange(4.0)
+    forms = {
+        "kernel call": lambda: k(x, 2.0, 1.0),
+        "plan call": lambda: plan(x, 2.0, 1.0),
+        "Plan.run": lambda: plan.run(x=x, a=2.0, b=1.0),
+        "bind and launch": lambda: plan.bind(x=x, a=2.0, b=1.0, out=np.zeros(4)).launch(),
+        "hawk.run": lambda: hawk.run(loaded, x=x, a=2.0, b=1.0, out=np.zeros(4)),
+    }
+    for name, form in forms.items():
+        before = len(seen)
+        form()
+        assert len(seen) == before + 1, name
+
+
+def test_a_call_returns_the_one_output_or_a_dict_of_them(private_cache):
+    @hawk.kernel
+    def pair(x: Scalar, y: Mutable[Scalar], z: Mutable[Scalar]):
+        y = 2.0 * x
+        z = x + 1.0
+
+    x = np.arange(4.0)
+    got = pair(x)
+    assert sorted(got) == ["y", "z"]
+    np.testing.assert_array_equal(got["y"], 2.0 * x)
+    np.testing.assert_array_equal(got["z"], x + 1.0)
+    keep = np.zeros(4)
+    got = pair(x, y=keep)
+    assert got["y"] is keep and keep.tolist() == (2.0 * x).tolist()
+
+
+def test_a_value_a_kernel_reads_before_it_writes_must_be_given(private_cache):
+    @hawk.kernel
+    def accumulate(x: Scalar, total: Mutable[Scalar]):
+        total = total + x
+
+    x = np.arange(4.0)
+    with pytest.raises(HawkError, match=r"accumulate\(\): 'total' is updated from its previous value.*pass total=\.\.\."):
+        accumulate(x)
+    np.testing.assert_array_equal(accumulate(x, total=np.ones(4)), x + 1.0)
 
 
 def _binned(n):
@@ -134,7 +186,6 @@ def test_a_factory_builds_each_size_cpu(private_cache):
     _check_binned(np, hawk.deploy)
 
 
-@pytest.mark.usefixtures("eagle")
 def test_a_redefined_kernel_runs_its_new_body(private_cache):
     @hawk.kernel
     def scale(x: Scalar, a: Param, b: Param) -> Scalar:

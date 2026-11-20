@@ -366,4 +366,4 @@ def test_a_kernel_names_the_slot_and_the_plane_a_cotangent_binds_to(plan):
     assert [loaded.slot(name) for name in loaded.sidecar["slots"]] == list(range(len(loaded.sidecar["slots"])))
     seed = np.ones(N)
     assert np.shares_memory(loaded.plane_view("x", seed), seed)
-    assert isinstance(loaded, rt.HostKernel)
+    assert isinstance(loaded, rt.LoadedKernel)

@@ -27,8 +27,8 @@ import _osprey
 from . import ospreys
 from .errors import HawkError
 from ._plane_layout import describe
-from .plans import Plan, bind_for_run, deploy
-from .runtime import BoundPlan, HostKernel, through_door
+from .plans import Plan, deploy
+from .runtime import BoundPlan, LoadedKernel, through_door
 from .targets import host_target
 
 __all__ = ["ActiveSet", "RunRecord", "RunReport", "Runner", "SimResult", "simulate", "until_done"]
@@ -76,7 +76,7 @@ class ActiveSet:
         import numpy as np
 
         loaded = kernel.kernel if isinstance(kernel, Plan) else kernel
-        if not isinstance(loaded, HostKernel) or not loaded.active_set:
+        if not isinstance(loaded, LoadedKernel) or not loaded.active_set:
             raise HawkError("ActiveSet.planes: the kernel reads no active set (build it under Guard(active_set=True))")
         if self.mask is None and self.positions is None:
             raise HawkError("ActiveSet.planes: this set states a runner's compaction; give mask= or positions= to make planes")
@@ -313,7 +313,7 @@ def _plans_of(model, record: bool = False, window: int | None = None) -> list[Pl
     if not items:
         raise HawkError("the model is empty; pass a plan, a kernel, or a list of them")
     for item in items:
-        if isinstance(item, HostKernel):
+        if isinstance(item, LoadedKernel):
             raise HawkError("the model is a loaded kernel; plan it first (hawk.plan(loaded)) or pass the kernel itself")
     kernels = [item for item in items if not isinstance(item, Plan)]
     deployed = iter(deploy(kernels, record=record, window=window if record else None) if kernels else ())
@@ -330,8 +330,8 @@ def _bind_model(plans: list[Plan], planes: dict, n_samples, layout) -> list[Boun
     try:
         for plan in plans:
             names = plan.kernel.declared_names()
-            bound = bind_for_run(plan, {name: value for name, value in namespace.items() if name in names},
-                                 n_samples, layout)
+            bound = plan.bound({name: value for name, value in namespace.items() if name in names},
+                               n_samples=n_samples, layout=layout, keep=False, outputs=True, running=True)
             bounds.append(bound)
             namespace |= bound.planes   # a plane made for an omitted one is the same array in the next plan
     except BaseException:

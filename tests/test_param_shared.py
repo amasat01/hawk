@@ -139,9 +139,9 @@ def test_a_512_wide_shared_vector_is_read_cell_by_cell():
 
 def test_a_call_with_the_wrong_shape_is_refused_by_name():
     x = _lanes()
-    with pytest.raises(ValueError, match=r"'A' is a shared parameter of shape \(2, 2\)"):
+    with pytest.raises(HawkError, match=r"'A' is a shared parameter of shape \(2, 2\)"):
         rotate(x, np.ones(4))
-    with pytest.raises(ValueError, match=r"'A' is a shared parameter of shape \(2, 2\)"):
+    with pytest.raises(HawkError, match=r"'A' is a shared parameter of shape \(2, 2\)"):
         rotate(x, np.ones((3, 2)))
 
 

@@ -104,7 +104,7 @@ def _n_from(arg_spec, arrays: dict, arg_shapes: dict | None = None,
     return lengths.pop()
 
 
-# -- Bind-time validation, run in `HostKernel.arguments` before any
+# -- Bind-time validation, run in `LoadedKernel.arguments` before any
 # argument's address is taken. The single source of truth is the SIDECAR
 # itself (`arg_dtypes`, `arg_shapes`, `params`) — never a
 # per-feature rule hard-coded here, so a kernel declaring a new role or

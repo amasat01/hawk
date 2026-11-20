@@ -85,7 +85,7 @@ _EXPECTED_MANIFEST = {
         "vec", "vsum", "where",
     ],
     "hawk.runtime": [
-        "BoundPlan", "HostKernel", "check_scatter_status", "dispatch_costs", "load", "run", "steps_reverse_table",
+        "BoundPlan", "LoadedKernel", "check_scatter_status", "dispatch_costs", "load", "run", "steps_reverse_table",
     ],
     "hawk.plans": [
         "DeviceKernel", "HostSerial", "HostTeam", "Partition", "Plan", "asarray", "banded_pack", "banded_unpack", "deploy",

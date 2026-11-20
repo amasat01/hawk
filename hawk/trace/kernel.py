@@ -27,7 +27,6 @@ from collections.abc import Callable
 from typing import Any
 
 from .. import _ir
-from .._broadcast import route
 from ..errors import HawkError
 from . import astpass, helpers, reduce
 from .decl import Plane, resolve, role_of, spell
@@ -166,43 +165,16 @@ class Kernel:
         """The walk's ``(role, name)`` slot order — every consumer's source."""
         return _ir.arg_spec(self.walk)
 
-    def broadcast_call(self, args: tuple, kwargs: dict) -> tuple[Kernel, tuple, dict]:
-        """``(kernel to run, args, kwargs)`` for a call of this kernel.
-
-        A kernel that declares no ``Grid``, or a call whose per-lane inputs all have the
-        exact lane shape, comes back unchanged. When a read-only per-lane input is given
-        broadcast (:mod:`hawk._broadcast`), the kernel returned is the twin of that
-        pattern and the arguments are the same inputs, compacted to the caller's
-        buffers. A shape that does not broadcast raises ``HawkError`` naming it."""
-        return route(self, args, kwargs)
-
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        """Run one launch where the arrays live, through the plan eagle
-        deploys for this kernel (built on the first call, cached on disk). A
-        per-lane input of a ``Grid`` kernel may be given broadcast
-        (:mod:`hawk._broadcast`): the call then runs that pattern's twin."""
-        run, args, kwargs = self.broadcast_call(args, kwargs)
-        plan = run._plan
-        if plan is None:
-            plan = run._deploy()
-        return plan(*args, **kwargs)
+        """Run one launch where the arrays live: ``hawk.deploy(self)(*args, **kwargs)``, the plan built on the first call
+        (cached on disk) and kept. See :meth:`hawk.plans.Plan.__call__`."""
+        if self._plan is None:
+            from ..plans import deploy    # plans builds on the kernel, so it is imported when a call needs it
 
-    def _deploy(self) -> Any:
-        try:
-            import eagle
-        except ModuleNotFoundError as exc:
-            if exc.name != "eagle":
-                raise
-            raise ImportError(f"{self.name}(...) runs through eagle: "
-                              "pip install raptor-eagle") from None
-        with self._lock:
-            if self._plan is None:
-                source = getattr(self.sinks, "source", None)
-                if isinstance(source, Kernel) and self.sinks.primal_unit is None:
-                    # a derivative names the unit its primal was built into
-                    self.sinks.primal_unit = eagle.deploy(source).plugin._hawk_source[1]
-                self._plan = eagle.deploy(self)
-        return self._plan
+            with self._lock:
+                if self._plan is None:
+                    self._plan = deploy(self)
+        return self._plan(*args, **kwargs)
 
     def __repr__(self) -> str:  # pragma: no cover - diagnostics only
         return f"<Kernel {self.name} slots={len(self.arg_spec)}>"
@@ -230,7 +202,7 @@ def kernel(fn: Callable[..., None] | None = None, *, kind: Any = None,
     at decoration.
 
     Without ``steps=``, a kernel :func:`hawk.steps` admits for ``"auto"`` is
-    built as the automatic kernel instead, paced by :func:`eagle.until_done`.
+    built as the automatic kernel instead, paced by :func:`hawk.until_done`.
     ``steps=1`` is the explicit opt-out: the plain kernel, always.
 
     ``time_step`` names the step-size parameter (a declared scalar input)

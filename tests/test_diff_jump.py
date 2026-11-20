@@ -683,18 +683,16 @@ def test_auto_plain_descent_finds_the_switch(rig):
 def test_auto_host_run_equals_the_eagle_plan_run(rig, cache_dir):
     """The derived kernel's two stages through eagle's plan, which runs the
     finish between them, give hawk.run's gradient and width bitwise."""
-    pytest.importorskip("eagle.exec")
-    from eagle import plan as eplan
-
     n = 4096
     x = _data(n, 5)
     ybar = _ybar(np.where(x < T, A, B), x, n)
     g, cells = _auto(rig, k_auto, ("t",), bar_y=ybar, x=x, t=T, a=A, b=B)
     derived = Kernel("g", vjp(k_auto, wrt=("t",), primal_unit="0" * 64))
-    got = eplan.auto(derived, targets=("host",), cache_dir=cache_dir).run(
-        bar_y=ybar, bar_t=np.zeros(n), x=x, t=T, a=A, b=B)
-    assert np.asarray(got["bar_t"]).tobytes() == g["t"].tobytes()
-    assert float(np.asarray(got["jump_h0"]).reshape(-1)[0]) == cells["jump_h0"]
+    width = np.zeros(1)
+    got = hawk.deploy(derived, targets=("host",), cache_dir=cache_dir).run(
+        bar_y=ybar, bar_t=np.zeros(n), x=x, t=T, a=A, b=B, jump_h0=width)
+    assert np.asarray(got).tobytes() == g["t"].tobytes()
+    assert float(width[0]) == cells["jump_h0"]
 
 
 def test_auto_host_run_equals_the_deployed_plan_run(rig, cache_dir):

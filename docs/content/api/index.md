@@ -72,7 +72,7 @@ The declarations a kernel is written in, and the top-level functions. Each has i
 
 ## Running a kernel on the host
 
-`hawk.load` opens a built kernel, `hawk.run` runs it once, and the verbs below plan it, bind its planes and launch it as often as needed.
+`hawk.load` opens a built kernel (a `LoadedKernel`), `hawk.run` runs it once, and the verbs below plan it, bind its planes and launch it as often as needed. `hawk.deploy(kernel)` builds a kernel into a plan, and calling a plan (`plan(x, a=3)`, which is what `kernel(x, a=3)` does) binds the arrays, launches once and returns what the kernel returns. Every one of these forms binds through `Plan.bound`.
 
 ```{eval-rst}
 .. autosummary::

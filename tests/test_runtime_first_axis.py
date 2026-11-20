@@ -151,5 +151,5 @@ def test_a_direct_call_takes_the_free_label_as_a_keyword(tmp_path):
     got = count(conn, e=2, node=4)
     np.testing.assert_array_equal(got, _want(4))
     np.testing.assert_array_equal(hawk.deploy(count).run(conn=conn, e=2, node=4), got)
-    with pytest.raises(ValueError, match="node"):
+    with pytest.raises(HawkError, match="node"):
         count(conn, b=np.zeros(5), e=2, node=4)

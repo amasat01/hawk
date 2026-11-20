@@ -16,7 +16,7 @@ here.
 Arrays are NumPy arrays or anything else that exports DLPack and the buffer protocol; the plane is the caller's
 memory, written in place. A plain buffer (``array.array``, ``bytes``) exports no DLPack and is refused by name.
 Every bound argument is validated against the sidecar's declaration before the door is called
-(:meth:`HostKernel.arguments`, which :func:`run` and :meth:`hawk.plans.Plan.bind` both call): dtype is exact and fixed by role (every integer-valued role rides a 64-bit wire, and
+(:meth:`LoadedKernel.arguments`, which :func:`run` and :meth:`hawk.plans.Plan.bind` both call): dtype is exact and fixed by role (every integer-valued role rides a 64-bit wire, and
 ``Terminated`` is always ``bool``), a per-sample plane holds exactly ``n_samples`` samples, every plane is
 C-contiguous and a sink role's plane writable, except a sample-major plane whose transpose is C-contiguous,
 which binds as that view (the rule is ``hawk._plane_layout``'s). A ``(w, w)`` plane reads both ways and is refused unless
@@ -71,7 +71,7 @@ from ._plane_layout import LayoutChoice, describe, is_ndarray, samples_last, spl
 from .errors import HawkError
 from .targets import ENTRY_KINDS, host_target
 
-__all__ = ["BoundPlan", "HostKernel", "check_scatter_status", "dispatch_costs", "load", "run", "steps_reverse_table"]
+__all__ = ["BoundPlan", "LoadedKernel", "check_scatter_status", "dispatch_costs", "load", "run", "steps_reverse_table"]
 
 #: The two planes a kernel built under ``Guard(active_set=True)`` reads: the live samples and their count. A plain plan
 #: takes the caller's; a runner makes and compacts its own, and refuses a plan that holds the caller's.
@@ -101,7 +101,7 @@ def through_door(call, *args, **kwargs):
 
 
 class _Arguments(NamedTuple):
-    """One call's arguments, checked and ready to wrap: what :meth:`HostKernel.arguments` returns."""
+    """One call's arguments, checked and ready to wrap: what :meth:`LoadedKernel.arguments` returns."""
 
     n_samples: int
     #: ``{name: the caller's value}``, the outputs the call made included; a marked array stays marked.
@@ -116,7 +116,7 @@ class _Arguments(NamedTuple):
     extents: dict
 
 
-class HostKernel:
+class LoadedKernel:
     """One built host kernel: its sidecar and its unit, loaded through the host OSPREY's door.
 
     Construction is per kernel; it holds no bound planes. :func:`hawk.plan` makes a plan over it, :func:`run` runs it once.
@@ -232,7 +232,7 @@ class HostKernel:
 
     # -- per call ----------------------------------------------------------
     def arguments(self, arrays: dict, n_samples: int | None = None, layout: str | None = None, *,
-                  keep: bool, outputs: bool = False, running: bool = False) -> _Arguments:
+                  keep: bool, outputs: bool = False, running: bool = False, shown: dict | None = None) -> _Arguments:
         """Check ``arrays`` against the sidecar and return what a plan wraps and binds.
 
         ``arrays`` maps a plane's name to an array and a ``uniform``'s to a Python number. Refuses naming every failing
@@ -243,6 +243,8 @@ class HostKernel:
         ``outputs``: an output plane the caller left out is made, zeroed, in the shape and dtype the sidecar declares.
         ``running``: the call runs its samples to done (a runner), so a ``terminated`` mask the caller left out starts
         all-false, and the active set and the step word are the runner's, not bound here.
+        ``shown``: the caller's own arrays for the planes of ``arrays`` that are views of them (a broadcast input's compact buffer);
+        the result's ``given`` reports these.
         An automatic kernel's ``fused_steps`` word, a finishing kernel's ``finished_count`` counter and the other planes the
         library owns are not bound.
         """
@@ -250,6 +252,7 @@ class HostKernel:
         spec = self.bind_spec
         arrays = _shared_shapes_checked(sidecar, arrays)
         stated = _lane_bind.stated_extents(sidecar, arrays)
+        given = {name: value for name, value in {**arrays, **(shown or {})}.items() if name not in stated}   # not lane or compact views
         arrays, lane_n = _lane_bind.bind(sidecar, spec, arrays, n_samples, _PER_SAMPLE_ROLES)
         plain, axes = split_marks(arrays, layout)
         choice = LayoutChoice(layout, axes)
@@ -261,13 +264,17 @@ class HostKernel:
                                 sidecar.get("arg_shapes", {}), choice)
             _lane_bind.check_total(sidecar, n_samples)
         if outputs:
-            arrays = {**arrays, **self._made_outputs(plain, n_samples)}
+            made = self._made_outputs(plain, n_samples)
+            given |= made
+            arrays = {**arrays, **self._lane_views(made)}
             plain, axes = split_marks(arrays, layout)
             choice = LayoutChoice(layout, axes)
         if running:
-            arrays = {**arrays, **self._made_for_running(arrays, n_samples)}
+            made = self._made_for_running(arrays, n_samples)
+            given |= made
+            arrays = {**arrays, **made}
         _refuse_unbound_names(self, arrays, self._plane_names())
-        return self._checked(arrays, n_samples, layout, keep=keep, running=running)._replace(extents=stated)
+        return self._checked(arrays, n_samples, layout, keep=keep, running=running)._replace(given=given, extents=stated)
 
     def output_names(self) -> tuple:
         """The names of the output planes a caller sees, in slot order: the sinks the library does not make, a cell by its own
@@ -280,7 +287,8 @@ class HostKernel:
 
     def _made_outputs(self, arrays: dict, n_samples: int) -> dict:
         """The zeroed arrays of the outputs ``arrays`` leaves out, by name, each as long as the lanes unless the sidecar
-        declares its axes. A wide plane, whose extent only the caller knows, is refused by name: the caller binds it."""
+        declares its axes, and the gradient of a lookup plane as large as that plane. A wide plane whose axes the sidecar does
+        not declare, whose extent only the caller knows, is refused by name: the caller binds it."""
         import numpy as np
 
         sidecar = self.declared
@@ -288,6 +296,7 @@ class HostKernel:
         labels = _lane_bind.free_labels(sidecar)
         extents = {label: arrays[label] for label in labels if label in arrays}
         roles = {name: role for role, name in self.bind_spec}
+        adjoint = sidecar.get("adjoint_like") or {}
         made = {}
         for name in self.output_names():
             if name in arrays:
@@ -295,7 +304,10 @@ class HostKernel:
             if name in cells:
                 made[name] = np.zeros(cells[name]["columns"], dtype=self.scalar_type)
                 continue
-            if roles[name] == "wide_out":
+            if adjoint.get(name) in arrays:     # the gradient of a lookup plane is as large as that plane
+                made[name] = np.zeros(describe(arrays[adjoint[name]]).shape, dtype=sidecar["arg_dtypes"][name])
+                continue
+            if roles[name] == "wide_out" and name not in (sidecar.get("plane_axes") or {}):
                 raise HawkError(f"kernel {sidecar.get('kernel', '?')!r}: argument {name!r}: the extent of a wide plane is the "
                                 "caller's, so it is not made; bind it")
             width = int(sidecar.get("arg_shapes", {}).get(name) or 1)
@@ -303,6 +315,23 @@ class HostKernel:
             plane = np.zeros(shape, dtype=sidecar["arg_dtypes"][name])
             made[name] = samples_last(plane) if width > 1 and shape[0] == width else plane
         return made
+
+    def _lane_views(self, made: dict) -> dict:
+        """``made`` (:meth:`_made_outputs`) as the unit binds it: each plane of a kernel that declares a ``Grid`` flattened to
+        ``(*component axis, lanes)``, a view of the same memory; a plane the unit declares the axes of, a cell and the gradient of
+        a lookup plane stay as they are."""
+        sidecar = self.declared
+        if _lane_bind.lane_axes(sidecar) is None:
+            return made
+        kept = {*(sidecar.get("plane_axes") or ()), *(sidecar.get("cells") or ()), *(sidecar.get("adjoint_like") or ())}
+        views = {}
+        for name, plane in made.items():
+            marked = hasattr(plane, "array")
+            array = plane.array if marked else plane
+            width = int(sidecar.get("arg_shapes", {}).get(name) or 1)
+            view = array if name in kept else array.reshape((*array.shape[:1][:width > 1], -1))
+            views[name] = samples_last(view) if marked else view
+        return views
 
     def _made_for_running(self, arrays: dict, n_samples: int) -> dict:
         """What a runner starts from when the caller left it out: an all-false ``terminated`` mask."""
@@ -542,12 +571,15 @@ class BoundPlan:
     :meth:`close` or until this object is collected.
     """
 
-    def __init__(self, kernel: HostKernel, arguments: _Arguments, structure: int, ranges: dict, *,
-                 n_samples: int | None = None, layout: str | None = None) -> None:
+    def __init__(self, kernel: LoadedKernel, arguments: _Arguments, structure: int, ranges: dict, *,
+                 n_samples: int | None = None, layout: str | None = None, broadcast: tuple | None = None) -> None:
         """Make the library's plan over ``arguments.n_samples`` samples under ``structure`` (a door structure code) and
         partitioned by ``ranges`` (the door's ``part_base`` / ``part_count`` or ``split_evenly``, else none: the whole
-        range), then bind the planes. ``n_samples`` and ``layout`` are what the caller stated, kept for :meth:`rebind`."""
+        range), then bind the planes. ``n_samples`` and ``layout`` are what the caller stated, kept for :meth:`rebind`.
+        ``broadcast`` is ``(traced kernel, patterns)`` of a plan deployed from a kernel: the patterns the planes were bound in
+        (none for the exact shapes), which a rebind keeps; ``None`` for a plan over a loaded artifact."""
         self._kernel = kernel
+        self._broadcast = broadcast
         self._door = kernel._door
         self._stated = (n_samples, layout)
         self._n = arguments.n_samples
@@ -639,13 +671,16 @@ class BoundPlan:
         An extent stated by label at bind (``e=``) stays too; a rebind may state it again, and a value that contradicts a bound
         plane is refused by name.
 
-        The same checks as :meth:`hawk.plans.Plan.bind` run over the whole set; the sample count cannot change.
+        The same checks as :meth:`hawk.plans.Plan.bind` run over the whole set; the sample count cannot change. A plane bound
+        broadcast keeps its pattern: it takes any shape of it, or the compact buffer it holds, and another pattern is refused.
         """
         n_samples, layout = self._stated
-        for name, value in planes.items():
-            _broadcast.guard_rebind(self._kernel.declared, name, self._arguments.given.get(name), value)
         held = self._arguments
-        arguments = self._kernel.arguments({**held.given, **held.extents, **planes}, n_samples, layout, keep=True)
+        shown = merged = {**held.given, **planes}
+        if self._broadcast is not None:
+            traced, patterns = self._broadcast
+            shown, merged = _broadcast.rebound(traced, patterns, held.given, planes, self._n, traced.name)
+        arguments = self._kernel.arguments({**held.extents, **merged}, n_samples, layout, keep=True, shown=shown)
         if arguments.n_samples != self._n:
             raise HawkError(f"{self._kernel.path.name}: rebind cannot change the sample count, bound for {self._n}, "
                             f"got {arguments.n_samples}; bind a new plan")
@@ -707,12 +742,12 @@ def _door_made_names(sidecar: dict) -> set:
     return names
 
 
-def load(directory, kernel: str, sidecar: dict | None = None) -> HostKernel:
+def load(directory, kernel: str, sidecar: dict | None = None) -> LoadedKernel:
     """Load ``<directory>/<kernel>.so``, reading its sidecar JSON if omitted."""
     directory = Path(directory)
     if sidecar is None:
         sidecar = json.loads((directory / f"{kernel}.json").read_text())
-    return HostKernel(directory / f"{kernel}.so", sidecar)
+    return LoadedKernel(directory / f"{kernel}.so", sidecar)
 
 
 def steps_reverse_table(sidecar: dict, device: bool) -> dict:
@@ -739,7 +774,7 @@ def check_scatter_status(kernel: str, team: dict, status, cells: int) -> None:
             f"that is not the skip key -1; those adds were dropped, the rest are in {team['of']}")
 
 
-def run(kernel_artifact: HostKernel, *, base: int = 0, count: int | None = None,
+def run(kernel_artifact: LoadedKernel, *, base: int = 0, count: int | None = None,
         n_samples: int | None = None, layout: str | None = None,
         **arrays) -> None:
     """Bind ``arrays`` and run the WHOLE range in ONE serial launch.
@@ -761,18 +796,17 @@ def run(kernel_artifact: HostKernel, *, base: int = 0, count: int | None = None,
     A kernel declaring ``hawk.Grid[...]`` takes its runtime extent by label
     (``run(k, x=x, y=y, channel=64)``) or from lane-shaped planes, and refuses
     ``n_samples=``."""
-    arguments = kernel_artifact.arguments(arrays, n_samples, layout, keep=False)
-    n = arguments.n_samples
-    kernel_artifact.refuse_partial_stages(base != 0 or count not in (None, n))
-    ranges = {} if base == 0 and count in (None, n) else {"part_base": [base], "part_count": [n - base if count is None else count]}
-    bound = BoundPlan(kernel_artifact, arguments, _osprey.EG_STRUCTURE_HOST_SERIAL, ranges)
+    from .plans import HostSerial, Plan    # plans builds on this module
+
+    bound = Plan(kernel_artifact, HostSerial, None, None).bound(
+        arrays, n_samples=n_samples, layout=layout, keep=False, span=(base, count))
     try:
         bound.launch()
     finally:
         bound.close()
 
 
-def _stage_names(first: HostKernel) -> set:
+def _stage_names(first: LoadedKernel) -> set:
     """Every plane name a stage of the split kernel ``first`` declares."""
     names = {name for _, name in first.arg_spec}
     for stage in first._stages:
@@ -794,7 +828,7 @@ def _shared_shapes_checked(sidecar: dict, arrays: dict) -> dict:
     return arrays
 
 
-def _refuse_unbound_names(kernel_artifact: HostKernel, arrays: dict, declared: set) -> None:
+def _refuse_unbound_names(kernel_artifact: LoadedKernel, arrays: dict, declared: set) -> None:
     """Refuse a bound name the kernel declares no slot for, as eagle's ``bind`` does: a plane passed
     under a wrong name is otherwise never written, and its zeros read as a result."""
     unknown = sorted(set(arrays) - declared - _lane_bind.free_labels(kernel_artifact.declared))   # ``<label>=N`` is no plane

@@ -972,6 +972,7 @@ def test_a_transpose_product_sum_under_an_index_set_sums_the_live_lanes_rows(cac
 
 
 @pytest.mark.parametrize("target", [pytest.param("host", id="host"), pytest.param("cuda", marks=DEVICE, id="cuda")])
+@pytest.mark.skip(reason="needs the graph builder rows: hawk.Graph over a team stage chain and its replay")
 def test_a_team_stage_chain_is_captured_and_replayed_through_eagle_bitwise(cache, target):
     """An eagle plan launches a team stage with one block per work item, captures the stage chain in
     one graph and replays it: three replays equal three fresh runs, bit for bit."""

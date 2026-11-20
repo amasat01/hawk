@@ -326,7 +326,7 @@ def test_a_per_lane_matrix_beside_a_broadcast_vector(cache_dir, tmp_path, monkey
                 np.testing.assert_allclose(out[:, i, j, k],
                                            np.linalg.solve(mats[:, :, i, j, k], rhs[:, 0, 0, k]),
                                            rtol=1e-12)
-    with pytest.raises(ValueError, match="16 component"):
+    with pytest.raises(hawk.HawkError, match="16 component"):
         grid_solve(mats[:, :, :1].reshape(16, -1), rhs, a=A_AXIS)      # a matrix plane is exact
 
 

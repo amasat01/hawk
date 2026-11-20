@@ -432,6 +432,9 @@ REFUSED: dict = {
     (k := "bcast_vec_a1c", m_): "'v' is a Vector given broadcast but varying along the runtime axis 'a'"
     for m_ in ("jvp", "vjp", "duality")
 }
+# a Python number given for a per-lane input is read by value and has no gradient; an array of one element does
+REFUSED |= {("bcast_scalar", m_): "argument 'x' is a Python number.*no gradient; pass a one-element array"
+            for m_ in ("vjp", "duality")}
 #: Cells that are silently wrong: ``(row, mode) -> the mechanism``; strict xfail.
 BUGS: dict = {}
 

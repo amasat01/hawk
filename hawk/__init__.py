@@ -11,8 +11,8 @@ under the heterogeneous execution contract eagle enforces.
 This module is the authoring surface. Importing it never imports
 :mod:`hawk._ir` or :mod:`hawk.ospreys`.
 
-Runtime dependency: numpy only. ``eagle`` is imported lazily, by calling a
-kernel (``k(...)``) only, and nothing else under ``hawk/`` imports it.
+Runtime dependency: numpy only. Nothing under ``hawk/`` imports ``eagle``: a kernel call
+(``k(...)``) is ``hawk.deploy(k)(...)``, which runs through the compiled OSPREY libraries.
 
 This module also adds the authoring names (``kernel``, the declaration
 vocabulary, ``raw_device``, ``Quantity``), bound lazily through

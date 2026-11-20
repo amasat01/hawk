@@ -8,14 +8,15 @@ Its shape is any that broadcasts, right-aligned, against ``(head, *lane shape)``
 of size 1, fewer axes. NumPy's rule. The input binds as the CALLER's buffer,
 compact and never copied: the pattern (which lane axes it varies along) picks a
 twin of the kernel in which the per-lane read is a lookup at those axes
-(``Table["a", "c"]``, or a flat table when the runtime axis is kept) or, when it
-varies along none, a uniform. One twin per pattern, memoised on the kernel;
-the exact shape runs the kernel untouched.
+(``Table["a", "c"]``, or a flat table when the runtime axis is kept), a one-cell
+table when an array varies along none, or a uniform when it is a Python number.
+One twin per pattern, memoised on the kernel; the exact shape runs the kernel
+untouched.
 
-Both hawk doors classify with :func:`kept_axes`. :func:`route` is
-``Kernel.__call__``'s: it picks the twin and compacts the arguments.
-``hawk.runtime.run`` binds a loaded artifact, which is one kernel's, so it
-refuses a broadcast shape with the same words and names the twin to build.
+:meth:`hawk.plans.Plan.bound` classifies with :func:`routed`, which also compacts the
+caller's buffers for the twin; :func:`rebound` does the same for a bound plan's
+rebind. A plan with no source kernel (``hawk.plan`` over ``hawk.load``) reads every
+input per lane and refuses a broadcast shape by name (:func:`loaded_only`).
 Written, accumulated and mask planes are exact: only a plane the kernel reads
 broadcasts."""
 
@@ -26,6 +27,11 @@ from math import prod
 from . import _ir
 from .errors import HawkError
 
+#: The pattern of a Python number given for a per-lane input: the twin reads it as a uniform, by value. An array that varies
+#: along no lane axis has the all-false tuple instead and is read from a one-cell table, the caller's memory.
+BY_VALUE = "by value"
+#: What a bare number is: the values that bind by value.
+NUMBERS = (bool, int, float)
 #: The roles of a read-only per-lane input; the ones that broadcast.
 READ_ROLES = ("per_sample", "vec_in", "mat_in")
 #: The roles of a per-lane plane that is written or masked: exact.
@@ -41,7 +47,7 @@ def _head(ttype, role: str) -> tuple:
 def shape_of(value) -> tuple | None:
     """``value``'s shape: ``()`` for a Python number, ``None`` when it has none
     (a marked or raw buffer, which the layout rules read)."""
-    if isinstance(value, (bool, int, float)):
+    if isinstance(value, NUMBERS):
         return ()
     shape = getattr(value, "shape", None)
     return None if shape is None else tuple(shape)
@@ -128,63 +134,68 @@ def pattern_text(kept: tuple, axes) -> str:
     return "[" + ", ".join(label for (label, _e), k in zip(axes, kept) if k) + "]"
 
 
-def dense_only(name: str, shape: tuple, kept: tuple, head: tuple, axes) -> str:
-    """The refusal of a loaded artifact given a broadcast shape: it reads the
-    plane in the exact lane shape."""
-    return (f"argument {name!r} has shape {shape}, which broadcasts against "
-            f"{lane_text(head, axes)} along {pattern_text(kept, axes)} only; this "
-            "artifact reads it per lane. Call the kernel (k(...)), which binds the "
-            "broadcast as given, or build and load the twin "
-            "hawk._broadcast.twin(k, {name: kept})")
+def loaded_only(kernel: str, name: str, shape: tuple, kept: tuple, head: tuple, axes) -> str:
+    """The refusal of a plan with no source kernel, given a broadcast shape: a loaded artifact reads the plane per lane."""
+    return (f"{kernel}: argument {name!r} has shape {shape}, which broadcasts against "
+            f"{lane_text(head, axes)} along {pattern_text(kept, axes)} only; this plan was made from a loaded "
+            "artifact, which reads it per lane; deploy the kernel (hawk.deploy) to bind it as given")
 
 
-def check_rebind(name: str, held: tuple, got: tuple | None, axes) -> None:
+def _axes_text(pattern, axes) -> str:
+    """A pattern as the axes it varies along, for a refusal: ``[a, c]``, ``none (a number)``, ``the exact shape``."""
+    if pattern is BY_VALUE:
+        return "none (a number)"
+    return "the exact shape" if pattern is None else pattern_text(pattern, axes)
+
+
+def _bound_as(pattern, axes) -> str:
+    """How a plane was bound, for a refusal: by value, varying along some axes, or in the exact lane shape."""
+    if pattern is BY_VALUE:
+        return "by value"
+    return "in the exact lane shape" if pattern is None else f"varying along {pattern_text(pattern, axes)}"
+
+
+def check_rebind(name: str, held, got, axes) -> None:
     """Refuse binding ``name`` as a pattern other than the one a plan was bound
-    with (``got`` is ``None`` for the exact shape): the plan reads the caller's
-    buffer at the first one's strides."""
+    with (``None`` for the exact shape): the plan reads the caller's buffer at
+    the first one's strides."""
     if held != got:
-        now = "the exact lane shape" if got is None else f"varying along {pattern_text(got, axes)}"
+        asked = "the exact lane shape" if got is None else ("by value" if got is BY_VALUE
+                                                            else f"varying along {pattern_text(got, axes)}")
         raise HawkError(
-            f"argument {name!r} was bound varying along {pattern_text(held, axes)}; "
-            f"it cannot be rebound {now}. Bind afresh for the new pattern")
-
-
-def guard_rebind(sidecar: dict, name: str, bound, value) -> None:
-    """The check of a plan rebinding plane ``name`` of a broadcast twin (``sidecar``: its ``broadcast`` and lane space):
-    a rebound plane keeps the pattern it was bound with, and the shape. A plane the twin does not broadcast is not checked."""
-    held = (sidecar.get("broadcast") or {}).get(name)
-    old, new = shape_of(bound), shape_of(value)
-    if held is None or old == new or new is None:
-        return
-    axes = [(ax["label"], ax["extent"]) for ax in sidecar["launch"]["lane_space"]["axes"]]
-    width = int(sidecar.get("arg_shapes", {}).get(name) or 1)
-    try:
-        got = kept_axes(new, (width,) if width > 1 else (), axes, extent=0, strict=False)   # size 1 is not the runtime extent
-    except ValueError:
-        got = None
-    check_rebind(name, tuple(held), got, axes)
-    raise HawkError(f"argument {name!r} was bound with shape {old}; it cannot be "
-                    f"rebound with shape {new}")
+            f"argument {name!r} was bound {_bound_as(held, axes)}; "
+            f"it cannot be rebound {asked}. Bind afresh for the new pattern")
 
 
 # -- the twin: the kernel with the per-lane read of a plane rewritten ----- #
 
 
-def twin(kernel, patterns: dict, reverse: tuple = ()):
-    """``kernel`` with each plane of ``patterns`` (``{name: kept axes}``) read at
-    the axes it varies along; the memoised twin of this pattern. A plane named
-    in ``reverse`` (to differentiate with respect to) that varies along no axis
-    is read from a one-cell table rather than as a uniform, so its gradient is
-    the sum over every lane."""
-    key = (tuple(sorted(patterns.items())), tuple(sorted(reverse)))
+def _primal(kernel):
+    """The kernel whose inputs a call is classified over: the primal of a derivative (``vjp`` / ``jvp``), else ``kernel``."""
+    source = getattr(kernel.sinks, "source", None)
+    return source if source is not None and hasattr(source, "lane_space") else kernel
+
+
+def twin(kernel, patterns: dict):
+    """``kernel`` with each plane of ``patterns`` (``{name: pattern}``) read at the axes it varies along; the memoised twin of
+    this pattern. A derivative's twin is the derivative rebuilt over its primal's twin, so the gradient of a broadcast
+    input has the input's own compact shape, summed (compensated) over the axes it does not vary along."""
+    key = tuple(sorted(patterns.items()))
     with kernel._lock:
         held = kernel._twins.get(key)
         if held is None:
-            held = kernel._twins[key] = _build(kernel, dict(patterns), reverse)
+            held = kernel._twins[key] = (_derived_twin(kernel, patterns) if _primal(kernel) is not kernel
+                                         else _build(kernel, dict(patterns)))
     return held
 
 
-def _build(kernel, patterns: dict, reverse: tuple):
+def _derived_twin(kernel, patterns: dict):
+    """The derivative ``kernel`` over the twin of its primal."""
+    derived = kernel.sinks
+    return type(kernel)(kernel.name, derived.rebuild(twin(derived.source, patterns)))
+
+
+def _build(kernel, patterns: dict):
     from .trace.kernel import Kernel
     from .trace.lane_axes import trace_context
     from .trace.steps import default_step, default_steps
@@ -214,13 +225,13 @@ def _build(kernel, patterns: dict, reverse: tuple):
                 index = _index(patterns[name], step.lane_space, context)
                 read = _ir.make_node("At", ttype, (found[0], index))
             else:
-                planes[name], read = _read(name, ttype, patterns[name], step.lane_space,
-                                            name in reverse, context)
+                planes[name], read = _read(name, ttype, patterns[name], step.lane_space, context)
             mapping.update({leaf: read for leaf in found})
     out = Kernel(step.name, _swap(step.sinks, mapping), planes, kind=step.kind,
                  source_digest=step.source_digest, returns=step.returns)
     out.time, out.time_step, out.jump, out.group = step.time, step.time_step, step.jump, step.group
-    out.broadcast = {name: patterns[name] for name in leaves}
+    # the request and the sidecar state the lane axes each input varies along; a number has none
+    out.broadcast = {name: patterns[name] for name in leaves if patterns[name] is not BY_VALUE}
     if step is kernel:
         return out
     fused = default_steps(out)
@@ -247,24 +258,25 @@ def _index(kept: tuple, axes, context):
     return flat.node
 
 
-def _read(name: str, ttype, kept: tuple, axes, cell: bool, context) -> tuple:
+def _read(name: str, ttype, pattern, axes, context) -> tuple:
     """``(declaration, node)``: the plane ``name`` read where it varies, the
-    caller's compact buffer: a uniform when it varies along no lane axis (a
-    one-cell table when ``cell``), else a lookup. A flat table when it varies along the runtime axis (a runtime
-    extent is never in the C), else a table named by its kept axes. Made in ``context``."""
+    caller's compact buffer: a uniform for a number (:data:`BY_VALUE`), a one-cell table
+    for an array that varies along no lane axis, else a lookup. A flat table when
+    it varies along the runtime axis (a runtime extent is never in the C), else a
+    table named by its kept axes. Made in ``context``."""
     from .trace.decl import Plane, _axes
     from .trace.lane_axes import LaneAxes
     from .trace.value import TableRef
 
+    if pattern is BY_VALUE:
+        return Plane("uniform", ttype), _ir.leaf(context, "uniform", "uniform", name, ttype)
     width = ttype.shape[0] if ttype.shape else 0
     element = _ir.TensorType((), ttype.dtype)
-    held = [i for i, k in enumerate(kept) if k]
+    held = [i for i, k in enumerate(pattern) if k]
     if not held and not width:
-        if cell:
-            return Plane("table", element), TableRef(name, element).at(0).node
-        return Plane("uniform", ttype), _ir.leaf(context, "uniform", "uniform", name, ttype)
+        return Plane("table", element), TableRef(name, element).at(0).node
     lane = LaneAxes(axes)
-    if kept[0] and axes[0][1] is None:
+    if pattern[0] and axes[0][1] is None:
         if width:
             raise HawkError(
                 f"{name!r} is a Vector given broadcast but varying along the runtime "
@@ -302,123 +314,137 @@ def _swap(sinks, mapping: dict) -> tuple:
     return tuple(out)
 
 
-# -- Kernel.__call__'s door -------------------------------------------------- #
+# -- a call's planes: classified, then compacted for the twin ----------------- #
 
 
-def route(kernel, args: tuple, kwargs: dict) -> tuple:
-    """``(kernel to run, args, kwargs)`` for a call: a kernel that declares no
-    ``Grid``, or a call whose planes are all the exact shape, is returned as it
-    came; otherwise the twin of its pattern, with each broadcast plane
-    compacted to the caller's buffer."""
+def _pattern(value, kept, head: tuple):
+    """The pattern of ``value`` whose kept axes are ``kept``: :data:`BY_VALUE` for a bare number beside no head, else ``kept``."""
+    return BY_VALUE if isinstance(value, NUMBERS) and not any(kept) and not head else kept
+
+
+def classify(kernel, given: dict, where: str, extent=None) -> tuple:
+    """``(patterns, heads, extent)`` of the planes ``given`` (``{name: value}``): the pattern of each read-only per-lane input
+    given broadcast (none for the exact form), the component axes of each per-lane plane, and the runtime extent (the
+    label's, else that of the first lane-shaped plane, unless ``extent`` states it). A kernel that declares no ``Grid`` has no
+    patterns. A derivative is classified over its primal's inputs. Refuses a shape that does not broadcast, and a broadcast
+    shape on a plane that is written or masked, naming ``where``."""
     axes = kernel.lane_space
     if axes[0][0] is None:
-        return kernel, args, kwargs
-    source = getattr(kernel.sinks, "source", None)
-    if source is not None and hasattr(source, "lane_space"):
-        return _route_derived(kernel, source, args, kwargs)
-    order = [n for n, p in kernel.planes.items() if not getattr(p, "grid", None)]
-    given = dict(zip(order, args))
-    if given.keys() & kwargs.keys():
-        return kernel, args, kwargs
-    given.update(kwargs)
-    roles = {n: r for r, n in kernel.arg_spec}
-    walk = kernel.walk
-    where = f"{kernel.name}(...)"
+        return {}, {}, None
+    source = _primal(kernel)
+    roles = {n: r for r, n in source.arg_spec}
+    walk = source.walk
     heads = {n: _head(_ir.slot_type(walk, r, n), r) for n, r in roles.items() if r in READ_ROLES + EXACT_ROLES}
-    named = {n for n in given if getattr(kernel.planes.get(n), "dims", ())}
-    shaped = [(shape_of(given[n]), heads[n]) for n in heads if n in given and n not in named]
-    extent = runtime_extent(shaped, axes, kwargs.get(axes[0][0]))
+    named = {n for n in given if getattr(source.planes.get(n), "dims", ())}
+    if extent is None:
+        shaped = [(shape_of(given[n]), heads[n]) for n in heads if n in given and n not in named]
+        extent = runtime_extent(shaped, axes, given.get(axes[0][0]))
     patterns = {}
     for name, head in heads.items():
         if name in given and name not in named:
             kept = of(name, roles[name], given[name], head, axes, extent, where)
             if kept is not None:
-                patterns[name] = kept
+                patterns[name] = _pattern(given[name], kept, head)
+    return patterns, heads, extent
+
+
+def _tangent_patterns(kernel, patterns: dict, given: dict, heads: dict, extent, where: str) -> dict:
+    """``{tangent plane: its pattern}`` of the tangents in ``given`` of the broadcast inputs ``patterns`` of a forward derivative:
+    a tangent takes its input's pattern, and any other is refused."""
+    axes = kernel.lane_space
+    found = {}
+    for tangent, name in getattr(kernel.sinks, "tangents", {}).items():
+        if name not in patterns or tangent not in given:
+            continue
+        kept = of(name, "per_sample", given[tangent], heads[name], axes, extent, where)
+        got = None if kept is None else _pattern(given[tangent], kept, heads[name])
+        if got != patterns[name]:
+            raise HawkError(
+                f"{where}: argument {tangent!r} must vary along the axes of {name!r}, "
+                f"{_axes_text(patterns[name], axes)}, got {_axes_text(got, axes)}")
+        found[tangent] = got
+    return found
+
+
+def _followers(kernel, patterns: dict) -> dict:
+    """``{plane: the broadcast input it follows}``: each input of ``patterns`` itself, the tangent of one in a forward derivative
+    and the gradient of one in a reverse derivative, which bind in the input's own pattern."""
+    sinks = kernel.sinks
+    owner = {name: name for name in patterns}
+    owner |= {tangent: name for tangent, name in getattr(sinks, "tangents", {}).items() if name in patterns}
+    owner |= {bar: name for bar, name in getattr(sinks, "gradients", {}).items() if name in patterns}
+    return owner
+
+
+def _compacted(planes: dict, patterns: dict, heads: dict, owner: dict, where: str) -> dict:
+    """``planes`` with each broadcast input, tangent and gradient compacted to the buffer the twin binds."""
+    return {name: compact(name, value, patterns[owner[name]], heads[owner[name]], where) if name in owner else value
+            for name, value in planes.items()}
+
+
+def routed(kernel, given: dict, where: str) -> tuple:
+    """``(patterns, shown, planes)`` for a call of ``kernel`` over ``given``: ``({}, given, given)`` when every per-lane input
+    has the exact shape, else the broadcast patterns, the caller's own planes (``given`` and the gradients made) and the
+    planes the twin of the patterns binds, each broadcast input, tangent and gradient compacted to the caller's buffer.
+
+    A reverse derivative's omitted gradient of a broadcast input is made, zeroed, in the input's own shape. The gradient of a
+    Python number, which the twin reads by value, is refused."""
+    patterns, heads, extent = classify(kernel, given, where)
     if not patterns:
-        return kernel, args, kwargs
-    run = twin(kernel, patterns)
-    return run, (), {n: compact(n, v, patterns[n], heads[n], where) if n in patterns else v
-                     for n, v in given.items()}
+        return {}, given, given
+    _tangent_patterns(kernel, patterns, given, heads, extent, where)
+    shown = dict(given)
+    for bar, name in getattr(kernel.sinks, "gradients", {}).items():
+        if name not in patterns:
+            continue
+        if patterns[name] is BY_VALUE:
+            raise HawkError(f"{where}: argument {name!r} is a Python number, which the kernel reads by value, so it has "
+                            "no gradient; pass a one-element array")
+        if bar not in shown:
+            shown[bar] = _zeros_like(given[name])
+    return patterns, shown, _compacted(shown, patterns, heads, _followers(kernel, patterns), where)
 
 
-def _route_derived(kernel, source, args: tuple, kwargs: dict) -> tuple:
-    """:func:`route` for a derivative (``vjp``/``jvp``) of ``source``: broadcast
-    inputs are those of ``source``, so the twin is the derivative OF the
-    primal's twin (the reverse scatters into the compact shape, summing the
-    axes the input does not vary along, compensated). A tangent takes its
-    input's pattern; an omitted gradient is allocated in the input's own shape."""
-    derived, axes, where = kernel.sinks, kernel.lane_space, f"{kernel.name}(...)"
-    if args:
-        return kernel, args, kwargs
-    roles = {n: r for r, n in source.arg_spec}
-    walk = source.walk
-    heads = {n: _head(_ir.slot_type(walk, r, n), r) for n, r in roles.items() if r in READ_ROLES + EXACT_ROLES}
-    shaped = [(shape_of(kwargs[n]), h) for n, h in heads.items() if n in kwargs]
-    extent = runtime_extent(shaped, axes, kwargs.get(axes[0][0]))
-    patterns = {}
-    for name, head in heads.items():
-        if name in kwargs:
-            kept = of(name, roles[name], kwargs[name], head, axes, extent, where)
-            if kept is not None:
-                patterns[name] = kept
-    if not patterns:
-        return kernel, args, kwargs
-    reverse = tuple(patterns) if derived.kind == "vjp" else ()
-    key = ("derived", tuple(sorted(patterns.items())))
-    with kernel._lock:
-        run = kernel._twins.get(key)
-        if run is None:
-            run = kernel._twins[key] = type(kernel)(
-                kernel.name, derived.rebuild(twin(source, patterns, reverse)))
-            run.broadcast = dict(patterns)      # a twin: eagle's plan of it does not route again
-    given = dict(kwargs)
-    tangent_names = {primal: t for t, primal in derived.tangents.items()}
-    gradient_names = {x: g for g, x in derived.gradients.items()}
-    for name, kept in patterns.items():
-        given[name] = compact(name, kwargs[name], kept, heads[name], where, cell=name in reverse)
-        tangent = tangent_names.get(name)
-        if tangent in kwargs:
-            got = of(name, "per_sample", kwargs[tangent], heads[name], axes, extent, where)
-            if got != kept:
-                raise HawkError(
-                    f"{where}: argument {tangent!r} must vary along the axes of {name!r}, "
-                    f"{pattern_text(kept, axes)}, got {pattern_text(got, axes) if got else 'the exact shape'}")
-            given[tangent] = compact(tangent, kwargs[tangent], kept, heads[name], where)
-        bar = gradient_names.get(name)
-        if name in reverse and bar is not None and bar not in kwargs:
-            given[bar] = _zeros(kwargs[name], np_shape(kwargs[name]))
-    slots = {n for _role, n in run.arg_spec}    # a derivative linear in an input does not take it
-    return run, (), {n: v for n, v in given.items() if n in slots or n not in patterns}
+def _zeros_like(value):
+    """A zeroed array of the shape and dtype of the host array ``value``."""
+    import numpy as np
+
+    host = value if isinstance(value, np.ndarray) else np.from_dlpack(value)
+    return np.zeros(host.shape, dtype=host.dtype)
 
 
-def np_shape(value) -> tuple:
-    return shape_of(value) or ()
+def rebound(kernel, patterns: dict, held: dict, planes: dict, lanes: int, where: str) -> tuple:
+    """``(shown, planes)`` of a bound plan's rebind of ``planes`` over ``held``, the planes it has bound as the caller gave
+    them: ``shown`` is ``held`` with the new values in, ``planes`` the same compacted as the twin binds them.
+
+    A plane bound broadcast (and the tangent or gradient of one) keeps its pattern and is accepted as any shape of it or as the
+    compact buffer it holds; a plane bound in the exact shape stays exact; another pattern is refused by name. ``lanes`` is
+    the lane count of the plan, which settles the runtime extent."""
+    shown = {**held, **planes}
+    axes = kernel.lane_space
+    if axes[0][0] is None:
+        return shown, shown
+    extent = axes[0][1] if axes[0][1] is not None else lanes // prod(e for _l, e in axes[1:])
+    owner = _followers(kernel, patterns)
+    heads = classify(kernel, {}, where, extent)[1]
+    flat = {name: shape_of(compact(name, held[name], patterns[owner[name]], heads[owner[name]], where))
+            for name in planes if name in owner and name in held}
+    changed = {name: value for name, value in planes.items() if name not in flat or shape_of(value) != flat[name]}
+    fresh = classify(kernel, changed, where, extent)[0]
+    fresh |= _tangent_patterns(kernel, patterns | fresh, changed, heads, extent, where)
+    for name in changed:
+        if name in patterns or name in fresh:
+            check_rebind(name, patterns.get(owner.get(name)), fresh.get(name), axes)
+    return shown, _compacted(shown, patterns, heads, owner, where)
 
 
-def _zeros(like, shape: tuple):
-    """A zeroed array of ``shape`` where ``like`` lives, in its precision."""
-    import sys
-
-    import numpy
-
-    module = sys.modules.get(type(like).__module__.split(".")[0], numpy)
-    return getattr(module, "zeros", numpy.zeros)(shape, dtype=getattr(like, "dtype", float))
-
-
-def compact(name: str, value, kept: tuple, head: tuple, where: str, cell: bool = False):
-    """The caller's buffer as the twin binds it: a scalar for a uniform, else
-    the same memory with the size-1 axes dropped (flat when it varies along the
-    runtime axis). A buffer that is not C-contiguous would need a copy: refused.
-    A ``cell`` (the plane a reverse sums into) is a one-cell array, not a scalar."""
-    if not any(kept) and not head:
-        if cell:                                       # an array stays on its own device; a Python number is a host cell
-            if isinstance(value, (bool, int, float)):
-                import numpy
-
-                value = numpy.asarray(value)
-            return value.reshape(-1)[:1]
-        return value if isinstance(value, (bool, int, float)) else value.item()
-    if isinstance(value, (bool, int, float)):          # a Python number beside a runtime axis of one lane: the 0-d array's path
+def compact(name: str, value, pattern, head: tuple, where: str):
+    """The caller's buffer as the twin binds it: the number itself for a uniform (:data:`BY_VALUE`), else the same memory with
+    the size-1 axes dropped (flat when it varies along the runtime axis; a one-cell array when it varies along none). A buffer
+    that is not C-contiguous would need a copy: refused."""
+    if pattern is BY_VALUE:
+        return value
+    if isinstance(value, NUMBERS):     # a Python number beside a runtime axis of one lane: the 0-d array's path
         import numpy
 
         value = numpy.asarray(value)

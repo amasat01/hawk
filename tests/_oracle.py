@@ -100,7 +100,7 @@ def run(directory, kernel_name: str, n: int, sidecar: dict | None = None, **kw):
 
 
 def run_kernel(kernel, n: int, *, base: int = 0, count: int | None = None, **kw):
-    """The same, on an already-loaded :class:`hawk.runtime.HostKernel`."""
+    """The same, on an already-loaded :class:`hawk.runtime.LoadedKernel`."""
     bound = planes(kernel, n, kw)
     runtime.run(kernel, base=base, count=n if count is None else count,
                 n_samples=n, **bound)

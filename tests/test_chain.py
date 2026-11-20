@@ -126,12 +126,11 @@ def _to_device(planes: dict) -> dict:
     return {k: eagle.arrays.asarray(v, device="cuda:0") for k, v in planes.items()}
 
 
-def _deploy_run(kernel, where: str, dtype: str, planes: dict, *, staged: bool = False):
+def _deploy_run(kernel, where: str, dtype: str, planes: dict):
     """``kernel`` deployed for ``where`` and launched once over the planes it declares, which hold the result in place:
-    hawk's verbs on the host, eagle on the device. ``staged`` marks a chain the host may cut into stages, which
-    ``hawk.load`` does not yet load, so eagle launches it. Returns the deployed plan."""
+    hawk's verbs on the host (a chain the host cuts into stages included), eagle on the device. Returns the deployed plan."""
     held = {name: planes[name] for _, name in kernel.arg_spec}
-    if where == "host" and not staged:
+    if where == "host":
         plan = hawk.deploy(kernel, scalar_type=dtype)
         plan.run(**held)
         return plan
@@ -292,7 +291,7 @@ def _cut_values(target: str, dtype: str, n_members: int = 10, w: int = 16):
         _deploy_run(k, target, dtype, launched)
     chained = hawk.chain(*members, name="cut")
     held = planes({nm for _, nm in chained.arg_spec})
-    plan = _deploy_run(chained, target, dtype, held, staged=True)
+    plan = _deploy_run(chained, target, dtype, held)
     got, want, ref = back(held["out"]), back(launched["out"]), _fan_in_oracle(x, n_members, w)
     assert _oracle_ulps(got, ref, dtype) <= ORACLE_ULPS and _oracle_ulps(want, ref, dtype) <= ORACLE_ULPS
     print(f"cut chain vs launches {target} {dtype}: {_ulps(got, want, dtype):.1f} ulp")
@@ -331,7 +330,7 @@ def _guarded_run(kernel, target, dead, group_live=None):
         eagle.deploy(kernel, scalar_type="float64", targets=(target,))(**planes, active_map=live.map,
                                                                         active_count=live.count)
     else:
-        _deploy_run(kernel, target, "float64", planes, staged=True)
+        _deploy_run(kernel, target, "float64", planes)
     out = planes["out"]
     return np.asarray(out.get() if hasattr(out, "get") else out).copy()
 
@@ -420,12 +419,12 @@ def _back(a):
     return np.asarray(a.to("numpy") if hasattr(a, "to") else a)
 
 
-def _call(kernel, planes, where, dtype, *, staged=False):
+def _call(kernel, planes, where, dtype):
     names = [nm for _, nm in kernel.arg_spec]
     held = {nm: planes[nm].astype(dtype) for nm in names}
     if where == "cuda":
         held = _to_device(held)
-    _deploy_run(kernel, where, dtype, held, staged=staged)
+    _deploy_run(kernel, where, dtype, held)
     return {nm: _back(a) for nm, a in held.items()}
 
 
@@ -447,10 +446,10 @@ def _chain_derivative(case, direction, where, dtype):
     derive, got_name = (jvp, f"dot_{out}") if direction == "jvp" else (vjp, "bar_x")
     derived = derive(chained, wrt=("x",), primal_unit="0" * 64)
     mine, theirs = Kernel("dchain_d", derived), Kernel("ddag_d", derive(dag, wrt=("x",), primal_unit="0" * 64))
-    got, want = _call(mine, planes, where, dtype, staged=True)[got_name], _call(theirs, planes, where, dtype)[got_name]
+    got, want = _call(mine, planes, where, dtype)[got_name], _call(theirs, planes, where, dtype)[got_name]
     ref = tangent(x) if direction == "jvp" else (seed.astype(LD) * tangent(x)).sum(axis=0)
     def value(shift):
-        run = _call(chained, {**planes, "x": x.astype(np.float64) + shift}, "host", "float64", staged=True)
+        run = _call(chained, {**planes, "x": x.astype(np.float64) + shift}, "host", "float64")
         return run[out].astype(LD)
     h = 1e-6
     fd = (value(h) - value(-h)) / (2 * LD(h))

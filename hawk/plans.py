@@ -4,8 +4,11 @@
 """The verbs that plan, bind and launch a loaded host kernel, deploy a kernel, and move arrays in and out of it.
 
 A :class:`Plan` is a loaded kernel (:func:`hawk.load`) under a stated structure and partitioning; nothing is decided here
-about how it runs. :meth:`Plan.bind` checks the caller's planes exactly as :func:`hawk.run` does and returns a
-:class:`~hawk.runtime.BoundPlan`; :meth:`Plan.run` binds, launches once and returns the outputs. The tiles, threads and
+about how it runs. Every run form ends in :meth:`Plan.bound`: :meth:`Plan.bind` returns the
+:class:`~hawk.runtime.BoundPlan` to launch, :meth:`Plan.run` binds, launches once and returns the outputs, and calling the
+plan (``plan(x, a=3)``, which a kernel's own call ``k(x, a=3)`` is) does so with the kernel's own signature. A plan
+:func:`deploy` made keeps its kernel, so a per-lane input of a ``Grid`` kernel may be given broadcast: the plan builds, once
+per pattern, the kernel's twin (:mod:`hawk._broadcast`) and binds the caller's buffer compact. The tiles, threads and
 memory of a launch are the host library's.
 
 Only the host runtime is in this build: :data:`DeviceKernel` and a device target are refused by name.
@@ -14,15 +17,17 @@ Only the host runtime is in this build: :data:`DeviceKernel` and a device target
 from __future__ import annotations
 
 import hashlib
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
 import _osprey
 
-from . import ospreys
+from . import _broadcast, ospreys
 from .errors import HawkError
-from .runtime import BoundPlan, HostKernel, load, through_door
+from .runtime import BoundPlan, LoadedKernel, load, through_door
 from .targets import TARGETS, host_target
+from .trace.kernel import Kernel
 
 __all__ = ["DeviceKernel", "HostSerial", "HostTeam", "Partition", "Plan", "asarray", "banded_pack", "banded_unpack", "deploy", "plan", "synchronize", "to_numpy"]
 
@@ -73,23 +78,43 @@ class Partition:
         return cls(0, n_samples, n_samples)
 
 
+@dataclass(frozen=True)
+class _Deployed:
+    """What a plan built by :func:`deploy` keeps of its build: the traced ``kernel``, the ``settings`` it was deployed with
+    (which its twins are deployed with) and the ``bundle`` digest that names its unit to a derivative of it."""
+
+    kernel: Kernel
+    settings: dict
+    bundle: str
+
+
 class Plan:
     """A loaded kernel under a structure and a partitioning: what :func:`plan` and :func:`deploy` return.
 
     The sample count belongs to the planes, so the library's plan is made at :meth:`bind`, once the count is known.
     """
 
-    def __init__(self, kernel: HostKernel, structure: Structure, npartitions: int | None,
-                 partitions: tuple | None) -> None:
-        """Keep the stated structure and partitioning; ``npartitions`` and ``partitions`` are never both given."""
+    def __init__(self, kernel: LoadedKernel, structure: Structure, npartitions: int | None,
+                 partitions: tuple | None, *, deployed: _Deployed | None = None) -> None:
+        """Keep the stated structure and partitioning; ``npartitions`` and ``partitions`` are never both given. ``deployed``
+        is set by :func:`deploy` only: a plan over a loaded artifact has no source kernel."""
         self.kernel = kernel
         self.structure = structure
         self.npartitions = npartitions
         self.partitions = partitions
+        self._deployed = deployed
+        self._twins: dict = {}
+        self._lock = threading.Lock()
 
-    def _ranges(self, n_samples: int) -> dict:
+    def _ranges(self, n_samples: int, span: tuple | None = None) -> dict:
         """The partitioning in the host library's words for a plan over ``n_samples``: its ``part_base`` and
-        ``part_count``, its ``split_evenly``, or nothing (the whole range)."""
+        ``part_count``, its ``split_evenly``, or nothing (the whole range). ``span`` is ``(base, count)`` of one launch over
+        part of the range, which replaces the plan's own partitioning."""
+        if span is not None:
+            base, count = span
+            if self._is_partial(n_samples, span):
+                return {"part_base": [base], "part_count": [n_samples - base if count is None else count]}
+            return {}
         if self.partitions is not None:
             wrong = {p.n_samples for p in self.partitions if p.n_samples != n_samples}
             if wrong:
@@ -98,27 +123,72 @@ class Plan:
             return {"part_base": [p.base for p in self.partitions], "part_count": [p.count for p in self.partitions]}
         return {} if self.npartitions is None else {"split_evenly": self.npartitions}
 
-    def _is_partial(self, n_samples: int) -> bool:
+    def _is_partial(self, n_samples: int, span: tuple | None = None) -> bool:
         """Whether a launch covers less than the whole range in one piece."""
+        if span is not None:
+            base, count = span
+            return base != 0 or count not in (None, n_samples)
         if self.partitions is not None:
             return [(p.base, p.count) for p in self.partitions] != [(0, n_samples)]
         return self.npartitions not in (None, 1)
 
-    def _bound(self, arguments, n_samples, layout) -> BoundPlan:
-        """The plan over ``arguments``, bound; ``n_samples`` and ``layout`` as the caller stated them."""
+    def _twin(self, patterns: dict) -> Plan:
+        """The plan of the kernel's twin for ``patterns`` (:mod:`hawk._broadcast`), deployed with this plan's settings on the
+        first use of the pattern and kept; a repeat compiles nothing, the build being cached on disk."""
+        key = tuple(sorted(patterns.items()))
+        with self._lock:
+            held = self._twins.get(key)
+            if held is None:
+                twin = _broadcast.twin(self._deployed.kernel, patterns)
+                held = self._twins[key] = deploy(twin, **self._deployed.settings)
+        return held
+
+    def bound(self, planes: dict, *, n_samples: int | None = None, layout: str | None = None, keep: bool,
+              outputs: bool = False, running: bool = False, span: tuple | None = None) -> BoundPlan:
+        """Check ``planes`` and bind them: the one path every run form takes (:meth:`bind`, :meth:`run`, a call of the plan,
+        :func:`hawk.run`, a runner's bind).
+
+        A plan from :func:`deploy` first classifies the read-only per-lane inputs by shape: when one is given broadcast the
+        planes bind to that pattern's twin, compact. The checks are those of :meth:`~hawk.runtime.LoadedKernel.arguments`
+        (``keep``, ``outputs`` and ``running`` as there); ``span=(base, count)`` launches over part of the range.
+        """
+        deployed = self._deployed
+        plan, patterns, shown = self, {}, None
+        if deployed is not None:
+            patterns, shown, planes = _broadcast.routed(deployed.kernel, planes, deployed.kernel.name)
+            if patterns:
+                plan = self._twin(patterns)
+                taken = {name for _role, name in plan.kernel.arg_spec}     # a derivative linear in an input does not take it
+                planes = {name: value for name, value in planes.items() if name in taken or name not in patterns}
+        arguments = plan.kernel.arguments(planes, n_samples, layout, keep=keep, outputs=outputs, running=running,
+                                          shown=shown)
         n = arguments.n_samples
-        self.kernel.refuse_partial_stages(self._is_partial(n))
-        return BoundPlan(self.kernel, arguments, self.structure.code, self._ranges(n), n_samples=n_samples, layout=layout)
+        plan.kernel.refuse_partial_stages(plan._is_partial(n, span))
+        route = None if deployed is None else (deployed.kernel, patterns)
+        return BoundPlan(plan.kernel, arguments, plan.structure.code, plan._ranges(n, span), n_samples=n_samples,
+                         layout=layout, broadcast=route)
 
     def bind(self, /, *, n_samples: int | None = None, layout: str | None = None, **planes) -> BoundPlan:
         """Bind the caller's own planes by name and return the :class:`~hawk.runtime.BoundPlan` to launch.
 
         The checks are those of :func:`hawk.run`, which every argument failing at once is named in one refusal; the planes are
         the caller's memory, written in place, and an ``Index`` plane of another width than the kernel declares is refused
-        because a copy would go stale. ``n_samples`` (default: the count every per-sample plane agrees on) and ``layout``
-        are as in :func:`hawk.run`. ``self`` is positional-only so a plane may be named ``self``.
+        because a copy would go stale. A plan from :func:`deploy` takes a read-only per-lane input of a ``Grid`` kernel
+        broadcast (a scalar, axes of size 1, fewer axes) as the caller's own buffer, never copied; a plan made from a loaded
+        artifact refuses the shape by name. ``n_samples`` (default: the count every per-sample plane agrees on) and
+        ``layout`` are as in :func:`hawk.run`. ``self`` is positional-only so a plane may be named ``self``.
         """
-        return self._bound(self.kernel.arguments(planes, n_samples, layout, keep=True), n_samples, layout)
+        return self.bound(planes, n_samples=n_samples, layout=layout, keep=True)
+
+    def _outputs(self, planes: dict, n_samples: int | None, layout: str | None) -> dict:
+        """Bind ``planes``, launch once and return the outputs by name: the planes the kernel's sinks are, the ones the caller
+        left out made, zeroed, in the shape and dtype the kernel declares."""
+        bound = self.bound(planes, n_samples=n_samples, layout=layout, keep=False, outputs=True)
+        try:
+            bound.launch()
+            return {name: bound.planes[name] for name in self.kernel.output_names() if name in bound.planes}
+        finally:
+            bound.close()
 
     def run(self, /, *, n_samples: int | None = None, layout: str | None = None, returns: str | None = None, **planes):
         """Bind, launch once and return the outputs: the output plane itself for a kernel with one, else a ``dict`` of
@@ -131,28 +201,60 @@ class Plan:
         """
         if returns not in (None, "numpy"):
             raise HawkError(f"returns={returns!r}: 'numpy' is the one conversion this build has")
-        names = self.kernel.output_names()
-        if not names:
+        if not self.kernel.output_names():
             raise HawkError(f"{self.kernel.path.name}: this kernel declares no output plane, so run() has nothing to return")
-        bound = self._bound(self.kernel.arguments(planes, n_samples, layout, keep=False, outputs=True), n_samples, layout)
-        try:
-            bound.launch()
-            outputs = {name: bound.planes[name] for name in names if name in bound.planes}
-        finally:
-            bound.close()
+        outputs = self._outputs(planes, n_samples, layout)
         if returns == "numpy":
             outputs = {name: to_numpy(value) for name, value in outputs.items()}
         return next(iter(outputs.values())) if len(outputs) == 1 else outputs
 
+    def __call__(self, /, *args, **kwargs):
+        """Run the kernel once as a call to it, where the arrays live: ``plan(x, y, a=3)`` takes the planes in the order the
+        kernel declares them (a ``Grid`` declaration is no plane), the rest by name, and a runtime extent by its label.
 
-def bind_for_run(plan: Plan, planes: dict, n_samples: int | None = None, layout: str | None = None) -> BoundPlan:
-    """Bind ``planes`` for a plan that runs its samples to done (:func:`hawk.until_done`): the checks of :meth:`Plan.bind`,
-    and a ``terminated`` mask or an output the caller left out is made (all-false, zeroed) instead of refused."""
-    arguments = plan.kernel.arguments(planes, n_samples, layout, keep=False, outputs=True, running=True)
-    return plan._bound(arguments, n_samples, layout)
+        Returns what the kernel body returns, lane-shaped; a kernel that returns nothing gives its one output plane, or a
+        ``dict`` of them by name. An output left out is made, zeroed; an argument the kernel reads before it writes needs a
+        value. Only a plan from :func:`deploy` has the kernel's signature, and its inputs bind as in :meth:`bind`, broadcast
+        included; a plan made from a loaded artifact refuses the call by name.
+        """
+        deployed = self._deployed
+        if deployed is None:
+            raise HawkError(f"{self.kernel.path.name}: this plan was made from a loaded artifact, which carries no call "
+                            "signature; bind its planes by name with plan.bind(...) or plan.run(...)")
+        outputs = self._outputs(self._named(deployed.kernel, args, kwargs), None, None)
+        tree = deployed.kernel.returns
+        if tree is not None:
+            return _filled(tree, outputs)
+        return next(iter(outputs.values())) if len(outputs) == 1 else (outputs or None)
+
+    def _named(self, kernel: Kernel, args: tuple, kwargs: dict) -> dict:
+        """``{plane: value}`` of a call ``kernel(*args, **kwargs)``: ``args`` in the order the kernel declares its planes."""
+        order = [name for name, declared in kernel.planes.items() if not getattr(declared, "grid", None)]
+        if len(args) > len(order):
+            raise HawkError(f"{kernel.name}(): {len(args)} positional arguments, but the kernel declares "
+                            f"{len(order)} planes{'; pass them by name' if not order else ''}")
+        given = dict(zip(order, args))
+        twice = sorted(given.keys() & kwargs.keys())
+        if twice:
+            raise HawkError(f"{kernel.name}(): argument {twice[0]!r} is given both by position and by name")
+        planes = {**given, **kwargs}
+        prior = [m["name"] for m in self.kernel.declared.get("mutables") or () if m.get("prior") and m["name"] not in planes]
+        if prior:
+            raise HawkError(f"{kernel.name}(): {prior[0]!r} is updated from its previous value, so it needs an initial "
+                            f"value: pass {prior[0]}=...")
+        return planes
 
 
-def plan(loaded: HostKernel, structure: Structure = HostTeam, *, npartitions: int | None = None,
+def _filled(tree, outputs: dict):
+    """``tree`` (nested tuples, lists and dicts of plane names, or one name) with each name replaced by its output."""
+    if isinstance(tree, str):
+        return outputs[tree]
+    if isinstance(tree, dict):
+        return {key: _filled(value, outputs) for key, value in tree.items()}
+    return type(tree)(_filled(value, outputs) for value in tree)
+
+
+def plan(loaded: LoadedKernel, structure: Structure = HostTeam, *, npartitions: int | None = None,
          partitions=None) -> Plan:
     """Plan a loaded kernel (:func:`hawk.load`) under ``structure``: :data:`HostTeam` (default) or :data:`HostSerial`.
 
@@ -161,7 +263,7 @@ def plan(loaded: HostKernel, structure: Structure = HostTeam, *, npartitions: in
     """
     if isinstance(loaded, Plan):
         raise HawkError("hawk.plan takes a loaded kernel (hawk.load); a plan, deployed or not, already carries its structure")
-    if not isinstance(loaded, HostKernel):
+    if not isinstance(loaded, LoadedKernel):
         raise HawkError(f"hawk.plan takes a loaded kernel (hawk.load), got {type(loaded).__name__}")
     if not isinstance(structure, Structure):
         raise HawkError(f"structure={structure!r} is none of hawk.HostTeam, hawk.HostSerial, hawk.DeviceKernel")
@@ -185,7 +287,9 @@ def deploy(kernels, *, targets=None, scalar_type: str = "float64", cache_dir=Non
     A repeat deploy of an unchanged kernel compiles nothing (the build is cached under ``cache_dir``, default
     :func:`hawk.artifact.default_cache_dir`). ``targets`` defaults to the host; a device target is refused. ``scalar_type`` is
     ``"float64"`` or ``"float32"``; ``"banded"`` is a device type and is refused on the host. The plan runs under
-    :data:`HostTeam` and takes no ``structure=``: :func:`plan` over a loaded kernel is the call that states one.
+    :data:`HostTeam` and takes no ``structure=``: :func:`plan` over a loaded kernel is the call that states one. The plan keeps
+    the kernel and these settings: calling it runs the kernel (``k(...)`` is ``deploy(k)(...)``), and a per-lane input given
+    broadcast builds the kernel's twin for that shape, once, with the same settings.
 
     ``record=True`` builds every kernel recordable (:func:`hawk.until_done`, :func:`hawk.reverse`): in the same library as the
     taping twin that keeps ``window`` steps (default 16) and the vjp of its step. A recorded run takes that window, so it is
@@ -203,18 +307,34 @@ def deploy(kernels, *, targets=None, scalar_type: str = "float64", cache_dir=Non
     if window is not None and not record:
         raise HawkError("deploy: window= is the steps a recorded run keeps, so it goes with record=True")
     asked = (16 if window is None else window) if record else None
-    key = build_key(kernels, targets=ids, mode=scalar_type, record=asked)
+    settings = {"targets": ids, "scalar_type": scalar_type, "cache_dir": cache_dir, "contraction": contraction,
+                "record": record, "window": window}
+    primals = _primal_units(kernels, settings) or None
+    key = build_key(kernels, targets=ids, mode=scalar_type, record=asked, derivative=primals)
     directory = root / "deploy" / hashlib.sha256(key.encode()).hexdigest()
     bundle = build_bundle(kernels, directory, mode=scalar_type, targets=ids, cache_dir=cache_dir,
-                          settings=BuildSettings(contraction=contraction), record=asked)
+                          settings=BuildSettings(contraction=contraction), record=asked, derivative=primals)
     built = {artifact.name for artifact in bundle.artifacts}
     plans = []
     for kernel in kernels:
         if kernel.name not in built:
             raise HawkError(f"{kernel.name!r} builds as several units ({sorted(built)}); build it with hawk.build and "
                             "plan each unit of the bundle after hawk.load")
-        plans.append(Plan(load(bundle.directory, kernel.name), HostTeam, None, None))
+        plans.append(Plan(load(bundle.directory, kernel.name), HostTeam, None, None,
+                          deployed=_Deployed(kernel, settings, bundle.digest)))
     return plans[0] if single else tuple(plans)
+
+
+def _primal_units(kernels: list, settings: dict) -> dict:
+    """``{derivative: (primal name, primal unit)}`` for each derivative of ``kernels`` whose primal is not among them: the
+    primal is deployed first, in a bundle of its own, and its unit is what the derivative names."""
+    names = {kernel.name for kernel in kernels}
+    named = {}
+    for kernel in kernels:
+        primal = getattr(kernel.sinks, "source", None)
+        if isinstance(primal, Kernel) and primal.name not in names and kernel.sinks.primal_unit is None:
+            named[kernel.name] = (primal.name, deploy(primal, **settings)._deployed.bundle)
+    return named
 
 
 def _host_targets(targets) -> tuple:

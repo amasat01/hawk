@@ -309,8 +309,8 @@ def _bind_grid(sidecar: dict, arg_spec, arrays: dict, n_samples, per_sample_role
             shape = _broadcast.shape_of(out[name])
             kept = _broadcast.of(name, role, out[name], heads[name], axes, known, where, False)
             if kept is not None:
-                raise HawkError(f"{where}: " + _broadcast.dense_only(
-                    name, shape, kept, heads[name], axes))
+                raise HawkError(_broadcast.loaded_only(
+                    sidecar.get("kernel", "?"), name, shape, kept, heads[name], axes))
         if role not in per_sample_roles or role == "mat_in" or name not in out or len(axes) < 2:
             continue
         try:

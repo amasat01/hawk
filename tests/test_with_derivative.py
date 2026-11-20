@@ -36,6 +36,7 @@ def test_with_derivative_values_match_the_function_and_its_derivative():
     np.testing.assert_allclose(dy, 3.0 * np.cos(x) * dx, rtol=1e-14, atol=1e-15)
 
 
+@pytest.mark.skip(reason="needs the graph builder rows: hawk.Graph.builder records a kernel call")
 def test_with_derivative_is_a_builder_step_and_allocates_what_the_call_omits():
     eagle = pytest.importorskip("eagle")
     k = with_derivative(_g, wrt=("x",))

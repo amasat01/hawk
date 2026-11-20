@@ -1,7 +1,7 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""``hawk.runtime.run`` on ONE shared HostKernel is one atomic call.
+"""``hawk.runtime.run`` on ONE shared LoadedKernel is one atomic call.
 
 Two threads call ``run`` on the same kernel in lockstep, each with its own
 planes and its own by-value uniform, and every result is checked against a

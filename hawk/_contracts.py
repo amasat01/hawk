@@ -3,8 +3,7 @@
 
 """HAWK's OWN copies of the schema / aether-ABI / mirror-layout constants
 (the severance law this module satisfies, described below; the only
-runtime uses of raptor-core and eagle are ``Kernel.__call__`` and the
-source lifts in ``hawk/trace/kernel.py``).
+runtime use of raptor-core is the source lifts in ``hawk/trace/kernel.py``).
 
 HAWK's authoring/codegen/compile/emit path needs these values — they are stamped into
 every manifest/sidecar it writes and
