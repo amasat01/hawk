@@ -689,6 +689,10 @@ fn unit(out: &mut Out, unit: &UnitMeta) -> Result<String, Refusal> {
         ("device_ptx_isa", unit.device_ptx_isa.to_string()),
         ("reserved1", "0".into()),
         ("gemm", gemm_record),
+        // the record is of an unchecked unit: no EG_UNIT_CHECKED flag, and the header's absent value (-1) for the fault slot, which
+        // an omitted member would leave at 0, the number of a real slot
+        ("fault_slot", "-1".into()),
+        ("reserved2", "0".into()),
     ];
     Ok(out.record("eg_unit_meta", "meta", &members))
 }

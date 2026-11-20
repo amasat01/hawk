@@ -42,14 +42,14 @@ int ob_machine(rx_ctx* ctx, ob_backend* lib, const char* ask, char* buf, size_t 
 
 /* Builds one unit: runs the OSPREY's tool on the text under the instructions the request states, through the store under root (a
    folder; created when missing). unit is JSON (section 3). Answer: {"files": {"output": <path>}, "key": <hex>, "hit": bool,
-   "embed": null | <opaque record of a device image>, "figures": {...}, "report": {"argv": [...], "seconds": n, "elf": bool}}. A
+   "figures": {...}, "report": {"argv": [...], "seconds": n, "elf": bool}}. A
    second call for the same unit on the same machine runs no tool and answers "hit": true. */
 int ob_build(rx_ctx* ctx, ob_backend* lib, const char* unit, size_t n_unit, const char* root, char* buf,
     size_t cap, size_t* len);
 
 /* Links the library of a set: parts are the answers of ob_build, in order; the set text is the "set" member (a unit request, section
-   3, compiled with its own template and linked last); a part that carries an "embed" record gets its image assembled into an object
-   by the request's "embed" recipe and linked too. request is JSON: {"name": <file name>, "parts": [<ob_build answer>...],
+   3, compiled with its own template and linked last); each entry of "images" ({"image": <path>, "symbol", "size_symbol"}) is assembled into an object by the
+   request's "embed" recipe and linked too. request is JSON: {"name": <file name>, "parts": [<ob_build answer>...],
    "set": <unit>?, "link": {"linux": [argv...], "macos": [argv...]}, "embed": <recipe>?, "as": {...}?, "key_terms": [...]?}.
    Answer: {"library": <path>, "key": <hex>, "hit": bool, "report": {"argv": [...], "seconds": n}}. */
 int ob_link(rx_ctx* ctx, ob_backend* lib, const char* request, size_t n_request, const char* root, char* buf,
@@ -118,7 +118,7 @@ place that is a whole element of the template stands for one element per item), 
 `keep_source` (publish the source text beside the output; the answer's `files.source`), `source_suffix` (default `.cpp`), `output_suffix` (default `.o`), `figures` (the grammar of the figures to read from the tool's
 output; `ptxas_info` is the one that exists), `places` ({"{include:facts}": "<text>"} for a place the OSPREY fills itself),
 `as` ({"compiler": "host_compiler"}: the place `{compiler}` is the tool the table calls `host_compiler`; a link of a device OSPREY
-needs it), for a device image `embed` ({"symbol", "size_symbol"}), and `runtime` ({"options": [text with places...], "target": <image kind>, "headers": [tree names]}): the in-process compile used when the machine has no offline compiler (`stated.runtime` present); the unit's `template` is used when the tool exists. `figures` also knows `image_resources`: the register and frame figures read off an ELF image (no tool, no device).
+needs it), and `runtime` ({"options": [text with places...], "target": <image kind>, "headers": [tree names]}): the in-process compile used when the machine has no offline compiler (`stated.runtime` present); the unit's `template` is used when the tool exists. `figures` also knows `image_resources`: the register and frame figures read off an ELF image (no tool, no device).
 
 Places: `{<tool>}` for each tool of the table, `{source}`, `{output}` / `{object}`, `{depfile}`, `{include:<tree>}` (the served folder
 of the embedded tree of that name) and the request's own. A place nobody fills is refused by name (`bad_request`). The key covers the

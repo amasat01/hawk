@@ -214,7 +214,7 @@ fn the_runtime_compiler_states_its_own_label_and_options() {
 }
 
 /// A device unit built through the door with a fake device compiler (proven against fakes, not a real nvcc): the machine states
-/// the compiler it found, the build writes the image the facts name, publishes it with the record the host link takes back, states
+/// the compiler it found, the build writes the image the facts name, publishes it with the recipe the host link takes back, states
 /// the figures the compiler reported, and a second build runs no compiler.
 #[test]
 fn a_device_unit_is_built_through_the_door_with_the_found_compiler_and_a_second_build_runs_nothing()
@@ -275,15 +275,10 @@ fn a_device_unit_is_built_through_the_door_with_the_found_compiler_and_a_second_
         .map(|(k, _)| k.as_str())
         .collect();
     assert_eq!(entries, ["k"]);
-    let embed = answer.get("embed").unwrap();
-    assert_eq!(embed.get("symbol").and_then(J::str), Some("k__image"));
-    assert!(answer
-        .get("link_recipe")
-        .unwrap()
-        .get("embed")
-        .unwrap()
-        .get("source")
-        .is_some());
+    // the link recipe names the unit the image belongs to and carries the recipe that embeds it
+    let recipe = answer.get("link_recipe").unwrap();
+    assert_eq!(recipe.get("unit").and_then(J::str), Some("k"));
+    assert!(recipe.get("embed").unwrap().get("source").is_some());
     let again =
         json::parse(&tool::build(&osprey_cuda_lib::Cuda, &request, &root).unwrap()).unwrap();
     assert!(matches!(again.get("hit"), Some(J::Bool(true))));

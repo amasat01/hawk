@@ -280,12 +280,12 @@ def run(done, o, raises, folders, header_abi, make_nodes):
         stated = answered["stated"]
         assert "compiler" in stated["tools"] or "runtime" in stated, stated
         done.append("end to end: cuda machine states the device tool it found")
-        # with a device tool, a device unit is built: its image and the record the host link takes
+        # with a device tool, a device unit is built: its image and the recipe the host link takes
         unit_request = {"name": "k", "text": "__global__ void k() {}", "machine": answered}
         built = json.loads(c.backend_build(cuda, json.dumps(unit_request), root))
         assert built["artifact"] in ("k.ptx", "k.cubin"), built["artifact"]
-        assert built["embed"]["symbol"] == "k__image", built["embed"]
-        done.append("end to end: cuda build writes " + built["artifact"] + " with its embed record")
+        assert built["link_recipe"]["unit"] == "k", built["link_recipe"]
+        done.append("end to end: cuda build writes " + built["artifact"] + " with its link recipe")
     else:
         assert "HAWK_NVCC" in answered["tools_absent"], answered
         refused_unit = {"name": "k", "text": "int x;", "machine": answered}

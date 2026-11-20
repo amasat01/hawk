@@ -11,12 +11,16 @@
  * library that states no runtime (it exports no eg_ function) refuses with NotWritten. The backend
  * must stay open while its Doors and their handles live. The interpreter lock stays held during
  * every call: the deleter of a DLPack tensor, which the door runs on the calling thread, may need
- * it. */
+ * it, and so does a host node's Python callable, which the door also runs on the calling thread. */
 #include "module.h"
 
 #include "eagle/door/eg_door.h"
+#include "eagle/door/eg_unit_meta.h"
 #include "plugin/dlpack.h"
 #include <string.h>
+
+/* A function taking keywords, as the method table wants it. */
+#define KEYWORD_CALL(f) ((PyCFunction)(void (*)(void))(f))
 
 /* Every function of eg_door.h, once: the check of the generator counts them against the header. */
 #define DOOR_CALLS(X)                                                                              \
@@ -74,7 +78,10 @@
     X(eg_fft_free)                                                                                 \
     X(eg_gemm_new)                                                                                 \
     X(eg_gemm_run)                                                                                 \
-    X(eg_gemm_free)
+    X(eg_gemm_free)                                                                                \
+    X(eg_host_node_new)                                                                            \
+    X(eg_host_node_free)                                                                           \
+    X(eg_host_call)
 
 /* The door's functions of one opened library, typed by their declarations in the header. */
 typedef struct {
@@ -86,6 +93,9 @@ typedef struct {
 typedef struct {
     PyObject_HEAD DoorFunctions fn;
     eg_ctx* ctx; /* NULL once the context is freed */
+    /* The exception a host node's Python callable raised (type, value, traceback), kept for the
+     * FAULT the door answers for it; all NULL when none is kept. */
+    PyObject *kept_type, *kept_value, *kept_traceback;
 } Door;
 
 typedef enum {
@@ -95,10 +105,11 @@ typedef enum {
     KIND_RUNNER,
     KIND_GRAPH,
     KIND_FFT,
-    KIND_GEMM
+    KIND_GEMM,
+    KIND_HOST_NODE
 } Kind;
 static const char* const kind_names[]
-    = { "unit", "plane", "plan", "runner", "graph", "fft", "gemm" };
+    = { "unit", "plane", "plan", "runner", "graph", "fft", "gemm", "host_node" };
 
 /* A handle the door made, with the Door that made it; ptr is NULL once the handle is freed. */
 typedef struct {
@@ -117,9 +128,20 @@ static const char DLPACK_NAME[] = "dltensor_versioned";
 
 /* ---- statuses ------------------------------------------------------------------------------ */
 
-/* Raises the exception of a non-OK status, carrying the reason the door stored in the context. */
+/* Raises the exception of a non-OK status, carrying the reason the door stored in the context
+ * (or, for the FAULT of a failed host node, the exception its callable raised). */
 static void door_raise(Door* d, eg_status st)
 {
+    if (st == EG_FAULT && d->kept_type) {
+        /* the FAULT is a host node's callable failing: the caller gets the callable's own exception
+         */
+        PyErr_Restore(d->kept_type, d->kept_value, d->kept_traceback);
+        d->kept_type = d->kept_value = d->kept_traceback = NULL;
+        return;
+    }
+    Py_CLEAR(d->kept_type);
+    Py_CLEAR(d->kept_value);
+    Py_CLEAR(d->kept_traceback);
     size_t len = 0;
     char* text = NULL;
     if (d->fn.eg_error(d->ctx, NULL, 0, &len) == EG_OK && len > 0) {
@@ -212,6 +234,8 @@ static eg_status handle_release(Door* d, Kind kind, void* ptr)
         return d->fn.eg_graph_free(d->ctx, ptr);
     case KIND_FFT:
         return d->fn.eg_fft_free(d->ctx, ptr);
+    case KIND_HOST_NODE:
+        return d->fn.eg_host_node_free(d->ctx, ptr);
     default:
         return d->fn.eg_gemm_free(d->ctx, ptr);
     }
@@ -254,6 +278,11 @@ static PyObject* m_runner_free(PyObject* self, PyObject* args)
 static PyObject* m_graph_free(PyObject* self, PyObject* args)
 {
     return handle_free(self, args, KIND_GRAPH);
+}
+
+static PyObject* m_host_node_free(PyObject* self, PyObject* args)
+{
+    return handle_free(self, args, KIND_HOST_NODE);
 }
 
 /* ---- argument conversion ------------------------------------------------------------------- */
@@ -487,6 +516,9 @@ static void Door_dealloc(PyObject* o)
     Door* d         = (Door*)o;
     if (d->ctx)
         d->fn.eg_ctx_free(d->ctx);
+    Py_XDECREF(d->kept_type);
+    Py_XDECREF(d->kept_value);
+    Py_XDECREF(d->kept_traceback);
     ((freefunc)PyType_GetSlot(t, Py_tp_free))(o);
     Py_DECREF((PyObject*)t);
 }
@@ -1416,10 +1448,16 @@ static PyObject* m_device_props(PyObject* self, PyObject* args)
         return NULL;
     if (door_check(d, d->fn.eg_device_props(d->ctx, device, &p)) < 0)
         return NULL;
-    return Py_BuildValue("{s:i,s:i,s:i,s:i,s:i,s:i,s:L,s:L}", "cc_major", p.cc_major, "cc_minor",
-        p.cc_minor, "sm_count", p.sm_count, "warp_size", p.warp_size, "regs_per_sm", p.regs_per_sm,
-        "regs_per_block", p.regs_per_block, "shared_mem_per_block",
-        (long long)p.shared_mem_per_block, "shared_mem_per_sm", (long long)p.shared_mem_per_sm);
+    return Py_BuildValue(
+        "{s:i,s:i,s:i,s:i,s:i,s:i,s:L,s:L,s:s,s:i,s:i,s:i,s:d,s:d,s:d,s:d,s:d,s:d}", "cc_major",
+        p.cc_major, "cc_minor", p.cc_minor, "sm_count", p.sm_count, "warp_size", p.warp_size,
+        "regs_per_sm", p.regs_per_sm, "regs_per_block", p.regs_per_block, "shared_mem_per_block",
+        (long long)p.shared_mem_per_block, "shared_mem_per_sm", (long long)p.shared_mem_per_sm,
+        "name", p.name, "clock_rate_khz", p.clock_rate_khz, "memory_clock_rate_khz",
+        p.memory_clock_rate_khz, "memory_bus_width_bits", p.memory_bus_width_bits,
+        "peak_bytes_per_s", p.peak_bytes_per_s, "peak_flops_sp", p.peak_flops_sp, "peak_flops_dp",
+        p.peak_flops_dp, "fp64_ratio", p.fp64_ratio, "ridge_flops_per_byte_sp",
+        p.ridge_flops_per_byte_sp, "ridge_flops_per_byte_dp", p.ridge_flops_per_byte_dp);
 }
 
 static PyObject* m_stream_use(PyObject* self, PyObject* args)
@@ -1504,6 +1542,303 @@ static PyObject* m_plane_dlpack(PyObject* self, PyObject* args)
     if (!capsule)
         tensor->deleter(tensor);
     return capsule;
+}
+
+/* ---- host nodes ---------------------------------------------------------------------------- */
+
+/* A host node's callables, handed to the door as the node's `user`. The door runs them on the
+ * thread that called it, which holds the interpreter lock (this file never releases it), and
+ * drops the node, so runs `release`, on any thread. Plain malloc memory: `release` may run
+ * where PyMem is not usable until the lock is taken. */
+typedef struct {
+    PyObject* fn;   /* fn(views) */
+    PyObject* vjp;  /* vjp(primals, adjoints_in, adjoints_out), or NULL */
+    PyObject* name; /* the node's name, for the refusal of a stale view */
+    Door* door;     /* where a failure of a callable is kept; not owned */
+} HostNode;
+
+/* A borrowed DLPack tensor of a plane, as the object a callable receives. It owns no memory and
+ * is valid only while the callable runs: afterwards `tensor` is NULL and every use is refused. */
+typedef struct {
+    PyObject_HEAD struct DLManagedTensorVersioned* tensor;
+    PyObject* node_name;
+} HostView;
+
+static PyTypeObject* host_view_type = NULL;
+
+/* The deleter of the copy a `__dlpack__` call hands out: the copy is the whole allocation, and the
+ * borrowed tensor it was made from is never touched. */
+static void host_view_copy_free(struct DLManagedTensorVersioned* copy)
+{
+    free(copy);
+}
+
+/* The view as an exported DLPack 1.0 capsule: a copy of the borrowed tensor, shape and strides
+ * included, that the consumer frees through its own deleter. */
+static PyObject* HostView_dlpack(PyObject* self, PyObject* args, PyObject* kw)
+{
+    static char* names[] = { "stream", "max_version", "dl_device", "copy", NULL };
+    HostView* v          = (HostView*)self;
+    PyObject *stream = Py_None, *max_version = Py_None, *dl_device = Py_None, *copy = Py_None;
+    if (!PyArg_ParseTupleAndKeywords(
+            args, kw, "|$OOOO", names, &stream, &max_version, &dl_device, &copy))
+        return NULL;
+    if (!v->tensor) {
+        PyErr_Format(PyExc_ValueError,
+            "host node %S: this view is valid only during the call of the node's function",
+            v->node_name);
+        return NULL;
+    }
+    int major = 0, minor = 0;
+    if (max_version == Py_None || !PyArg_ParseTuple(max_version, "ii", &major, &minor)
+        || major < 1) {
+        if (!PyErr_Occurred())
+            PyErr_SetString(PyExc_BufferError, "a host node view is exported as DLPack 1.0 only");
+        return NULL;
+    }
+    const DLTensor* t = &v->tensor->dl_tensor;
+    if (dl_device != Py_None) {
+        int type, id;
+        if (!PyArg_ParseTuple(dl_device, "ii", &type, &id))
+            return NULL;
+        if (type != (int)t->device.device_type || id != t->device.device_id) {
+            PyErr_SetString(PyExc_BufferError, "a host node view cannot move to another device");
+            return NULL;
+        }
+    }
+    if (copy == Py_True) {
+        PyErr_SetString(PyExc_BufferError, "a host node view is lent, never copied");
+        return NULL;
+    }
+    size_t dims                          = (size_t)t->ndim * (t->strides ? 2 : 1);
+    struct DLManagedTensorVersioned* out = malloc(sizeof *out + dims * sizeof(int64_t));
+    if (!out)
+        return PyErr_NoMemory();
+    *out             = *v->tensor;
+    out->manager_ctx = NULL;
+    out->deleter     = host_view_copy_free;
+    int64_t* axes    = (int64_t*)(out + 1);
+    memcpy(axes, t->shape, (size_t)t->ndim * sizeof(int64_t));
+    out->dl_tensor.shape = axes;
+    if (t->strides) {
+        memcpy(axes + t->ndim, t->strides, (size_t)t->ndim * sizeof(int64_t));
+        out->dl_tensor.strides = axes + t->ndim;
+    }
+    PyObject* capsule = PyCapsule_New(out, DLPACK_NAME, dlpack_capsule_destructor);
+    if (!capsule)
+        free(out);
+    (void)stream;
+    return capsule;
+}
+
+static PyObject* HostView_device(PyObject* self, PyObject* unused)
+{
+    (void)unused;
+    HostView* v = (HostView*)self;
+    if (!v->tensor) {
+        PyErr_Format(PyExc_ValueError,
+            "host node %S: this view is valid only during the call of the node's function",
+            v->node_name);
+        return NULL;
+    }
+    return Py_BuildValue("(ii)", (int)v->tensor->dl_tensor.device.device_type,
+        (int)v->tensor->dl_tensor.device.device_id);
+}
+
+static PyMethodDef host_view_methods[] = {
+    { "__dlpack__", KEYWORD_CALL(HostView_dlpack), METH_VARARGS | METH_KEYWORDS, NULL },
+    { "__dlpack_device__", HostView_device, METH_NOARGS, NULL },
+    { NULL, NULL, 0, NULL },
+};
+
+static void HostView_dealloc(PyObject* o)
+{
+    PyTypeObject* t = Py_TYPE(o);
+    Py_XDECREF(((HostView*)o)->node_name);
+    ((freefunc)PyType_GetSlot(t, Py_tp_free))(o);
+    Py_DECREF((PyObject*)t);
+}
+
+static PyType_Slot host_view_slots[] = { { Py_tp_dealloc, (void*)HostView_dealloc },
+    { Py_tp_methods, host_view_methods }, { 0, 0 } };
+static PyType_Spec host_view_spec    = { "_osprey.HostView", sizeof(HostView), 0,
+    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_IMMUTABLETYPE | Py_TPFLAGS_DISALLOW_INSTANTIATION,
+    host_view_slots };
+
+/* The list of the views of `n` borrowed tensors (None for a NULL entry); every view made is also
+ * appended to `made`, which the caller invalidates after the call. */
+static PyObject* host_view_list(
+    HostNode* node, int32_t n, struct DLManagedTensorVersioned* const* tensors, PyObject* made)
+{
+    PyObject* list = PyList_New(n);
+    for (int32_t i = 0; list && i < n; i++) {
+        PyObject* item = Py_None;
+        Py_INCREF(item);
+        if (tensors[i]) {
+            Py_DECREF(item);
+            HostView* v = (HostView*)PyType_GenericAlloc(host_view_type, 0);
+            item        = (PyObject*)v;
+            if (v) {
+                v->tensor = tensors[i];
+                Py_INCREF(node->name);
+                v->node_name = node->name;
+                if (PyList_Append(made, item) < 0)
+                    Py_CLEAR(item);
+            }
+        }
+        if (!item || PyList_SetItem(list, i, item) < 0)
+            Py_CLEAR(list);
+    }
+    return list;
+}
+
+/* Calls `callable` with `lists` (each a list of n borrowed tensors, or NULL entries) as views,
+ * under the interpreter lock; the views are invalidated afterwards. Zero when it returned; else 1,
+ * with the exception it raised kept on the node's Door for the FAULT the door answers. */
+static int32_t host_call_python(HostNode* node, PyObject* callable, int32_t n,
+    struct DLManagedTensorVersioned* const* const* lists, int n_lists)
+{
+    PyGILState_STATE gil = PyGILState_Ensure();
+    PyObject* made       = PyList_New(0);
+    PyObject* call_args  = PyTuple_New(n_lists);
+    for (int i = 0; made && call_args && i < n_lists; i++) {
+        PyObject* list = host_view_list(node, n, lists[i], made);
+        if (!list)
+            Py_CLEAR(call_args);
+        else
+            PyTuple_SetItem(call_args, i, list);
+    }
+    PyObject* result = call_args ? PyObject_CallObject(callable, call_args) : NULL;
+    for (Py_ssize_t i = 0; made && i < PyList_Size(made); i++)
+        ((HostView*)PyList_GetItem(made, i))->tensor = NULL;
+    Py_XDECREF(made);
+    Py_XDECREF(call_args);
+    int32_t status = 0;
+    if (!result) {
+        Door* d = node->door;
+        Py_CLEAR(d->kept_type);
+        Py_CLEAR(d->kept_value);
+        Py_CLEAR(d->kept_traceback);
+        /* PyErr_Fetch is deprecated from 3.12 and its replacement is not in the stable ABI of
+         * 3.9, the floor of this extension; the triple is restored unchanged by door_raise. */
+        PyErr_Fetch(&d->kept_type, &d->kept_value, &d->kept_traceback);
+        status = 1;
+    }
+    Py_XDECREF(result);
+    PyGILState_Release(gil);
+    return status;
+}
+
+static int32_t host_fn_trampoline(
+    void* user, int32_t n, struct DLManagedTensorVersioned* const* planes)
+{
+    HostNode* node = user;
+    return host_call_python(node, node->fn, n, &planes, 1);
+}
+
+static int32_t host_vjp_trampoline(void* user, int32_t n,
+    struct DLManagedTensorVersioned* const* primals,
+    struct DLManagedTensorVersioned* const* adjoints_in,
+    struct DLManagedTensorVersioned* const* adjoints_out)
+{
+    HostNode* node                                         = user;
+    struct DLManagedTensorVersioned* const* const lists[3] = { primals, adjoints_in, adjoints_out };
+    return host_call_python(node, node->vjp, n, lists, 3);
+}
+
+/* Drops the node's references to its callables, once, when the door drops its last reference to
+ * the node: at a free, or at the end of the last graph that recorded it, on whatever thread. */
+static void host_release_trampoline(void* user)
+{
+    HostNode* node       = user;
+    PyGILState_STATE gil = PyGILState_Ensure();
+    Py_DECREF(node->fn);
+    Py_XDECREF(node->vjp);
+    Py_DECREF(node->name);
+    PyGILState_Release(gil);
+    free(node);
+}
+
+/* host_node(name, fn, vjp=None): a node that runs the Python callable `fn(views)` where a launch
+ * would run (`views`: a list with one view per plane declared at host_call), and, when `vjp` is
+ * given, reverses through it as `vjp(primals, adjoints_in, adjoints_out)` (three such lists, an
+ * entry None where the door gives none). A view is a DLPack producer valid only during the call. */
+static PyObject* m_host_node(PyObject* self, PyObject* args, PyObject* kw)
+{
+    static char* names[] = { "name", "fn", "vjp", NULL };
+    Door* d              = (Door*)self;
+    const char* text;
+    PyObject *fn, *vjp = Py_None;
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "sO|O", names, &text, &fn, &vjp) || !door_ready(d))
+        return NULL;
+    if (!PyCallable_Check(fn) || (vjp != Py_None && !PyCallable_Check(vjp))) {
+        PyErr_SetString(PyExc_TypeError, "host_node: fn and vjp must be callable");
+        return NULL;
+    }
+    PyObject* name = PyUnicode_FromString(text);
+    HostNode* node = name ? calloc(1, sizeof *node) : NULL;
+    if (name && !node) {
+        Py_DECREF(name);
+        return PyErr_NoMemory();
+    }
+    if (!node)
+        return NULL;
+    node->fn                      = fn;
+    node->vjp                     = vjp == Py_None ? NULL : vjp;
+    node->name                    = name;
+    node->door                    = d;
+    struct eg_host_node_desc desc = { .struct_size = sizeof desc,
+        .name                                      = text,
+        .fn                                        = host_fn_trampoline,
+        .vjp                                       = node->vjp ? host_vjp_trampoline : NULL,
+        .user                                      = node,
+        .release                                   = host_release_trampoline };
+    eg_host_node* made            = NULL;
+    if (door_check(d, d->fn.eg_host_node_new(d->ctx, &desc, &made)) < 0) {
+        Py_DECREF(name);
+        free(node);
+        return NULL;
+    }
+    Py_INCREF(node->fn);
+    Py_XINCREF(node->vjp);
+    PyObject* handle = handle_make(d, KIND_HOST_NODE, made);
+    if (!handle)
+        d->fn.eg_host_node_free(d->ctx, made);
+    return handle;
+}
+
+/* host_call(node, planes, access): runs the node now, or records it inside a recording; `access`
+ * has one entry per plane: EG_ACCESS_READ, EG_ACCESS_WRITE, or both added. A callable that raised
+ * leaves its own exception as the result. */
+static PyObject* m_host_call(PyObject* self, PyObject* args)
+{
+    Door* d = (Door*)self;
+    PyObject *onode, *oplanes, *oaccess;
+    void* node;
+    void** planes = NULL;
+    void* access  = NULL;
+    Py_ssize_t n_planes, n_access;
+    PyObject* res = NULL;
+    if (!PyArg_ParseTuple(args, "OOO", &onode, &oplanes, &oaccess) || !door_ready(d)
+        || handle_ptr(d, onode, KIND_HOST_NODE, &node) < 0
+        || seq_handles(d, oplanes, KIND_PLANE, &planes, &n_planes) < 0
+        || seq_ints(oaccess, sizeof(uint32_t), &access, &n_access) < 0)
+        goto done;
+    if (n_planes != n_access) {
+        PyErr_SetString(PyExc_ValueError, "host_call: planes and access differ in length");
+        goto done;
+    }
+    if (door_check(d,
+            d->fn.eg_host_call(
+                d->ctx, node, (int32_t)n_planes, (eg_plane* const*)planes, (const uint32_t*)access))
+        == 0) {
+        Py_INCREF(Py_None);
+        res = Py_None;
+    }
+done:
+    PyMem_Free(planes);
+    PyMem_Free(access);
+    return res;
 }
 
 /* banded_pack(values): the 8-byte banded cell (an int) of each float64. */
@@ -1827,7 +2162,6 @@ static PyObject* m_gemm_free(PyObject* self, PyObject* args)
 
 /* ---- the types and the module -------------------------------------------------------------- */
 
-#define KEYWORD_CALL(f) ((PyCFunction)(void (*)(void))(f))
 
 static PyMethodDef door_methods[] = {
     { "ctx_free", m_ctx_free, METH_VARARGS, NULL },
@@ -1865,6 +2199,9 @@ static PyMethodDef door_methods[] = {
     { "graph_launch", m_graph_launch, METH_VARARGS, NULL },
     { "graph_reverse", KEYWORD_CALL(m_graph_reverse), METH_VARARGS | METH_KEYWORDS, NULL },
     { "graph_describe", m_graph_describe, METH_VARARGS, NULL },
+    { "host_node", KEYWORD_CALL(m_host_node), METH_VARARGS | METH_KEYWORDS, NULL },
+    { "host_node_free", m_host_node_free, METH_VARARGS, NULL },
+    { "host_call", m_host_call, METH_VARARGS, NULL },
     { "graph_free", m_graph_free, METH_VARARGS, NULL },
     { "device_count", m_device_count, METH_VARARGS, NULL },
     { "device_props", m_device_props, METH_VARARGS, NULL },
@@ -1994,6 +2331,9 @@ static PyType_Spec handle_spec    = { "_osprey.Handle", sizeof(Handle), 0,
     X(EG_GNODE_BRANCH)                                                                             \
     X(EG_GNODE_JOIN)                                                                               \
     X(EG_GNODE_WAIT)                                                                               \
+    X(EG_GNODE_HOST)                                                                               \
+    X(EG_ACCESS_READ)                                                                              \
+    X(EG_ACCESS_WRITE)                                                                             \
     X(EG_GEDGE_RAW)                                                                                \
     X(EG_GEDGE_WAR)                                                                                \
     X(EG_GEDGE_WAW)                                                                                \
@@ -2013,6 +2353,8 @@ static PyType_Spec handle_spec    = { "_osprey.Handle", sizeof(Handle), 0,
     X(EG_MEM_PINNED)                                                                               \
     X(EG_MEM_DEVICE)                                                                               \
     X(EG_PLANE_ZERO)                                                                               \
+    X(EG_UNIT_CHECKED)                                                                             \
+    X(EG_ENTRY_CHECKED)                                                                            \
     X(EG_ENTRY_DEVICE)                                                                             \
     X(EG_ENTRY_PERSIST)                                                                            \
     X(EG_FFT_C2C)                                                                                  \
@@ -2046,6 +2388,9 @@ int osprey_add_door(PyObject* module)
         Py_XDECREF(handle);
         return -1;
     }
+    host_view_type = (PyTypeObject*)PyType_FromSpec(&host_view_spec);
+    if (!host_view_type)
+        return -1;
     handle_type = (PyTypeObject*)handle;
     Py_INCREF(handle);
     if (PyModule_AddObject(module, "Door", door) < 0

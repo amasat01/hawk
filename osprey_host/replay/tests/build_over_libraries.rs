@@ -21,24 +21,9 @@ const DEVICE_COMPILER: &str =
 /// The host compiler identity the host facts are asked with.
 const HOST_COMPILER: &str = "/usr/bin/c++ || Apple clang version 21.0.0 || 0";
 
-/// The kernel `name` of the working-set oracle in a fresh context, and the handle of its first sink.
-fn kernel_named(name: &str) -> (*mut Ctx, u32) {
-    let oracle = json::parse(
-        &std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../raptor/rs/wings/tests/data/working_set_oracle.json"
-        ))
-        .unwrap(),
-    )
-    .unwrap();
-    let case = oracle
-        .get("cases")
-        .unwrap()
-        .arr()
-        .iter()
-        .find(|case| case.get("name").and_then(J::str) == Some(name))
-        .unwrap();
-    let text = case.get("dump").and_then(J::str).unwrap();
+/// A fresh context holding the nodes of the dump `text`, and the handle of the node loaded last (the sink of a kernel written as
+/// one statement).
+fn kernel_dumped(text: &str) -> (*mut Ctx, u32, Vec<u32>) {
     let ctx = rx_ctx_new();
     // SAFETY: `ctx` is the live context just made.
     assert_eq!(
@@ -58,6 +43,28 @@ fn kernel_named(name: &str) -> (*mut Ctx, u32) {
         )
     };
     assert_eq!(status, RX_OK);
+    handles.truncate(n);
+    (ctx, handles[n - 1], handles)
+}
+
+/// The kernel `name` of the working-set oracle in a fresh context, and the handle of its first sink.
+fn kernel_named(name: &str) -> (*mut Ctx, u32) {
+    let oracle = json::parse(
+        &std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../raptor/rs/wings/tests/data/working_set_oracle.json"
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    let case = oracle
+        .get("cases")
+        .unwrap()
+        .arr()
+        .iter()
+        .find(|case| case.get("name").and_then(J::str) == Some(name))
+        .unwrap();
+    let (ctx, _, handles) = kernel_dumped(case.get("dump").and_then(J::str).unwrap());
     let sink = handles[case.get("sinks").unwrap().arr()[0].int() as usize];
     (ctx, sink)
 }
@@ -518,5 +525,78 @@ fn no_unit_the_lowering_emits_is_gathered_without_a_keep_mask_of_one_flag_per_la
         }
         // SAFETY: `ctx` is the live context `kernel_named` made and nothing refers to it after this.
         unsafe { rx_ctx_free(ctx) };
+    }
+}
+
+/// Oracle: the requests hawk sends for three kernels over a grid of two lane axes (a: 3, b: 4), captured with their dumps in
+/// `tests/data/broadcast_table_cases.json`: `bcast_two` reads a table of scalars the caller gives along `a` only (pattern
+/// [true, false], payload []), `vec_two` a table of three components given the same way (payload [3]), and `shared_two` a table
+/// with no pattern, one table for every lane.
+#[test]
+fn a_table_of_scalars_with_a_stated_pattern_and_payload_is_a_gathered_lookup_and_no_other_table_is()
+{
+    use osprey_lowering::lower::unit_meta::{SlotRole, SLOT_GATHER, SLOT_SHARED};
+    let cases = json::parse(
+        &std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/data/broadcast_table_cases.json"
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    // `shared` declares the table shared; `stripped` takes the payload out of the request's rows
+    let slot_of = |case: &str, plane: &str, shared: bool, stripped: bool| {
+        let case = cases.get(case).unwrap();
+        let (ctx, sink, _) = kernel_dumped(case.get("dump").and_then(J::str).unwrap());
+        let mut request = request_for(Target::Host, sink);
+        request.lane_space = case
+            .get("lane_space")
+            .unwrap()
+            .arr()
+            .iter()
+            .map(|axis| LaneAxis {
+                label: axis.get("label").and_then(J::str).map(str::to_string),
+                extent: axis.get("extent").map(J::int),
+            })
+            .collect();
+        for row in case.get("broadcast").unwrap().arr() {
+            let name = row.get("plane").and_then(J::str).unwrap().to_string();
+            let flags = row.get("axes").unwrap().arr();
+            let flags = flags.iter().map(|f| matches!(f, J::Bool(true))).collect();
+            request.broadcast.push((name.clone(), flags));
+            if let (Some(payload), false) = (row.get("payload"), stripped) {
+                let extents = payload.arr().iter().map(J::int).collect();
+                request.table_payloads.push((name, extents));
+            }
+        }
+        if shared {
+            request.shared = vec![plane.to_string()];
+        }
+        let answer = KernelAnswer::from_json(&lowered(ctx, &request).unwrap()).unwrap();
+        // SAFETY: `ctx` is the live context made above and nothing refers to it after this.
+        unsafe { rx_ctx_free(ctx) };
+        let slot = answer.units[0]
+            .meta
+            .body
+            .slots
+            .iter()
+            .find(|s| s.name == plane);
+        slot.cloned().unwrap_or_else(|| panic!("no slot {plane}"))
+    };
+    let held = slot_of("bcast_two", "x", false, false);
+    assert_eq!(held.role, SlotRole::Lookup);
+    assert_eq!(held.gather, Some(vec![true, false]));
+    assert_ne!(held.flags & SLOT_GATHER, 0);
+    assert!(held.shape.is_empty());
+    // a row with no payload, a table the caller declares shared, a table of three components and a table with no pattern: none gathered
+    for (held, shared) in [
+        (slot_of("bcast_two", "x", false, true), false),
+        (slot_of("bcast_two", "x", true, false), true),
+        (slot_of("vec_two", "v", false, false), false),
+        (slot_of("shared_two", "table", false, false), false),
+    ] {
+        assert_eq!(held.gather, None, "{}", held.name);
+        assert_eq!(held.flags & SLOT_GATHER, 0, "{}", held.name);
+        assert_eq!(held.flags & SLOT_SHARED != 0, shared, "{}", held.name);
     }
 }

@@ -245,9 +245,9 @@ pub(crate) fn report_of(meta: &J) -> J {
 }
 
 impl Toolkit {
-    /// Builds one unit: the request (JSON; see the module text, plus `embed` `{"symbol", "size_symbol"}` for a device image) gives
-    /// the unit; the answer is `{"files": {"output": path}, "key", "hit", "embed", "figures", "report": {"argv", "seconds",
-    /// "elf"}}`; with `keep_source` the files also hold `"source"`. `embed` is null, or the opaque record [`Toolkit::link`] takes back. A second call for the same unit runs no tool.
+    /// Builds one unit: the request (JSON; see the module text) gives the unit; the answer is
+    /// `{"files": {"output": path}, "key", "hit", "figures", "report": {"argv", "seconds", "elf"}}`; with `keep_source` the files
+    /// also hold `"source"`. A second call for the same unit runs no tool.
     ///
     /// # Errors
     /// Refuses with a [`Refusal`](crate::refusal::Refusal) that names what is wrong with the request or the tool.
@@ -255,39 +255,21 @@ impl Toolkit {
         let req = wire::parse("the build request", unit)?;
         let job = Job::from_request(&req)?;
         let entry = self.run_job(&job, root)?;
-        Ok(wire::render(&Self::answer(&job, &req, &entry)?))
+        Ok(wire::render(&Self::answer(&job, &entry)?))
     }
 
     /// The answer of a build of `job` published as `entry`.
-    fn answer(job: &Job, req: &J, entry: &Entry) -> Done<J> {
+    fn answer(job: &Job, entry: &Entry) -> Done<J> {
         let output = entry.output()?;
         let mut files = vec![("output", wire::s(&output.display().to_string()))];
         if let Some(source) = entry.source().filter(|_| job.keep_source) {
             files.push(("source", wire::s(&source.display().to_string())));
         }
         let files = wire::obj(files);
-        let embed = match req.get("embed") {
-            Some(symbols) => {
-                let bytes =
-                    fs::read(&output).map_err(|e| Refusal::io("cannot read", &output, &e))?;
-                wire::obj(vec![
-                    ("image", wire::s(&output.display().to_string())),
-                    ("digest", wire::s(&sha256::hex(&bytes))),
-                    ("symbol", wire::s(wire::text(symbols, "symbol", "embed")?)),
-                    (
-                        "size_symbol",
-                        wire::s(wire::text(symbols, "size_symbol", "embed")?),
-                    ),
-                    ("name", wire::s(&job.name)),
-                ])
-            }
-            None => J::Null,
-        };
         Ok(wire::obj(vec![
             ("files", files),
             ("key", wire::s(&key_of(entry))),
             ("hit", J::Bool(entry.hit)),
-            ("embed", embed),
             (
                 "figures",
                 entry.meta.get("figures").cloned().unwrap_or(J::Null),

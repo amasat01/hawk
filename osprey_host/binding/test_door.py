@@ -1080,6 +1080,37 @@ def check_gather_mask(door, done, raises):
     )
 
 
+def check_gather_table(door, done, raises):
+    """A broadcast table (a gathered LOOKUP) binds with one value per kept lane, sized by the door.
+
+    The unit's launch has two static lane axes (3 and 6) and its table varies along both: 18 values.
+    """
+    samples = 18
+    unit = door.unit_load(FIXTURE, "gathl", digest(0xEB))
+    plan = door.plan_new(unit, o.EG_STRUCTURE_HOST_TEAM, 0, samples)
+    y = door.plane_wrap(np.zeros(samples))
+    door.bind(plan, [0, 1], [y, door.plane_wrap(np.zeros(samples))], [], [])
+    short = door.plane_wrap(np.zeros(6))
+    for what, call in (
+        ("bind: a table short of the lanes it varies along", lambda: door.bind(plan, [1], [short])),
+        ("bind: a short table into a bound plan", lambda: door.bind(plan, [0, 1], [y, short])),
+    ):
+        e = raises(o.BadRequest, call, what)
+        assert "a table of 18 elements is expected (18 for the lane axes it varies along)" in (
+            refusal_text(door, e)
+        ), str(e)
+    done.append(
+        "bind: a gathered table of the lane count binds, a shorter one is refused by the door"
+    )
+    e = raises(
+        o.BadRequest,
+        lambda: door.unit_load(FIXTURE, "gathls", digest(0xEC)),
+        "unit_load: a gathered table that is also shared",
+    )
+    assert "is GATHER (it varies along lane axes) and SHARED" in refusal_text(door, e), str(e)
+    done.append("unit_load: a table both gathered and shared contradicts itself and is refused")
+
+
 def check_reverse_options(door, done, raises):
     """Rows of the report graph_reverse returns and of the options it takes."""
     n = 7
@@ -1149,6 +1180,263 @@ def check_reverse_options(door, done, raises):
     )
     assert "is not a float plane" in refusal_text(door, e), str(e)
     done.append("graph_reverse: an integer plane asked for a gradient is refused by name")
+
+
+def check_host_nodes(door, backend, done, raises):
+    """Rows of host nodes: a Python callable run by the door, recorded, replayed and reversed.
+
+    numpy is the oracle: the callables compute with it, and the closed forms are written by hand.
+    """
+    n = 8
+    x0 = 0.5 + 0.3 * np.arange(n)
+
+    # a node that doubles a plane in place and checks what its views are
+    seen = {"device": None, "stale": [], "inside": []}
+
+    def double(views):
+        a = np.from_dlpack(views[0])
+        assert a.flags.writeable and a.shape == (n,) and a.dtype == np.float64
+        a *= 2.0
+        seen["device"] = views[0].__dlpack_device__()
+        seen["stale"].append(views[0])
+        try:
+            door.sync()
+        except o.BadRequest as inner:
+            seen["inside"].append(str(inner))
+
+    node = door.host_node("double", double)
+    assert node.kind == "host_node" and node.live
+    now = x0.copy()
+    plane = door.plane_wrap(now)
+    door.host_call(node, [plane], [o.EG_ACCESS_READ | o.EG_ACCESS_WRITE])
+    assert np.array_equal(now, 2.0 * x0)
+    assert seen["device"] == (1, 0), seen["device"]  # kDLCPU, device 0
+    assert seen["inside"] and "double" in seen["inside"][0], seen["inside"]
+    done.append(
+        "host_node, host_call: a callable doubles a plane in place through numpy.from_dlpack,"
+        " and a door call from inside is refused naming the node"
+    )
+
+    # a view kept past the call is refused by name, for both of its protocol calls
+    for use in (
+        lambda v: v.__dlpack__(max_version=(1, 0)),
+        lambda v: v.__dlpack_device__(),
+        np.from_dlpack,
+    ):
+        e = raises(ValueError, lambda use=use: use(seen["stale"][0]), "a view kept past the call")
+        assert "host node double" in str(e) and "only during the call" in str(e), str(e)
+    done.append("host_call: a view kept past the call is refused by name")
+
+    # recorded, not run; replayed twice
+    recorded = x0.copy()
+    plane_r = door.plane_wrap(recorded)
+    door.record_begin()
+    door.host_call(node, [plane_r], [o.EG_ACCESS_READ | o.EG_ACCESS_WRITE])
+    assert np.array_equal(recorded, x0), "a recording runs nothing"
+    graph = door.record_end()
+    for launches in (1, 2):
+        door.graph_launch(graph)
+        assert np.array_equal(recorded, x0 * 2.0**launches), launches
+    nodes = door.graph_describe(graph, [plane_r])["nodes"]
+    assert [(m["kind"], m["unit"], m["planes"]) for m in nodes] == [
+        (o.EG_GNODE_HOST, "double", (0,))
+    ]
+    done.append("host_call recorded, replayed twice, and described as a host node with its name")
+
+    # a read-only view: a plane declared read refuses a write in the callable
+    refused = []
+
+    def copy_to_second(views):
+        source, target = (np.from_dlpack(v) for v in views)
+        assert not source.flags.writeable and target.flags.writeable
+        try:
+            source[0] = -1.0
+        except ValueError:
+            refused.append(True)
+        target[:] = source
+
+    src_a, dst_a = x0.copy(), np.zeros(n)
+    copy_node = door.host_node("copy_to_second", copy_to_second)
+    door.host_call(
+        copy_node,
+        [door.plane_wrap(src_a), door.plane_wrap(dst_a)],
+        [o.EG_ACCESS_READ, o.EG_ACCESS_WRITE],
+    )
+    assert refused == [True] and np.array_equal(dst_a, x0) and np.array_equal(src_a, x0)
+    done.append("host_call: a plane declared read is a read-only view; one declared write is not")
+
+    # an exception of the callable arrives as itself, from the run and from the replay
+    class Boom(Exception):
+        pass
+
+    def fails(views):
+        raise Boom("the callable failed: 42")
+
+    def replayed(node, plane):
+        """Record a call of `node` over `plane` and launch the graph, as a replay does."""
+        door.record_begin()
+        door.host_call(node, [plane], [o.EG_ACCESS_READ])
+        door.graph_launch(door.record_end())
+
+    boom = door.host_node("fails", fails)
+    cell = door.plane_wrap(np.zeros(1))
+    for call in (
+        lambda: door.host_call(boom, [cell], [o.EG_ACCESS_READ]),
+        lambda: replayed(boom, cell),
+    ):
+        try:
+            call()
+        except Boom as e:
+            assert str(e) == "the callable failed: 42"
+        else:
+            raise AssertionError("the callable's exception was lost")
+    assert door.sync() is None, "the context is usable after a callable failed"
+    done.append("host_call, graph_launch: an exception of the callable is raised as itself")
+
+    # reversed: y = w x (a unit), z = 3 y^2 (a host node with its vjp), J = sum z
+    scale, scale_vjp = (
+        door.unit_load(GRAPH, name, digest(b)) for name, b in (("scale", 0x10), ("scale_vjp", 0x11))
+    )
+
+    def triple_square(views):
+        y, z = (np.from_dlpack(v) for v in views)
+        z[:] = 3.0 * y * y
+
+    def triple_square_vjp(primals, adjoints_in, adjoints_out):
+        assert primals[1] is None and adjoints_in[0] is None and adjoints_out[1] is None
+        y = np.from_dlpack(primals[0])
+        adjoint_z = np.from_dlpack(adjoints_in[1])
+        adjoint_y = np.from_dlpack(adjoints_out[0])
+        assert not np.from_dlpack(primals[0]).flags.writeable and not adjoint_z.flags.writeable
+        assert np.all(adjoint_y == 0.0)
+        adjoint_y[:] = 6.0 * y * adjoint_z
+
+    def rig(host_node):
+        arrays = {k: np.zeros(n) for k in ("y", "z", "gx")}
+        arrays.update(x=x0.copy(), w=np.array([1.7]), ones=np.ones(n), gw=np.zeros(1))
+        planes = {k: door.plane_wrap(a) for k, a in arrays.items()}
+        plan = door.plan_new(scale, o.EG_STRUCTURE_HOST_SERIAL, o.EG_REDUCE_COMPENSATED, n)
+        door.bind(plan, [0, 1, 2], [planes[k] for k in ("x", "w", "y")], [], [])
+        door.record_begin()
+        door.launch(plan)
+        door.host_call(
+            host_node, [planes[k] for k in ("y", "z")], [o.EG_ACCESS_READ, o.EG_ACCESS_WRITE]
+        )
+        return arrays, planes, door.record_end([(0, scale_vjp)])
+
+    reversing = door.host_node("triple_square", triple_square, triple_square_vjp)
+    arrays, planes, graph_d = rig(reversing)
+    door.graph_launch(graph_d)
+    w = 1.7
+    assert np.allclose(arrays["z"], 3.0 * (w * x0) ** 2, rtol=1e-12)
+    door.graph_reverse(
+        graph_d,
+        [(planes["z"], planes["ones"])],
+        [(planes["x"], planes["gx"]), (planes["w"], planes["gw"])],
+    )
+    assert np.allclose(arrays["gx"], 6.0 * w * w * x0, rtol=1e-12)
+    assert np.allclose(arrays["gw"], 6.0 * w * np.sum(x0 * x0), rtol=1e-12)
+    done.append("graph_reverse: a host node's vjp is a leaf: dJ/dx and dJ/dw equal the closed form")
+
+    # no vjp and a gradient flowing through it: refused by name at the reverse
+    plain = door.host_node("triple_square_no_vjp", triple_square)
+    arrays, planes, graph_n = rig(plain)
+    door.graph_launch(graph_n)
+    e = raises(
+        o.BadRequest,
+        lambda: door.graph_reverse(
+            graph_n, [(planes["z"], planes["ones"])], [(planes["x"], planes["gx"])]
+        ),
+        "graph_reverse: a host node with no vjp",
+    )
+    assert "triple_square_no_vjp" in refusal_text(door, e), str(e)
+    done.append("graph_reverse: a host node with no vjp under a gradient is refused naming it")
+
+    # the callables are released once: not while a node handle or a graph holds the node
+    collected = []
+
+    def make_node(name):
+        def work(views):
+            pass
+
+        ref = weakref.ref(work, lambda _: collected.append(name))
+        return door.host_node(name, work), ref
+
+    kept, ref_kept = make_node("kept")
+    cell_array = np.zeros(1)
+    cell_plane = door.plane_wrap(cell_array)
+    door.record_begin()
+    door.host_call(kept, [cell_plane], [o.EG_ACCESS_READ])
+    graph_k = door.record_end()
+    door.host_node_free(kept)
+    assert collected == [] and ref_kept() is not None, "the graph holds the node"
+    door.graph_launch(graph_k)
+    door.graph_free(graph_k)
+    assert collected == ["kept"] and ref_kept() is None
+    free_only, ref_free = make_node("free_only")
+    door.host_node_free(free_only)
+    assert collected == ["kept", "free_only"] and ref_free() is None
+    second = o.Door(backend)
+
+    def left_work(views):
+        pass
+
+    ref_left = weakref.ref(left_work, lambda _: collected.append("left"))
+    left = second.host_node("left", left_work)
+    del left_work
+    assert left.live and collected == ["kept", "free_only"]
+    second.ctx_free()
+    assert collected == ["kept", "free_only", "left"] and ref_left() is None, collected
+    done.append("host_node_free, graph_free, ctx_free: the callables are released once, at the end")
+
+    # device_props answers or refuses as the header states, on this context
+    check_device_props(door, done, raises)
+
+    # a step graph of a host node runs once per step of the runner, ahead of the step's plans
+    counted = []
+    dummy = door.plane_wrap(np.zeros(1))
+    step = door.host_node("count_step", lambda views: counted.append(1))
+    door.record_begin()
+    door.host_call(step, [dummy], [o.EG_ACCESS_READ])
+    step_graph = door.record_end()
+    index = np.arange(200)
+    arrays = [np.zeros(200), (2 + index % 9).astype(float), np.zeros(200, dtype=np.bool_)]
+    count1 = door.unit_load(FIXTURE, "count1", digest(0xD1))
+    plan = door.plan_new(count1, o.EG_STRUCTURE_HOST_SERIAL, 0, 200)
+    door.bind(plan, [0, 1, 2], [door.plane_wrap(a) for a in arrays])
+    report = door.run(door.runner_new([plan], 1000, step_graph=step_graph))
+    assert report["launches"] > 1 and len(counted) == report["launches"], (report, len(counted))
+    done.append("runner_new(step_graph=): a host node in it runs once per launch of the runner")
+
+
+def check_device_props(door, done, raises):
+    """Rows of device_props here: the door's answer, or its refusal as the header states."""
+    members = (
+        "cc_major cc_minor sm_count warp_size regs_per_sm regs_per_block shared_mem_per_block "
+        "shared_mem_per_sm name clock_rate_khz memory_clock_rate_khz memory_bus_width_bits "
+        "peak_bytes_per_s peak_flops_sp peak_flops_dp fp64_ratio ridge_flops_per_byte_sp "
+        "ridge_flops_per_byte_dp"
+    ).split()
+    count = door.device_count()
+    try:
+        props = door.device_props(0)
+    except o.NotWritten as e:
+        # a door built without the device group refuses every device call by name
+        assert count == 0 and "the device group is not built" in refusal_text(door, e)
+        done.append("device_props: a door without the device group refuses by name")
+        return
+    except o.BadRequest as e:
+        # a door with the group and no driver, or no device at that ordinal
+        assert count == 0 and refusal_text(door, e)
+        done.append("device_props: an ordinal the driver does not see is refused by the door")
+        return
+    assert count > 0 and list(props) == members, (count, list(props))
+    assert isinstance(props["name"], str) and props["name"] and props["cc_major"] > 0
+    assert all(isinstance(props[k], float) for k in members[-6:])
+    raises(
+        o.BadRequest, lambda: door.device_props(count), "device_props: an ordinal past the count"
+    )
+    done.append("device_props: every member under the struct's names; a missing ordinal refused")
 
 
 def check_record_abort(door, done, raises):
@@ -1278,17 +1566,21 @@ def run(done, raises, not_run, backends):
         except o.NotWritten as refused:
             assert "states no runtime" in str(refused), str(refused)
             done.append("Door: the cuda library, which states no runtime, refuses by name")
+            not_run.append("the device rows: the cuda library is built without the device runtime")
         else:
             assert sys.platform != "darwin", "a Mac has no CUDA toolkit to build the door with"
             assert built_with.ctx_info()["device"] == -1
             done.append("Door: the cuda library built with the device runtime opens a host context")
             on_device = device_door(backends["cuda"])
-            if on_device is not None and os.path.exists(DEVICE_FIXTURE):
-                check_device(on_device, done, raises)
-            else:
+            if on_device is None:
+                not_run.append("the device rows on the cuda library: no device context opens")
+            elif not os.path.exists(DEVICE_FIXTURE):
                 not_run.append(
-                    "the device rows on the cuda library: no device or no device fixture"
+                    "the device rows on the cuda library: no device fixture "
+                    "(binding/build.sh builds it when the cuda library found a CUDA toolkit)"
                 )
+            else:
+                check_device(on_device, done, raises)
     else:
         not_run.append("Door: the cuda library refuses by name: no CUDA_LIB")
     door = o.Door(cpu)
@@ -1731,9 +2023,11 @@ def run(done, raises, not_run, backends):
     check_fft(door, done, raises)
     check_gemm(door, done, raises)
     check_graph_reverse(door, done, raises)
+    check_host_nodes(door, cpu, done, raises)
     check_fork_and_cond(door, done, raises)
     check_reverse_structure(door, done)
     check_gather_mask(door, done, raises)
+    check_gather_table(door, done, raises)
     check_reverse_options(door, done, raises)
     check_record_abort(door, done, raises)
     check_segmented(door, done, raises)

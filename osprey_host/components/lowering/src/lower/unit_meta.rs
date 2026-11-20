@@ -314,6 +314,13 @@ pub const SCHEMA_MAJOR: u32 = 1;
 /// The name of the one function a unit library exports.
 pub const LIBRARY_META_SYMBOL: &str = "eg_unit_library_meta";
 
+/// The two symbols a unit library defines for the device image of the unit `unit`: the image bytes and their length. The unit's
+/// meta names them (`device_image`, `device_image_size`) and the link defines them, so both read them from here.
+#[must_use]
+pub fn image_symbols(unit: &str) -> (String, String) {
+    (format!("{unit}__image"), format!("{unit}__image_size"))
+}
+
 record! {
     /// A unit named by its name and digest.
     pub struct UnitRef {

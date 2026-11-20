@@ -103,6 +103,7 @@ impl DerivedKernel {
             sink_axes: vec![],
             shared: vec![],
             broadcast: vec![],
+            table_payloads: vec![],
             ..base.clone()
         };
         read_part(&mut keys, &mut request)?;

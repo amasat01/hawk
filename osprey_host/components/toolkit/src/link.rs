@@ -2,7 +2,7 @@
 //!
 //! The request names the link template per operating system (`link`, with `linux` and `macos` members), optionally the set unit
 //! (`set`, a build request: the text of the set, compiled with its own template) and the embedding recipe (`embed`: how to turn an
-//! image file into an object that holds it under two symbols). The link takes the objects of the parts in order, then the objects
+//! image file into an object that holds it under two symbols) and the images to embed (`images`). The link takes the objects of the parts in order, then the objects
 //! that embed the images, then the set's object. Every compile it makes goes through the store like a build.
 use crate::compile::Job;
 use crate::refusal::{Done, Kind, Refusal};
@@ -10,6 +10,8 @@ use crate::store::{Built, Store};
 use crate::toolkit::Toolkit;
 use crate::wire;
 use rcore::json::J;
+use rcore::sha256;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -39,7 +41,7 @@ fn source_text(recipe: &J) -> Done<String> {
 
 impl Toolkit {
     /// Links the library: the request is `{"name", "parts": [<answers of build>], "link": {"linux", "macos"}, "set": <build
-    /// request>?, "embed": <recipe>?, "as": {...}?, "key_terms": [...]?}`; the answer is `{"library": path, "key", "hit",
+    /// request>?, "images": [{"image": path, "symbol", "size_symbol"}]?, "embed": <recipe>?, "as": {...}?, "key_terms": [...]?}`; the answer is `{"library": path, "key", "hit",
     /// "report": {"argv", "seconds"}}`. A second call with the same parts links nothing.
     ///
     /// # Errors
@@ -50,16 +52,12 @@ impl Toolkit {
         let machine = self.tools(Some(root))?;
         let store = Store::new(root);
         let (mut objects, mut keys) = (vec![], vec![]);
-        let mut images = vec![];
         for part in wire::need(&req, "parts", "link request")?.arr() {
             let output = wire::text(wire::need(part, "files", "part")?, "output", "part")?;
             objects.push(PathBuf::from(output));
             keys.push(wire::text(part, "key", "part")?.to_string());
-            if let Some(image) = part.get("embed").filter(|e| e.get("image").is_some()) {
-                images.push(image.clone());
-            }
         }
-        for image in &images {
+        for image in req.get("images").map_or(&[][..], J::arr) {
             let entry = self.embed_object(&req, image, root)?;
             objects.push(entry.output()?);
             keys.push(crate::compile::key_of(&entry));
@@ -115,26 +113,26 @@ impl Toolkit {
         })
     }
 
-    /// The object that holds the image of `embed` under its two symbols: the recipe's source, assembled by its own command.
-    fn embed_object(&self, req: &J, embed: &J, root: &Path) -> Done<crate::store::Entry> {
+    /// The object that holds the image file of `image` under its two symbols: the recipe's source, assembled by its own command.
+    fn embed_object(&self, req: &J, image: &J, root: &Path) -> Done<crate::store::Entry> {
         let recipe = wire::need(
             req,
             "embed",
-            "link request: a part carries an image, so the request needs an embed recipe",
+            "link request: an image is to be embedded, so the request needs an embed recipe",
         )?;
-        let name = wire::text(embed, "name", "embed")?;
-        let image = wire::text(embed, "image", "embed")?;
+        let path = wire::text(image, "image", "image")?;
+        let symbol = wire::text(image, "symbol", "image")?;
+        let bytes = fs::read(path).map_err(|e| Refusal::io("cannot read", Path::new(path), &e))?;
         let text = source_text(recipe)?
-            .replace("{size_symbol}", wire::text(embed, "size_symbol", "embed")?)
-            .replace("{symbol}", wire::text(embed, "symbol", "embed")?)
-            .replace("{image_path}", image);
-        let digest = wire::text(embed, "digest", "embed")?;
+            .replace("{size_symbol}", wire::text(image, "size_symbol", "image")?)
+            .replace("{symbol}", symbol)
+            .replace("{image_path}", path);
         let job = Job::assembling(
             req,
-            &format!("{name}__image"),
+            symbol,
             &text,
             &wire::texts(recipe, "compile", "embed recipe")?,
-            digest,
+            &sha256::hex(&bytes),
         )?;
         self.run_job(&job, root)
     }

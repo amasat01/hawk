@@ -1183,6 +1183,7 @@ fn request_for(
         sink_axes: sink_axes_of(kernel),
         shared: shared_of(kernel),
         broadcast: broadcast_of(kernel),
+        table_payloads: vec![],
         facts,
         exports_block: true,
         companions: vec![],

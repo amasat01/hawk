@@ -205,8 +205,12 @@ pub struct KernelRequest {
     pub sink_axes: Vec<SinkAxes>,
     /// The parameter planes the caller declares shared: one value for every lane.
     pub shared: Vec<String>,
-    /// The kernel's broadcast pattern: for a matrix plane the kernel reads at lane indices, whether it varies along each lane axis.
+    /// The kernel's broadcast pattern: for a matrix plane or a table the kernel reads at lane indices, whether it varies along each lane
+    /// axis.
     pub broadcast: Vec<(String, Vec<bool>)>,
+    /// The payload of each broadcast table: the extents of the table's own leading dimensions (none for a table of scalars), stated by
+    /// the caller for the planes that are tables. A table with a pattern and no payload here is read as it always was.
+    pub table_payloads: Vec<(String, Vec<i64>)>,
     /// The data documents the request is lowered under in place of the library's files, by name (see `facts::CARD_NAMES`), each
     /// the whole text of the document.
     pub cards: Vec<(String, String)>,
@@ -843,15 +847,25 @@ pub(super) fn read_part(keys: &mut Keys, into: &mut KernelRequest) -> Result<(),
         into.shared = list_of(l, "shared", |n| text_of(n, "shared"))?;
     }
     if let Some(l) = keys.opt("broadcast") {
-        into.broadcast = list_of(l, "broadcast", |p| {
+        let rows = list_of(l, "broadcast", |p| {
             let mut keys = Keys::of(p, "broadcast")?;
-            let found = (
-                text_of(keys.req("plane")?, "plane")?,
-                list_of(keys.req("axes")?, "axes", |b| flag_of(b, "axes"))?,
-            );
+            let plane = text_of(keys.req("plane")?, "plane")?;
+            let axes = list_of(keys.req("axes")?, "axes", |b| flag_of(b, "axes"))?;
+            let payload = keys
+                .opt("payload")
+                .map(|n| list_of(n, "payload", |e| int_of(e, "payload")))
+                .transpose()?;
             keys.done()?;
-            Ok(found)
+            Ok((plane, axes, payload))
         })?;
+        into.table_payloads = rows
+            .iter()
+            .filter_map(|(plane, _, payload)| Some((plane.clone(), payload.clone()?)))
+            .collect();
+        into.broadcast = rows
+            .into_iter()
+            .map(|(plane, axes, _)| (plane, axes))
+            .collect();
     }
     Ok(())
 }
@@ -1184,6 +1198,7 @@ impl KernelRequest {
             sink_axes: vec![],
             shared: vec![],
             broadcast: vec![],
+            table_payloads: vec![],
             cards: keys
                 .opt("cards")
                 .map(|value| facts::cards_from_json(value).map_err(bad))
@@ -1262,13 +1277,17 @@ impl KernelRequest {
         }
         if !self.broadcast.is_empty() {
             let planes = self.broadcast.iter().map(|(plane, axes)| {
-                Json::Obj(vec![
+                let mut row = vec![
                     ("plane".into(), Json::Str(plane.clone())),
                     (
                         "axes".into(),
                         Json::Arr(axes.iter().map(|b| Json::Bool(*b)).collect()),
                     ),
-                ])
+                ];
+                if let Some((_, payload)) = self.table_payloads.iter().find(|(p, _)| p == plane) {
+                    row.push(("payload".into(), ints(payload)));
+                }
+                Json::Obj(row)
             });
             o.push(("broadcast".into(), Json::Arr(planes.collect())))
         }
@@ -1541,6 +1560,7 @@ mod tests {
             sink_axes: vec![],
             shared: vec![],
             broadcast: vec![],
+            table_payloads: vec![],
             cards: vec![],
             facts: vec![(Target::Host, "{}".into())],
             exports_block: true,
@@ -1608,7 +1628,11 @@ mod tests {
             extent: Some(3),
         }];
         full.shared = vec!["w".into()];
-        full.broadcast = vec![("m".into(), vec![true, false])];
+        full.broadcast = vec![
+            ("m".into(), vec![true, false]),
+            ("t".into(), vec![false, true]),
+        ];
+        full.table_payloads = vec![("t".into(), vec![3])];
         let text = full.to_json();
         assert_eq!(KernelRequest::from_json(&text).unwrap(), full);
         let cases = [

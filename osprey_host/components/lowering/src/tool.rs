@@ -6,6 +6,7 @@ use crate::backend::{target_name, unserved, Backend};
 use crate::device_build;
 use crate::facts::{self, CardSet, Failed};
 use crate::local_memory;
+use crate::lower::unit_meta::image_symbols;
 use aether_writers::contract::{Contract, Json};
 use aether_writers::refuse::{bad, Refusal};
 use std::path::Path;
@@ -579,11 +580,12 @@ pub fn build<B: Backend>(
     ])))
 }
 
-/// Links the library `name` of a set: `parts` are the build answers as given, `set_text` the text of the set. The answer is the
-/// toolkit's `{"library": path, ...}`.
+/// Links the library `name` of a set: `parts` are the build answers as given, `set_text` the text of the set. A part that holds a
+/// device image (its `link_recipe` names the `unit` it belongs to) is not linked as an object: the link defines the image under
+/// the symbols the unit's meta names, from the embed recipe the part carries. The answer is the toolkit's `{"library": path, ...}`.
 ///
 /// # Errors
-/// Refuses no parts, a part without its recipe, and what the tool side refuses.
+/// Refuses no parts, no host part, a part without its recipe, and what the tool side refuses.
 pub fn link<B: Backend>(
     backend: &B,
     parts: &str,
@@ -592,27 +594,36 @@ pub fn link<B: Backend>(
     root: &Path,
 ) -> Result<String, toolkit::Refusal> {
     let parts = parse("the parts", parts)?;
-    let first = parts
-        .arr()
-        .first()
-        .ok_or_else(|| refuse("link: no parts"))?;
-    let recipe = first
-        .get("link_recipe")
-        .ok_or_else(|| refuse("link: a part carries no link_recipe"))?;
-    let machine = text(recipe, "machine").unwrap_or("");
-    let mut listed = vec![];
+    let (mut listed, mut images, mut embed) = (vec![], vec![], None);
+    let mut host_recipe = None;
     for part in parts.arr() {
+        let recipe = part
+            .get("link_recipe")
+            .ok_or_else(|| refuse("link: a part carries no link_recipe"))?;
         let artifact =
             text(part, "artifact").ok_or_else(|| refuse("link: a part has no artifact"))?;
         let output = part.get("files").and_then(|f| f.get(artifact)).cloned();
         let output = output
             .ok_or_else(|| refuse(format!("link: the part {artifact} lists no such file")))?;
+        if let Some(unit) = text(recipe, "unit") {
+            let (symbol, size_symbol) = image_symbols(unit);
+            images.push(Json::Obj(vec![
+                ("image".into(), output),
+                ("symbol".into(), Json::Str(symbol)),
+                ("size_symbol".into(), Json::Str(size_symbol)),
+            ]));
+            embed = recipe.get("embed").cloned();
+            continue;
+        }
+        host_recipe.get_or_insert(recipe);
         let key = part.get("key").cloned().unwrap_or(Json::Null);
         listed.push(Json::Obj(vec![
             ("files".into(), Json::Obj(vec![("output".into(), output)])),
             ("key".into(), key),
         ]));
     }
+    let recipe = host_recipe.ok_or_else(|| refuse("link: no part holds a host object"))?;
+    let machine = text(recipe, "machine").unwrap_or("");
     let stem = name.rsplit_once('.').map_or(name, |(stem, _)| stem);
     let set = Json::Obj(vec![
         ("name".into(), Json::Str(format!("{stem}__set"))),
@@ -636,6 +647,13 @@ pub fn link<B: Backend>(
     let request = Json::Obj(vec![
         ("name".into(), Json::Str(name.into())),
         ("parts".into(), Json::Arr(listed)),
+        ("images".into(), Json::Arr(images)),
+        ("embed".into(), embed.unwrap_or(Json::Null)),
+        // the embed recipe assembles with the host compiler of the machine; this library's compiler is the host's
+        (
+            "as".into(),
+            Json::Obj(vec![("host_compiler".into(), Json::Str("compiler".into()))]),
+        ),
         ("set".into(), set),
         (
             "link".into(),
@@ -652,8 +670,8 @@ pub fn link<B: Backend>(
 /// Builds one device unit: the request is the host's (`name`, `text`, `machine`, `defines`) with the image format the lowering
 /// answered if it names one. The machine's facts state which tool makes the image (`compile_with`): the offline compiler gets the
 /// argv template, the runtime compile library the options and the header trees it serves from memory. The answer is the host's
-/// (`artifact`, `source`, `format`, `key`, `hit`, `seconds`, `files`, `figures`, `report`) with `embed`, the record the host link
-/// takes back, and a `link_recipe` that carries the recipe that embeds the image.
+/// (`artifact`, `source`, `format`, `key`, `hit`, `seconds`, `files`, `figures`, `report`) with a `link_recipe` that carries the
+/// recipe that embeds the image: [`link`] defines the image's symbols from it.
 fn device_unit(
     req: &Json,
     machine: &Json,
@@ -686,13 +704,6 @@ fn device_unit(
         ("output_suffix", wire::s(&format!(".{form}"))),
         ("key_terms", wire::strs(&[key])),
         ("keep_source", rcore::json::J::Bool(true)),
-        (
-            "embed",
-            wire::obj(vec![
-                ("symbol", wire::s(&format!("{name}__image"))),
-                ("size_symbol", wire::s(&format!("{name}__image_size"))),
-            ]),
-        ),
     ];
     if let Some(grammar) = text(build, "figures") {
         members.push(("figures", wire::s(grammar)));
@@ -797,6 +808,7 @@ fn build_device<B: Backend>(
         .cloned()
         .unwrap_or(Json::Null);
     let link_recipe = Json::Obj(vec![
+        ("unit".into(), Json::Str(name.clone())),
         ("embed".into(), recipe),
         (
             "machine".into(),
@@ -838,7 +850,6 @@ fn build_device<B: Backend>(
         ),
         ("launch", launch.unwrap_or_else(null)),
         ("report", answer.get("report").cloned().unwrap_or_else(null)),
-        ("embed", answer.get("embed").cloned().unwrap_or_else(null)),
         (
             "link_recipe",
             wire::parse("recipe", &link_recipe.to_text())?,

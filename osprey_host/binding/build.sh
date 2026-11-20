@@ -69,7 +69,22 @@ clang $shared -fPIC -I"$inc" -I"$repo/include" -o "$here/build/libcontract0.$ext
 clang $shared -fPIC -std=c11 -I"$eagle" -o "$here/build/libfixture_unit.$ext" "$eagle/eagle/door/test/fixture_unit.c"
 clang $shared -fPIC -std=c11 -I"$eagle" -o "$here/build/libfixture_reverse.$ext" "$eagle/eagle/door/test/fixture_reverse.c"
 clang $shared -fPIC -std=c11 -I"$eagle" -o "$here/build/libfixture_graph.$ext" "$eagle/eagle/door/test/fixture_graph.c"
-clang $shared -fPIC -std=c11 -I"$eagle" -o "$here/build/libfixture_gemm.$ext" "$eagle/eagle/door/test/fixture_gemm.c"
+# The device rows of the binding's tests need the door's device fixtures (device images in the unit library). They are built by the
+# door's own recipes when the cuda library found a CUDA toolkit: the root is the one its build script reports (the one discovery).
+# Without a toolkit the host-only gemm fixture is built and the device fixture is absent; test_door.py then says its device rows were not run.
+cuda_root=$(cargo build -j 2 --release --manifest-path "$repo/Cargo.toml" -p osprey_cuda --message-format=json 2>/dev/null |
+  "$PYTHON" -c 'import json, sys
+for line in sys.stdin:
+    message = json.loads(line)
+    if message.get("reason") == "build-script-executed":
+        for name, value in message.get("env", []):
+            if name == "OSPREY_CUDA_TOOLKIT_ROOT":
+                print(value)')
+if [ -n "$cuda_root" ]; then
+  make -C "$eagle/eagle/door" CUDA="$cuda_root" CXX="${CXX:-g++}" OUT="$here/build" "$here/build/libfixture_device.$ext" "$here/build/libfixture_gemm.$ext"
+else
+  clang $shared -fPIC -std=c11 -I"$eagle" -o "$here/build/libfixture_gemm.$ext" "$eagle/eagle/door/test/fixture_gemm.c"
+fi
 "$gen" --check $hdrs --header "$repo/include/osprey.h" --door-header "$eagle/eagle/door/eg_door.h" --door-source "$here/template/door.c" \
   --template "$here/template" --generated "$here/build/_osprey.c" --ext "$here/build/_osprey.abi3.so"
 # the module must load: a link gap fails here, not in a later caller

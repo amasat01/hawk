@@ -34,6 +34,11 @@ fn main() {
     if let Some(root) = toolkit_root(&here) {
         println!("cargo::rustc-cfg=device_runtime");
         println!("cargo::metadata=root={}", root.display());
+        // the binding's build reads the root from this build's own report, so it never discovers a toolkit a second time
+        println!(
+            "cargo::rustc-env=OSPREY_CUDA_TOOLKIT_ROOT={}",
+            root.display()
+        );
     }
     // the folders of the headers the library's compiles include, named by the environment of this build
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("trees.rs");

@@ -65,13 +65,6 @@ fn a_device_image_is_built_embedded_and_linked_with_fake_tools_and_a_second_link
             ]),
         ),
         ("figures", wire::s("ptxas_info")),
-        (
-            "embed",
-            wire::obj(vec![
-                ("symbol", wire::s("k__image")),
-                ("size_symbol", wire::s("k__image_size")),
-            ]),
-        ),
     ]));
     let built = tk.build(&image, &store).unwrap();
     assert_eq!(
@@ -91,8 +84,9 @@ fn a_device_image_is_built_embedded_and_linked_with_fake_tools_and_a_second_link
         ),
     ]));
     let host_part = tk.build(&object, &store).unwrap();
+    let image_path = wire::render(&wire::s(&output_of(&built).display().to_string()));
     let request = format!(
-        "{{\"name\":\"lib.so\",\"parts\":[{host_part},{built}],\"as\":{{\"compiler\":\"host_compiler\"}},\
+        "{{\"name\":\"lib.so\",\"parts\":[{host_part}],\"images\":[{{\"image\":{image_path},\"symbol\":\"k__image\",\"size_symbol\":\"k__image_size\"}}],\"as\":{{\"compiler\":\"host_compiler\"}},\
          \"link\":{{\"linux\":[\"{{compiler}}\",\"-shared\",\"-o\",\"{{output}}\",\"{{objects}}\"],\
          \"macos\":[\"{{compiler}}\",\"-shared\",\"-o\",\"{{output}}\",\"{{objects}}\"]}},\"embed\":{}}}",
         wire::render(&recipe())

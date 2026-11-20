@@ -121,10 +121,18 @@ pub(super) fn slots(
         .map(|(at, s)| {
             let planar = s.role == Role::Lookup && params.contains(&s.name);
             let shape = payload_of(request, s);
-            // the door types GATHER on the compact matrix alone: a rank-2 MAT_IN
+            // the door types GATHER on a rank-2 MAT_IN and on a rank-0 LOOKUP
             let compact_matrix = s.role == Role::MatIn && s.shape.len() == 2;
+            // a table has lane axes to vary along only when it is neither shared nor a parameter plane, and the caller sizes a
+            // broadcast table by stating its payload; the door types a gathered LOOKUP of rank 0 (a table of scalars) only, so a
+            // table with components stays the caller's own table
+            let scalar_table = s.role == Role::Lookup
+                && !planar
+                && !shared.contains(&s.name)
+                && payload_of_table(request, &s.name).is_some_and(|payload| payload.is_empty());
             let gather = gather_mask(
                 compact_matrix,
+                scalar_table,
                 patterns,
                 &s.name,
                 gathered.contains(&s.name),
@@ -215,21 +223,40 @@ fn pattern_of(patterns: &[(String, Vec<bool>)], name: &str) -> Option<Vec<bool>>
         .map(|(_, flags)| flags.clone())
 }
 
-/// The keep mask of a gathered slot, one flag per lane axis, and none for a slot that is not gathered. Only a compact matrix (a
-/// rank-2 MAT_IN) is gathered: one the request states a broadcast pattern for is compact whatever the walk reads of it, and one the
-/// walk reads only through a gather with no pattern stated is the caller's full per-lane matrix, which varies along every axis. A
-/// gathered slot never states less.
+/// The payload the request states for the broadcast table `name` (the primal's for a tangent plane): the extents of its own leading
+/// dimensions, empty for a table of scalars; none when the request states a pattern with no payload, or no pattern.
+fn payload_of_table(request: &KernelRequest, name: &str) -> Option<Vec<i64>> {
+    let primal = name.strip_prefix(TANGENT_PREFIX).unwrap_or(name);
+    let stated = |plane: &str| {
+        request
+            .table_payloads
+            .iter()
+            .find(|(p, _)| p == plane)
+            .map(|(_, payload)| payload.clone())
+    };
+    stated(name).or_else(|| stated(primal))
+}
+
+/// The keep mask of a gathered slot, one flag per lane axis, and none for a slot that is not gathered. A compact matrix (a rank-2
+/// MAT_IN) is gathered when the request states a broadcast pattern for it, and also when the walk reads it only through a gather
+/// with no pattern stated: that is the caller's full per-lane matrix, which varies along every axis. A table (a LOOKUP that is
+/// neither shared nor a parameter plane) of scalars is gathered only by a stated pattern and a stated empty payload: with either
+/// missing, or with components, it is read as one table for every lane. A gathered slot never states less.
 fn gather_mask(
     compact_matrix: bool,
+    scalar_table: bool,
     patterns: &[(String, Vec<bool>)],
     name: &str,
     read_through_a_gather: bool,
     lane_axes: usize,
 ) -> Option<Vec<bool>> {
-    if !compact_matrix {
-        return None;
+    if compact_matrix {
+        pattern_of(patterns, name).or_else(|| read_through_a_gather.then(|| vec![true; lane_axes]))
+    } else if scalar_table {
+        pattern_of(patterns, name)
+    } else {
+        None
     }
-    pattern_of(patterns, name).or_else(|| read_through_a_gather.then(|| vec![true; lane_axes]))
 }
 
 /// The prefix of the name of the accumulated gradient of a plane.
@@ -684,8 +711,8 @@ pub(super) fn unit(parts: &Parts) -> Result<(m::UnitMeta, Option<m::Contraction>
         digest: parts.digest.to_string(),
         scalar_type: scalar(parts.request.scalar),
         host_entry: entry(Target::Host).map(|t| t.facts.symbol.clone()),
-        device_image: device.as_ref().map(|_| format!("{name}__image")),
-        device_image_size: device.as_ref().map(|_| format!("{name}__image_size")),
+        device_image: device.as_ref().map(|_| m::image_symbols(name).0),
+        device_image_size: device.as_ref().map(|_| m::image_symbols(name).1),
         device_image_format: device_format,
         device_compiler: image.map(|i| i.compiler.clone()),
         device_flags: image.map(|i| i.flags.clone()),
