@@ -925,20 +925,18 @@ def twin_run(root, cache=None) -> None:
 
 def memory_delta(mode: str) -> float:
     """In this process, which must be fresh (the runtime reserves local memory for the largest kernel a process ever launched):
-    the device memory in MB that the first launch of the trivial wide kernel takes."""
-    import eagle.plan
-    from eagle import _core, arrays
-    from eagle._alloc import synchronize
+    the device memory in MB that the first launch of the trivial wide kernel takes, read from the driver by the array library
+    the planes come from."""
+    import cupy as cp
 
     def used():
-        synchronize()
-        total, free = _core.device_mem_info(-1)
+        hawk.synchronize()
+        free, total = cp.cuda.Device().mem_info
         return (total - free) / 2 ** 20
 
     real, n = (np.float32 if mode == "float32" else np.float64), 65536
-    plan = eagle.plan.auto(trivial, targets=("cuda",), scalar_type=mode)
-    bound = plan.bind(x=arrays.asarray(np.ones((W, n), real), device="cuda:0"),
-                      y=arrays.asarray(np.zeros((W, n), real), device="cuda:0"))
+    plan = hawk.deploy(trivial, targets=("host", "cuda"), scalar_type=mode)
+    bound = plan.bind(x=cp.ones((W, n), real), y=cp.zeros((W, n), real))
     before = used()
     bound.launch()
     return used() - before

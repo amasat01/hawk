@@ -105,11 +105,18 @@ def _diagnostic_bundle(tmp_path, cache_dir, *, targets):
                         targets=targets, cache_dir=cache_dir)
 
 
-def _run_on_host(bundle, name, **planes):
-    """``name`` run on the host over the planes it declares: a derivative binds what its body reads, and a run refuses
-    any other name."""
+def _run_declared(bundle, name, structure=None, **planes):
+    """``name`` run over the planes it declares, under ``structure`` (``None``: the host's): a derivative binds what its
+    body reads, and a run refuses any other name."""
     declared = {plane for _, plane in sidecar_of(bundle, name)["arg_spec"]}
-    return hawk.plan(hawk.load(bundle.directory, name)).run(**{k: v for k, v in planes.items() if k in declared})
+    loaded = hawk.load(bundle.directory, name)
+    plan = hawk.plan(loaded) if structure is None else hawk.plan(loaded, structure)
+    return plan.run(**{k: v for k, v in planes.items() if k in declared})
+
+
+def _run_on_host(bundle, name, **planes):
+    """``name`` run on the host over the planes it declares."""
+    return _run_declared(bundle, name, **planes)
 
 
 def _mask():
@@ -144,9 +151,9 @@ def test_compiled_device_vjp_and_jvp_zero_the_terminated_half(tmp_path, cache_di
     def _get(a):
         return cp.asnumpy(a)
 
-    plan = hawk.plan(hawk.load(bundle.directory, "diagnostic_vjp"), hawk.DeviceKernel)
     bar_y = np.full(N, 2.0)
-    bar_x = _get(plan.run(x=cp.asarray(x), terminated=cp.asarray(terminated), bar_y=cp.asarray(bar_y)))
+    bar_x = _get(_run_declared(bundle, "diagnostic_vjp", hawk.DeviceKernel, x=cp.asarray(x),
+                               terminated=cp.asarray(terminated), bar_y=cp.asarray(bar_y)))
     np.testing.assert_array_equal(bar_x[:N // 2], bar_y[:N // 2])
     np.testing.assert_array_equal(bar_x[N // 2:], np.zeros(N - N // 2))
 
@@ -192,8 +199,8 @@ def _check_finishing(bundle, target):
         else:
             import cupy as cp
 
-            got = hawk.plan(hawk.load(bundle.directory, name), hawk.DeviceKernel).run(
-                x=cp.asarray(x), terminated=cp.asarray(mask), **{seed_name: cp.asarray(seed)})
+            got = _run_declared(bundle, name, hawk.DeviceKernel, x=cp.asarray(x), terminated=cp.asarray(mask),
+                                **{seed_name: cp.asarray(seed)})
         got = np.asarray(got.get() if hasattr(got, "get") else got)
         np.testing.assert_array_equal(got[:N // 2], seed[:N // 2])
         np.testing.assert_array_equal(got[N // 2:], np.zeros(N - N // 2))
