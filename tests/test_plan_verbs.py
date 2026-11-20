@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from test_chain import _fan_in_oracle, fan_in
 
 import hawk
 from hawk import HawkError, Mutable, Param, Scalar, Terminated, Vector
@@ -337,6 +338,22 @@ def test_a_deployed_plan_takes_no_structure(cache_dir):
         hawk.deploy(axpb, cache_dir=cache_dir, structure=hawk.HostSerial)
     with pytest.raises(HawkError, match="already carries its structure"):
         hawk.plan(hawk.deploy(axpb, cache_dir=cache_dir), structure=hawk.HostSerial)
+
+
+@pytest.mark.parametrize("structure", [hawk.HostTeam, hawk.HostSerial], ids=["team", "serial"])
+def test_a_deployed_cut_chain_equals_its_uncut_oracle(cache_dir, structure):
+    """Ten members of one chain, which the host cuts into stages, run as the one kernel the chain is: ``out`` equals the
+    long-double evaluation of the members one after the other, within a few ulp of the scalar type."""
+    width, n_members = 16, 10
+    chain = hawk.chain(*fan_in(n_members, width), name="cut")
+    plan = hawk.deploy(chain, cache_dir=cache_dir)
+    assert plan.kernel.sidecar["stages"], "the host cuts this chain; the test needs the stages"
+    x = np.random.default_rng(3).uniform(0.1, 2.0, N)
+    planes = {name: x.copy() if name == "x" else np.zeros((width, N)) for _, name in chain.arg_spec}
+    hawk.plan(plan.kernel, structure).bind(**planes).launch()
+    want = _fan_in_oracle(x, n_members, width)
+    error = np.max(np.abs(planes["out"].astype(np.longdouble) - want))
+    assert error <= 16 * np.finfo(np.float64).eps * np.max(np.abs(want))
 
 
 def test_deploy_for_a_device_target_is_refused_by_name(cache_dir):

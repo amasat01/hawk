@@ -9,7 +9,7 @@ classifies each array's layout, infers and checks the sample count and refuses a
 the failures of one call together. Everything that runs is the library's, reached through one
 :class:`_osprey.Door` (:meth:`hawk.ospreys.Osprey.runtime_door`): the unit is loaded, each array is wrapped as a plane,
 a plan is made over the range, the planes are bound and the plan is launched. The scratch planes a kernel
-owns (the finished counter, the step word, the compensation companions, the rows of a sum over samples, the
+owns (the finished counter, the active set of a runner, the compensation companions, the rows of a sum over samples, the
 planes between the stages of a split kernel) are made and folded by the door, so no array library is needed
 here.
 
@@ -48,8 +48,8 @@ scatter target (``accum_out``)  ``(*payload, *axes)`` as declared           as p
 uniform                         a Python number or a 0-d array              its bytes at the wire dtype
 ==============================  ==========================================  ==================================
 
-The library makes and the caller does not bind: the sample count, the step word, the finished counter, a dispatch group's
-branch counters, compensation planes, a cell's rows and the planes between the stages of a split kernel.
+The library makes and the caller does not bind: the sample count, the finished counter, the active set a runner compacts,
+a dispatch group's branch counters, compensation planes, a cell's rows and the planes between the stages of a split kernel.
 
 Threading. The door's context admits one calling thread at a time: a second thread calling while another is
 inside the door is refused by the door, with its reason.
@@ -73,6 +73,10 @@ from .errors import HawkError
 from .targets import ENTRY_KINDS, host_target
 
 __all__ = ["BoundPlan", "HostKernel", "check_scatter_status", "dispatch_costs", "load", "run", "steps_reverse_table"]
+
+#: The two planes a kernel built under ``Guard(active_set=True)`` reads: the live samples and their count. A runner makes
+#: and compacts them; a kernel whose lane set is the caller's (``launch.index_set``) binds planes of these names itself.
+_ACTIVE_SET_PLANES = ("active_map", "active_count")
 
 
 #: The struct format a uniform's value is packed with, by the wire dtype the sidecar states for it.
@@ -175,7 +179,7 @@ class HostKernel:
 
     # -- per call ----------------------------------------------------------
     def arguments(self, arrays: dict, n_samples: int | None = None, layout: str | None = None, *,
-                  keep: bool, outputs: bool = False) -> _Arguments:
+                  keep: bool, outputs: bool = False, running: bool = False) -> _Arguments:
         """Check ``arrays`` against the sidecar and return what a plan wraps and binds.
 
         ``arrays`` maps a plane's name to an array and a ``uniform``'s to a Python number. Refuses naming every failing
@@ -184,6 +188,8 @@ class HostKernel:
         ``keep``: they stay bound after the call, so an ``Index`` plane of another integer width than the kernel declares is
         refused (a copy would stay behind when the caller changes the column); a call that binds once converts it instead.
         ``outputs``: an output plane the caller left out is made, zeroed, in the shape and dtype the sidecar declares.
+        ``running``: the call runs its samples to done (a runner), so a ``terminated`` mask the caller left out starts
+        all-false and an automatic kernel's step word is a fresh one the runner owns.
         An automatic kernel's ``fused_steps`` word, a finishing kernel's ``finished_count`` counter and the other planes the
         library owns are not bound.
         """
@@ -205,8 +211,9 @@ class HostKernel:
             arrays = {**arrays, **self._made_outputs(plain, n_samples)}
             plain, axes = split_marks(arrays, layout)
             choice = LayoutChoice(layout, axes)
-        declared = _stage_names(self) if sidecar.get("stages") else {name for _, name in spec} | set(sidecar.get("cells") or ())
-        _refuse_unbound_names(self, arrays, declared)
+        if running:
+            arrays = {**arrays, **self._made_for_running(arrays, n_samples)}
+        _refuse_unbound_names(self, arrays, self._plane_names())
         return self._checked(arrays, n_samples, layout, keep=keep)._replace(extents=stated)
 
     def output_names(self) -> tuple:
@@ -243,6 +250,27 @@ class HostKernel:
             plane = np.zeros(shape, dtype=sidecar["arg_dtypes"][name])
             made[name] = samples_last(plane) if width > 1 and shape[0] == width else plane
         return made
+
+    def _made_for_running(self, arrays: dict, n_samples: int) -> dict:
+        """What a runner starts from when the caller left it out: an all-false ``terminated`` mask and a step word of ``1``
+        that this call owns (the runner writes the steps it takes per launch into it)."""
+        import numpy as np
+
+        made = {name: np.zeros(n_samples, dtype=bool)
+                for role, name in self.bind_spec if role == "terminated" and name not in arrays}
+        if _ir.FUSED_STEPS_PLANE in self._slot_named and _ir.FUSED_STEPS_PLANE not in arrays:
+            made[_ir.FUSED_STEPS_PLANE] = np.ones(1, dtype=np.int64)
+        return made
+
+    def _plane_names(self) -> set:
+        """The names of the planes and cells a call to this kernel may bind: every stage's, for a split kernel."""
+        if self.declared.get("stages"):
+            return _stage_names(self)
+        return {name for _, name in self.bind_spec} | set(self.declared.get("cells") or ())
+
+    def declared_names(self) -> set:
+        """The names of every plane, cell and runtime axis a call to this kernel may state."""
+        return self._plane_names() | _lane_bind.free_labels(self.declared)
 
     def _checked(self, arrays: dict, n_samples: int, layout, *, keep: bool) -> _Arguments:
         """Validate ``arrays`` and return the views and uniform values a plan binds.
@@ -509,15 +537,36 @@ class BoundPlan:
         """The arrays bound, by name, as the caller gave them (a plane made for an output left out included), read-only."""
         return MappingProxyType({name: getattr(value, "array", value) for name, value in self._arguments.given.items()})
 
+    @property
+    def handle(self):
+        """The library's handle of the plan, which a runner or a recording composes with others of its context."""
+        self._check_open()
+        return self._plan
+
+    def _check_open(self) -> None:
+        """Refuse a closed plan, by name."""
+        if not self._finalizer.alive:
+            raise HawkError(f"{self._kernel.path.name}: this plan is closed; bind a new one")
+
     def launch(self) -> int:
         """Run the plan once over the bound planes and return the host tiles the library ran. A counter array the caller
         bound (``finished_count``, a dispatch group's branch counters) is filled from the plan's counters."""
-        if not self._finalizer.alive:
-            raise HawkError(f"{self._kernel.path.name}: this plan is closed; bind a new one")
+        self._check_open()
         tiles = through_door(self._door.launch, self._plan)
-        if self._arguments.counters:
-            self._kernel._fill_counters(self.counters(), self._arguments.counters)
+        self.settle_counters()
         return tiles
+
+    def enqueue(self) -> None:
+        """Queue one launch into the recording in progress: it runs at every replay of the recorded graph, and
+        :meth:`settle_counters` after a replay adds what it counted."""
+        self._check_open()
+        through_door(self._door.launch, self._plan)
+
+    def settle_counters(self, counted: dict | None = None) -> None:
+        """Add what a run counted to the counter arrays the caller bound (``finished_count``, a dispatch group's branch
+        counters); nothing when it bound none. ``counted`` has the shape of :meth:`counters` and defaults to it."""
+        if self._arguments.counters:
+            self._kernel._fill_counters(self.counters() if counted is None else counted, self._arguments.counters)
 
     def counters(self) -> dict:
         """The library's counters of the plan: ``finished`` and ``steps`` (``None`` when the kernel has none) and ``mix``.
@@ -580,7 +629,7 @@ def _declared_over(sidecars: list) -> dict:
 
 def _door_made_names(sidecar: dict) -> set:
     """The names of the slots the library makes and the caller need not bind: the finished
-    counter, a dispatch group's branch counters, the compensation companions, the scratch planes between the
+    counter, the active set of a kernel that is not over the caller's own lane set, a dispatch group's branch counters, the compensation companions, the scratch planes between the
     stages, the compensation of a cell's rows and, in a split kernel, the cells themselves (the library keeps the
     ones the caller does not read)."""
     names = {_ir.FINISHED_PLANE}
@@ -589,6 +638,8 @@ def _door_made_names(sidecar: dict) -> set:
         if entry["strategy"] == "segmented":
             names |= {entry["class"], entry["stale"], entry["offsets"]}   # the group's sorted-sample planes
     names |= set(sidecar.get("companions") or ()) | set(sidecar.get("team_planes") or ()) | set(sidecar.get("keyed") or ())
+    if sidecar.get("launch", {}).get("index_set") is None:
+        names |= {name for name in _ACTIVE_SET_PLANES if name in sidecar["slots"]}
     for cell, spec in (sidecar.get("cells") or {}).items():
         planes = _ir.planes(cell, spec["columns"])
         if sidecar.get("stages"):

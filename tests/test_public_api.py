@@ -28,8 +28,10 @@ import hawk
 import hawk.artifact
 import hawk.diff
 import hawk.ext
+import hawk.graph
 import hawk.math
 import hawk.plans
+import hawk.runner
 import hawk.runtime
 import hawk.trace
 
@@ -40,6 +42,8 @@ _SURFACES = {
     "hawk.math": hawk.math,
     "hawk.runtime": hawk.runtime,
     "hawk.plans": hawk.plans,
+    "hawk.runner": hawk.runner,
+    "hawk.graph": hawk.graph,
     "hawk.ext": hawk.ext,
     "hawk.diff": hawk.diff,
     "hawk.artifact": hawk.artifact,
@@ -51,12 +55,13 @@ _SURFACES = {
 #: the SAME commit, same as any other committed manifest in this repo.
 _EXPECTED_MANIFEST = {
     "hawk": [
-        "DeviceKernel", "Grid", "HawkError", "HostSerial", "HostTeam", "Index", "Int32", "Kernel", "Matrix", "Meta", "Mutable",
+        "ActiveSet", "DeviceKernel", "Graph", "GraphPipeline", "Grid", "HawkError", "HostSerial", "HostTeam", "Index", "Int32", "Kernel", "Matrix", "Meta", "Mutable",
         "Param", "Partition", "Quantity", "Quat", "RawBlock", "Scalar", "Sorted",
         "Staged", "Table", "Terminated", "ToolchainAbsent", "UInt32", "Value", "Vector", "Wide",
         "WideOut", "__version__", "asarray", "banded_pack", "banded_unpack", "build", "chain", "deploy", "geometry",
-        "kernel", "load", "max", "mean", "min", "plan", "primitive", "raw_device", "resolve_dispatch", "run",
-        "sample_position", "samples_first", "samples_last", "scatter", "steps", "sum", "synchronize", "to_numpy",
+        "kernel", "load", "max", "mean", "min", "plan", "primitive", "raw_device", "resolve_dispatch", "reverse", "run",
+        "sample_position", "samples_first", "samples_last", "scatter", "simulate", "steps", "sum", "synchronize",
+        "to_numpy", "until_done",
     ],
     "hawk.trace": [],
     "hawk.math": [
@@ -86,6 +91,8 @@ _EXPECTED_MANIFEST = {
         "DeviceKernel", "HostSerial", "HostTeam", "Partition", "Plan", "asarray", "banded_pack", "banded_unpack", "deploy",
         "plan", "synchronize", "to_numpy",
     ],
+    "hawk.runner": ["ActiveSet", "RunReport", "Runner", "SimResult", "simulate", "until_done"],
+    "hawk.graph": ["Graph", "GraphPipeline", "GraphRecord", "reverse"],
     "hawk.ext": [
         "ATOMIC", "DEFAULT_GUARD", "DEFAULT_KIND", "Guard", "IndexSet",
         "KernelKind", "Kind", "Output", "PLAIN", "PrimitiveDef",
@@ -123,14 +130,15 @@ def test_the_public_manifest_is_exactly_this():
 #: that answer at ``hawk`` ON PURPOSE beside a submodule's own export of the
 #: same name -- ``load``/``run`` are the identical object as
 #: ``hawk.runtime``'s, and the plan verbs the identical objects as
-#: ``hawk.plans``', reached by a second spelling; ``build`` is a
+#: ``hawk.plans``' (and the runner verbs the identical objects as ``hawk.runner``'s, the graph verbs as ``hawk.graph``'s), reached by a second spelling; ``build`` is a
 #: DIFFERENT object than ``hawk.artifact.build`` (the deployment-unit door
 #: vs. the single-kernel primitive), overloaded across the two surfaces by
 #: name alone. Every other duplicate below still fails: this is the one
 #: named exception, not a loophole.
 _TOP_LEVEL_DOOR_NAMES = frozenset({
     "build", "load", "run", "primitive", "plan", "deploy", "Partition", "HostTeam", "HostSerial", "DeviceKernel", "asarray",
-    "to_numpy", "synchronize", "banded_pack", "banded_unpack"})
+    "to_numpy", "synchronize", "banded_pack", "banded_unpack", "ActiveSet", "until_done", "simulate", "Graph",
+    "GraphPipeline", "reverse"})
 
 #: The reductions named twice ON PURPOSE: ``hawk.<op>`` reduces across lanes
 #: (``over=``), ``hawk.math.<op>`` within one value (``np.sum`` over its own

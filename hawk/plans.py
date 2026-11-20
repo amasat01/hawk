@@ -24,8 +24,7 @@ from .errors import HawkError
 from .runtime import BoundPlan, HostKernel, load, through_door
 from .targets import TARGETS, host_target
 
-__all__ = ["DeviceKernel", "HostSerial", "HostTeam", "Partition", "Plan", "asarray", "banded_pack", "banded_unpack", "deploy",
-           "plan", "synchronize", "to_numpy"]
+__all__ = ["DeviceKernel", "HostSerial", "HostTeam", "Partition", "Plan", "asarray", "banded_pack", "banded_unpack", "deploy", "plan", "synchronize", "to_numpy"]
 
 #: What a refusal of anything that needs a device says.
 _NO_DEVICE = "the device runtime is not in this build"
@@ -144,6 +143,13 @@ class Plan:
         if returns == "numpy":
             outputs = {name: to_numpy(value) for name, value in outputs.items()}
         return next(iter(outputs.values())) if len(outputs) == 1 else outputs
+
+
+def bind_for_run(plan: Plan, planes: dict, n_samples: int | None = None, layout: str | None = None) -> BoundPlan:
+    """Bind ``planes`` for a plan that runs its samples to done (:func:`hawk.until_done`): the checks of :meth:`Plan.bind`,
+    and a ``terminated`` mask or an output the caller left out is made (all-false, zeroed) instead of refused."""
+    arguments = plan.kernel.arguments(planes, n_samples, layout, keep=False, outputs=True, running=True)
+    return plan._bound(arguments, n_samples, layout)
 
 
 def plan(loaded: HostKernel, structure: Structure = HostTeam, *, npartitions: int | None = None,

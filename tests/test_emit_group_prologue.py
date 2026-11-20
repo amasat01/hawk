@@ -42,6 +42,7 @@ MAP = Kind("group_rows", guard=Guard(active_set=True))
 G = 32
 N = 100                      # not a multiple of G: the last group has 4 lanes
 DT = 0.25
+FAR = 1.0e30
 PER_LANE_READ = "reinterpret_cast<const std::int32_t*>(lut_active_map.data())[hawk_t]"
 GROUP_READ = (f"static_cast<long long>(reinterpret_cast<const std::int32_t*>"
               f"(lut_active_map.data())[(hawk_t) / {G}]) * {G} + (hawk_t) % {G}")
@@ -53,6 +54,17 @@ def _step(omega: Scalar, dt: Param, terminated: Terminated, x: Mutable[Scalar]):
 
 def _kernel(group):
     return hawk.kernel(_step, kind=MAP, group=group)
+
+
+def _step_until_far(omega: Scalar, dt: Param, terminated: Terminated, x: Mutable[Scalar]):
+    xn = x + dt * omega
+    x = xn
+    terminated = xn >= FAR
+
+
+def _runner_kernel(group):
+    """The step with a stop rule no sample reaches, so that a runner (which needs a finish) takes exactly its cap."""
+    return hawk.kernel(_step_until_far, kind=MAP, group=group)
 
 
 def _sources(group):
@@ -126,3 +138,41 @@ def test_a_group_run_equals_the_per_lane_run(bundles, target, live):
     rest = np.setdiff1d(np.arange(N), lanes)
     np.testing.assert_array_equal(got[rest], start[rest])        # the others did not
 
+
+
+@pytest.fixture(scope="module")
+def runner_kernels(tmp_path_factory, cache_dir):
+    """``{group: loaded kernel}`` of the stepping kernel with a finish, built for the host at group 1 and at ``G``."""
+    root = tmp_path_factory.mktemp("group_runner")
+    out = {}
+    for group in (1, G):
+        kernel = _runner_kernel(group)
+        bundle = build_bundle([kernel], root / f"g{group}", targets=("host",), cache_dir=cache_dir, kind=MAP)
+        out[group] = hawk.load(bundle.directory, kernel.name)
+    return out
+
+
+def _run_under_a_runner(loaded, live_groups):
+    """One step of the kernel under a runner, every lane outside ``live_groups`` terminated: the runner compacts the live
+    lanes by the group the kernel was emitted for."""
+    dead = np.ones(N, dtype=bool)
+    for g in live_groups:
+        dead[g * G:(g + 1) * G] = False
+    x = np.linspace(0.0, 3.0, N)
+    report = hawk.until_done(hawk.plan(loaded), max_steps=1, omega=np.linspace(-1.0, 1.0, N), dt=DT,
+                             terminated=dead, x=x).run()
+    return x, report
+
+
+@pytest.mark.parametrize("live", [[0, 1, 2, 3], [0, 2, 3], [3], [1]])
+def test_a_group_run_under_a_runner_equals_the_per_lane_run(runner_kernels, live):
+    want, _ = _run_under_a_runner(runner_kernels[1], live)
+    got, report = _run_under_a_runner(runner_kernels[G], live)
+    np.testing.assert_array_equal(got, want)
+    lanes = [i for g in live for i in range(g * G, min((g + 1) * G, N))]
+    start = np.linspace(0.0, 3.0, N)
+    omega = np.linspace(-1.0, 1.0, N)
+    np.testing.assert_array_equal(got[lanes], start[lanes] + DT * omega[lanes])   # the live lanes took one step
+    rest = np.setdiff1d(np.arange(N), lanes)
+    np.testing.assert_array_equal(got[rest], start[rest])                         # the others did not
+    assert report.steps == 1

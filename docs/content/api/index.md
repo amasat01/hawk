@@ -90,3 +90,29 @@ The declarations a kernel is written in, and the top-level functions. Each has i
    hawk.banded_pack
    hawk.banded_unpack
 ```
+
+## Running a model until it is done
+
+`hawk.until_done` binds a plan, a kernel or a list of them run as one step and makes the loop that runs every sample to done; `hawk.simulate` runs it and returns the state. `hawk.ActiveSet` states how a kernel built over an active set is compacted.
+
+```{eval-rst}
+.. autosummary::
+   :toctree: generated
+
+   hawk.until_done
+   hawk.simulate
+   hawk.ActiveSet
+```
+
+## Recording launches into a graph
+
+A graph records bound plans once and replays them; `hawk.reverse` takes the record of a recorded run.
+
+```{eval-rst}
+.. autosummary::
+   :toctree: generated
+
+   hawk.Graph
+   hawk.GraphPipeline
+   hawk.reverse
+```

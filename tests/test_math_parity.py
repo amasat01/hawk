@@ -21,7 +21,7 @@ Three claims per function, over a corpus that enumerates the special values
 Derivatives: a forward and a reverse kernel of one body carrying every
 function are compared with a central difference of the SAME target's compiled
 primal. And each function runs inside a finishing kernel through
-``eagle.simulate`` on both targets.
+``simulate`` on both targets (``hawk.simulate`` on the host).
 """
 
 from __future__ import annotations
@@ -724,7 +724,7 @@ def test_forward_and_reverse_match_a_central_difference(tmp_path, target):
 
 
 # --------------------------------------------------------------------------- #
-# Each function inside a finishing kernel, through eagle.simulate.
+# Each function inside a finishing kernel, through simulate.
 # --------------------------------------------------------------------------- #
 @hawk.kernel
 def finishing_math(x: Scalar, a: Scalar, terminated: Terminated,
@@ -759,24 +759,23 @@ def _finishing_reference(x, a):
 
 @pytest.mark.parametrize("target", ["host", pytest.param("cuda", marks=pytest.mark.gpu)])
 def test_every_function_runs_in_a_finishing_kernel_through_simulate(target):
-    import eagle
-
     rng = np.random.default_rng(11)
     x = rng.uniform(0.2, 1.8, 64)
     a = rng.uniform(-3.0, 3.0, 64)
     if target == "host":
-        put, get = (lambda v: v), np.asarray
+        put, get, simulate = (lambda v: v), np.asarray, hawk.simulate
     else:
         import cupy as cp
-        put, get = cp.asarray, cp.asnumpy
-    res = eagle.simulate(finishing_math, x=put(x), a=put(a),
-                         y=put(np.zeros(64)), t=put(np.zeros(64)), max_steps=4)
+        import eagle
+        put, get, simulate = cp.asarray, cp.asnumpy, eagle.simulate
+    res = simulate(finishing_math, x=put(x), a=put(a),
+                   y=put(np.zeros(64)), t=put(np.zeros(64)), max_steps=4)
     np.testing.assert_allclose(get(res.y), _finishing_reference(x, a), rtol=1e-13)
     np.testing.assert_array_equal(get(res.t), 1.0)
 
 
 # --------------------------------------------------------------------------- #
-# Matrix derivatives and a matrix kernel through eagle.simulate.
+# Matrix derivatives and a matrix kernel through simulate.
 # --------------------------------------------------------------------------- #
 @hawk.kernel
 def smooth_mat(X: Matrix[2, 3], Y: Matrix[2, 3], B: Matrix[2, 3], s: Scalar,
@@ -892,19 +891,18 @@ def _finishing_mat_reference(X, a):
 
 @pytest.mark.parametrize("target", ["host", pytest.param("cuda", marks=pytest.mark.gpu)])
 def test_a_matrix_kernel_runs_through_simulate(target):
-    import eagle
-
     rng = np.random.default_rng(12)
     X = rng.uniform(0.2, 1.8, (6, 64))
     a = rng.uniform(-3.0, 3.0, 64)
     if target == "host":
-        put, get = (lambda v: v), np.asarray
+        put, get, simulate = (lambda v: v), np.asarray, hawk.simulate
     else:
         import cupy as cp
-        put, get = cp.asarray, cp.asnumpy
-    res = eagle.simulate(finishing_mat, X=put(X), a=put(a),
-                         y=put(np.zeros((6, 64))), t=put(np.zeros(64)),
-                         max_steps=4)
+        import eagle
+        put, get, simulate = cp.asarray, cp.asnumpy, eagle.simulate
+    res = simulate(finishing_mat, X=put(X), a=put(a),
+                   y=put(np.zeros((6, 64))), t=put(np.zeros(64)),
+                   max_steps=4)
     np.testing.assert_allclose(get(res.y), _finishing_mat_reference(X, a[None, :]),
                                rtol=1e-13)
     np.testing.assert_array_equal(get(res.t), 1.0)

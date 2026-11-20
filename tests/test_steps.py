@@ -412,8 +412,8 @@ K_SEQ = (1, 3, 64, 7, 2, 16, 5, 33)
 
 
 def _bind(bundle, name, target, planes, active):
-    """The plan bound over ``planes``. An active set is made by a runner hawk's verbs do not have yet (the library refuses the
-    caller's ``active_count``), so that row binds through eagle's plan."""
+    """The plan bound over ``planes``. The active set of a device row binds through eagle's plan; a host kernel over an active
+    set runs under a runner that makes it (:func:`test_a_runner_over_an_active_set_takes_exactly_its_cap_in_steps`)."""
     if not active:
         return _launch(bundle, name, target, planes)
     import eagle.exec as eexec
@@ -499,18 +499,20 @@ def _compact(extra, planes, xp):
     extra["active_count"][0] = live.size
 
 
-@pytest.mark.parametrize(
-    "which,name,active",
-    [
-        ("osc", "osc_xauto", False),
-        ("spin3", "spin3_xauto", False),
-        ("osc", "_osc_body_xauto", True),
-    ],
-    ids=["osc", "spin3", "osc-active-set"],
-)
-@pytest.mark.parametrize(
-    "target", ["host", pytest.param("cuda", marks=pytest.mark.gpu)]
-)
+def _word_rows():
+    """The rows of the word-driven test: each kernel on the host and on the device, except the active-set kernel on the host,
+    whose set is the runner's and whose row is the runner test below."""
+    for which, name, active, label in (
+        ("osc", "osc_xauto", False, "osc"),
+        ("spin3", "spin3_xauto", False, "spin3"),
+        ("osc", "_osc_body_xauto", True, "osc-active-set"),
+    ):
+        if not active:
+            yield pytest.param(which, name, active, "host", id=f"{label}-host")
+        yield pytest.param(which, name, active, "cuda", marks=pytest.mark.gpu, id=f"{label}-cuda")
+
+
+@pytest.mark.parametrize("which,name,active,target", list(_word_rows()))
 def test_auto_takes_exactly_the_word_s_steps_per_launch(
     bundles, active_bundle, which, name, active, target
 ):
@@ -539,6 +541,42 @@ def test_auto_takes_exactly_the_word_s_steps_per_launch(
             _compact(extra, planes, xp)
         assert launches < CAP
     assert got["terminated"].all() and total >= len(snaps) - 1
+
+
+def _runner_snapshots(plan_of, upto):
+    """``snaps[s]`` = the planes after ``s`` steps, from a runner that takes one step per run, until every sample is done or
+    ``upto`` steps."""
+    planes, _ = _planes("osc", np)
+    planes |= {"dt": DT}
+    runner = hawk.until_done(plan_of(), max_steps=1, **planes)
+    snaps = [_host({k: v for k, v in planes.items() if k != "dt"})]
+    while len(snaps) <= upto:
+        report = runner.run()
+        snaps.append(_host({k: v for k, v in planes.items() if k != "dt"}))
+        if report.done:
+            break
+    runner.close()
+    return snaps
+
+
+def test_a_runner_over_an_active_set_takes_exactly_its_cap_in_steps(active_bundle):
+    """The active-set kernel under a runner: after a cap of ``s`` steps (the running totals of the ``K_SEQ`` cycle) every
+    plane equals the one-step-per-run reference after ``s`` steps, bit for bit, and a cap below the last step is taken
+    exactly; a cap past it leaves the finished state."""
+    kernel = hawk.load(active_bundle.directory, "_osc_body_xauto")
+    snaps = _runner_snapshots(lambda: hawk.plan(kernel), CAP)
+    total = 0
+    for k in K_SEQ:
+        total += k
+        planes, _ = _planes("osc", np)
+        report = hawk.until_done(hawk.plan(kernel), max_steps=total, dt=DT, **planes).run()
+        got = _host(planes)
+        for plane, want in snaps[min(total, len(snaps) - 1)].items():
+            _assert_same(got[plane], want, err_msg=f"{plane} after a cap of {total} steps")
+        if total < len(snaps) - 1:
+            assert report.steps == total and not report.done
+        else:
+            assert report.done
 
 
 @pytest.mark.parametrize(
