@@ -121,17 +121,22 @@ pub(super) fn slots(
         .map(|(at, s)| {
             let planar = s.role == Role::Lookup && params.contains(&s.name);
             let shape = payload_of(request, s);
+            // the door types GATHER on the compact matrix alone: a rank-2 MAT_IN
+            let compact_matrix = s.role == Role::MatIn && s.shape.len() == 2;
+            let gather = gather_mask(
+                compact_matrix,
+                patterns,
+                &s.name,
+                gathered.contains(&s.name),
+                request.lane_space.len(),
+            );
             // the writers cross the boundary by the rank of the walk's slot; the record's shape is the caller's payload, which a
             // sink plane may state wider than the slot the entry binds
             let mirror =
                 aether_writers::ir::runtime_names::mirror_of(s.role.name(), s.shape.len())?;
             Ok(m::Slot {
                 flags: if planar { m::SLOT_PARAM_PLANE } else { 0 }
-                    | if gathered.contains(&s.name) {
-                        m::SLOT_GATHER
-                    } else {
-                        0
-                    }
+                    | if gather.is_some() { m::SLOT_GATHER } else { 0 }
                     | if prior.contains(&s.name) {
                         m::SLOT_PRIOR
                     } else {
@@ -145,10 +150,7 @@ pub(super) fn slots(
                 role: role(s.role),
                 dtype: dtype(s.role, s.dtype),
                 like_slot: like_slot(typed, at),
-                gather: gathered
-                    .contains(&s.name)
-                    .then(|| pattern_of(patterns, &s.name))
-                    .flatten(),
+                gather,
                 written: is_written(s.role, &s.name, typed.finish.as_deref()),
                 shape,
                 name: s.name.clone(),
@@ -211,6 +213,23 @@ fn pattern_of(patterns: &[(String, Vec<bool>)], name: &str) -> Option<Vec<bool>>
         .find(|(plane, _)| plane == name)
         .or_else(|| patterns.iter().find(|(plane, _)| plane == primal))
         .map(|(_, flags)| flags.clone())
+}
+
+/// The keep mask of a gathered slot, one flag per lane axis, and none for a slot that is not gathered. Only a compact matrix (a
+/// rank-2 MAT_IN) is gathered: one the request states a broadcast pattern for is compact whatever the walk reads of it, and one the
+/// walk reads only through a gather with no pattern stated is the caller's full per-lane matrix, which varies along every axis. A
+/// gathered slot never states less.
+fn gather_mask(
+    compact_matrix: bool,
+    patterns: &[(String, Vec<bool>)],
+    name: &str,
+    read_through_a_gather: bool,
+    lane_axes: usize,
+) -> Option<Vec<bool>> {
+    if !compact_matrix {
+        return None;
+    }
+    pattern_of(patterns, name).or_else(|| read_through_a_gather.then(|| vec![true; lane_axes]))
 }
 
 /// The prefix of the name of the accumulated gradient of a plane.
@@ -858,6 +877,55 @@ fn team(
     }
 }
 
+/// The output of a stage that runs one block per key is one value per kept key, so the unit that lists the stages states the kept
+/// axes of its keyed plane for the wide output the stage writes: the plane's extent is the keys' extents, as a declared sink states
+/// its own. The runtime reads the keys of a wide output from the stage that writes it through the listing unit's slot of that
+/// name, so the axes belong on that slot and on no stage unit. An output the request already declared axes for keeps them.
+fn state_keyed_outputs(units: &mut [UnitAnswer], listing: usize, block: &StageBlock) {
+    for stage in &block.stages {
+        let Some(keys) = stage
+            .team
+            .as_ref()
+            .and_then(|t| t.keys.as_ref())
+            .filter(|k| !k.keyed.axes.is_empty())
+        else {
+            // a sum over every lane keeps no axis: one key, an output with no named axes
+            continue;
+        };
+        let written: Vec<String> = units
+            .iter()
+            .find(|u| u.meta.name == stage.kernel)
+            .map(|u| {
+                let slots = &u.meta.body.slots;
+                let outputs = slots.iter().filter(|s| {
+                    // a scratch plane the runtime owns is no output of the kernel
+                    s.role == m::SlotRole::WideOut
+                        && !block.team_planes.iter().any(|p| p.name == s.name)
+                });
+                outputs.map(|s| s.name.clone()).collect()
+            })
+            .unwrap_or_default();
+        let meta = &mut units[listing].meta;
+        for name in written {
+            let at = slot_at(&meta.body.slots, &name);
+            let wide = at.is_some_and(|at| meta.body.slots[at].role == m::SlotRole::WideOut);
+            let stated = at.is_some_and(|at| meta.launch.plane_axes.iter().any(|p| p.slot == at));
+            if let (Some(at), true, false) = (at, wide, stated) {
+                meta.launch.plane_axes.push(m::PlaneAxes {
+                    slot: at,
+                    labels: keys.keyed.axes.iter().map(|(l, _)| l.clone()).collect(),
+                    extents: keys
+                        .keyed
+                        .axes
+                        .iter()
+                        .map(|(_, e)| e.unwrap_or(-1))
+                        .collect(),
+                });
+            }
+        }
+    }
+}
+
 /// Writes what the split into stages decided into the unit that lists the stages: the kernel's entry-less source unit when the
 /// kernel was cut (put first in the answer), else the first stage. It gets the stages, cells, keyed planes and scratch planes of
 /// the kernel, and the chunk cap of its ordered scatters.
@@ -965,6 +1033,7 @@ pub(super) fn stages(
         });
     meta.body.scatter_chunks = if scatters { scatter_chunks } else { 0 };
     meta.body.team_planes = planes;
+    state_keyed_outputs(units, at, block);
     // a scratch plane is bound by the stage units under its own name: those slots hold the plane's element type
     for unit in units.iter_mut() {
         for slot in &mut unit.meta.body.slots {
@@ -1018,6 +1087,91 @@ mod tests {
         ));
         assert!(is_written(Role::Mutable, "y", None));
         assert!(!is_written(Role::PerSample, "x", None));
+    }
+
+    #[test]
+    fn the_unit_listing_a_keys_stage_states_the_kept_axes_of_the_wide_output_the_stage_writes() {
+        use super::super::stage_block::{KeyedRecord, KeysGrid, StageRecord, TeamRecord};
+        let written = |name: &str| m::Slot {
+            name: name.into(),
+            written: true,
+            role: m::SlotRole::WideOut,
+            ..m::Slot::default()
+        };
+        let unit = |name: &str, slots: Vec<m::Slot>| UnitAnswer {
+            texts: vec![],
+            meta: m::UnitMeta {
+                name: name.into(),
+                body: m::Body {
+                    slots,
+                    ..m::Body::default()
+                },
+                ..m::UnitMeta::default()
+            },
+            defines: vec![],
+            contraction: None,
+        };
+        let keyed = KeyedRecord {
+            name: "tmb0_gp".into(),
+            width: 1,
+            axes: vec![(Some("a".into()), Some(2)), (Some("b".into()), None)],
+            payload: vec![],
+        };
+        let team = |keys: bool| TeamRecord {
+            threads: 128,
+            lanes: 1,
+            warps: 1,
+            keys: keys.then(|| KeysGrid {
+                groups: 1,
+                keyed: keyed.clone(),
+            }),
+            scatter: None,
+        };
+        let stage = |kernel: &str, keys: bool| StageRecord {
+            kernel: kernel.into(),
+            cells_in: vec![],
+            cells_out: vec![],
+            team: Some(team(keys)),
+        };
+        let scratch = crate::lower::stage_block::PlaneRecord {
+            name: "tmb0_gp".into(),
+            dtype: "real".into(),
+            per_lane: 64,
+            layout: None,
+            keys: Some(keyed.clone()),
+            per_target: None,
+            once: false,
+            wide: false,
+            fill: None,
+        };
+        let mut units = vec![
+            unit("k", vec![slot("x"), written("out"), written("tmb0_gp")]),
+            unit("k_2", vec![written("out"), written("tmb0_gp")]),
+        ];
+        let block = StageBlock {
+            stages: vec![stage("k", true), stage("k_2", true)],
+            team_planes: vec![scratch],
+            ..StageBlock::default()
+        };
+        state_keyed_outputs(&mut units, 0, &block);
+        // the scratch plane and the stage units carry none; the listing unit's wide output carries the keys' axes
+        assert!(units[1].meta.launch.plane_axes.is_empty());
+        let [axes] = &units[0].meta.launch.plane_axes[..] else {
+            panic!("one output: {:?}", units[0].meta.launch.plane_axes);
+        };
+        assert_eq!(units[0].meta.body.slots[axes.slot].name, "out");
+        assert_eq!(axes.labels, [Some("a".into()), Some("b".into())]);
+        assert_eq!(axes.extents, [2, -1]);
+        // a sum over every lane keeps no axis, and the door refuses named axes of none
+        let mut whole = block.clone();
+        for stage in &mut whole.stages {
+            if let Some(grid) = stage.team.as_mut().and_then(|t| t.keys.as_mut()) {
+                grid.keyed.axes.clear();
+            }
+        }
+        let mut units = vec![unit("k", vec![written("out")])];
+        state_keyed_outputs(&mut units, 0, &whole);
+        assert!(units[0].meta.launch.plane_axes.is_empty());
     }
 
     #[test]

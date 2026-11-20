@@ -9,7 +9,7 @@ use rcore::json::J;
 use std::ffi::c_int;
 
 /// What the driver library states.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Driver {
     /// The driver's release as the library encodes it.
     pub encoded: Option<i64>,
@@ -33,22 +33,33 @@ fn call_name<'a>(calls: &'a J, key: &str) -> Done<&'a str> {
     wire::text(calls, key, "device.driver.calls")
 }
 
-/// Asks the driver library of `spec` (the table's `device.driver` record) about the GPU and the release; `None` when no library of
-/// the list opens or it does not initialise.
+/// Asks the driver library of `spec` (the table's `device.driver` record) about the GPU and the release; the reason, as text, when
+/// no library of the list opens or it does not initialise.
 ///
 /// # Errors
 /// Refuses a table whose `driver` record lacks a member.
-pub fn probe_driver(spec: &J) -> Done<Option<Driver>> {
-    let Some(lib) = Library::open_first(&wire::texts(spec, "libraries", "device.driver")?) else {
-        return Ok(None);
+pub fn probe_driver(spec: &J) -> Done<Result<Driver, String>> {
+    let names = wire::texts(spec, "libraries", "device.driver")?;
+    let Some(lib) = Library::open_first(&names) else {
+        return Ok(Err(format!(
+            "no driver library found (looked for {})",
+            names.join(", ")
+        )));
     };
     let calls = wire::need(spec, "calls", "device.driver")?;
     // SAFETY: the table states these names as the functions with the signatures of the aliases above.
     let init = unsafe { lib.function::<InitFn>(call_name(calls, "init")?) };
-    let Some(init) = init else { return Ok(None) };
+    let Some(init) = init else {
+        return Ok(Err(
+            "the driver library has no initialisation entry".to_string()
+        ));
+    };
     // SAFETY: `init` was looked up with its stated signature; the argument is the table's flag value 0.
-    if unsafe { init(0) } != 0 {
-        return Ok(None);
+    let status = unsafe { init(0) };
+    if status != 0 {
+        return Ok(Err(format!(
+            "the driver library did not initialise (status {status})"
+        )));
     }
     let mut driver = Driver::default();
     // SAFETY: as above, the table states the signature of `version`.
@@ -61,7 +72,7 @@ pub fn probe_driver(spec: &J) -> Done<Option<Driver>> {
         }
     }
     driver.gpu_arch = gpu_arch(spec, &lib, calls)?;
-    Ok(Some(driver))
+    Ok(Ok(driver))
 }
 
 /// The `major.minor` of an encoded release by the table's `version_decode` `[major divisor, minor divisor]`.

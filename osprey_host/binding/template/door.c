@@ -43,6 +43,7 @@
     X(eg_reduce)                                                                                   \
     X(eg_copy)                                                                                     \
     X(eg_record_begin)                                                                             \
+    X(eg_record_abort)                                                                             \
     X(eg_record_cond_begin)                                                                        \
     X(eg_record_cond_arm)                                                                          \
     X(eg_record_cond_end)                                                                          \
@@ -981,6 +982,16 @@ static PyObject* m_copy(PyObject* self, PyObject* args)
     Py_RETURN_NONE;
 }
 
+static PyObject* m_record_abort(PyObject* self, PyObject* args)
+{
+    Door* d = (Door*)self;
+    if (!PyArg_ParseTuple(args, "") || !door_ready(d))
+        return NULL;
+    if (door_check(d, d->fn.eg_record_abort(d->ctx)) < 0)
+        return NULL;
+    Py_RETURN_NONE;
+}
+
 static PyObject* m_record_begin(PyObject* self, PyObject* args)
 {
     Door* d = (Door*)self;
@@ -1187,15 +1198,18 @@ fail:
     return NULL;
 }
 
-/* graph_reverse(graph, seeds, grads): seeds are (output plane, seed plane) pairs and grads are
- * (input plane, gradient plane) pairs; the door matches the planes by handle. */
-static PyObject* m_graph_reverse(PyObject* self, PyObject* args)
+/* graph_reverse(graph, seeds, grads, strict=False): seeds are (output plane, seed plane) pairs and
+ * grads are (input plane, gradient plane) pairs; the door matches the planes by handle. Returns
+ * the door's report: (bitwise per gradient, memory passes). */
+static PyObject* m_graph_reverse(PyObject* self, PyObject* args, PyObject* kw)
 {
-    Door* d = (Door*)self;
+    Door* d              = (Door*)self;
+    static char* names[] = { "graph", "seeds", "grads", "strict", NULL };
     PyObject *ograph, *oseeds, *ograds;
+    int strict = 0;
     void* graph;
-    if (!PyArg_ParseTuple(args, "OOO", &ograph, &oseeds, &ograds) || !door_ready(d)
-        || handle_ptr(d, ograph, KIND_GRAPH, &graph) < 0)
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "OOO|p", names, &ograph, &oseeds, &ograds, &strict)
+        || !door_ready(d) || handle_ptr(d, ograph, KIND_GRAPH, &graph) < 0)
         return NULL;
     void **outputs, **seeds, **inputs, **grads;
     Py_ssize_t n_seeds, n_grads;
@@ -1206,21 +1220,39 @@ static PyObject* m_graph_reverse(PyObject* self, PyObject* args)
         PyMem_Free(seeds);
         return NULL;
     }
+    uint8_t* bitwise = PyMem_Malloc((size_t)(n_grads ? n_grads : 1));
+    int32_t passes   = 0;
+    if (!bitwise) {
+        PyMem_Free(outputs);
+        PyMem_Free(seeds);
+        PyMem_Free(inputs);
+        PyMem_Free(grads);
+        return PyErr_NoMemory();
+    }
     struct eg_graph_reverse_desc desc = { .struct_size = sizeof desc,
+        .flags                                         = strict ? EG_REVERSE_STRICT : 0,
         .n_seeds                                       = (int32_t)n_seeds,
         .outputs                                       = (eg_plane* const*)outputs,
         .seeds                                         = (eg_plane* const*)seeds,
         .n_grads                                       = (int32_t)n_grads,
         .inputs                                        = (eg_plane* const*)inputs,
-        .grads                                         = (eg_plane* const*)grads };
+        .grads                                         = (eg_plane* const*)grads,
+        .bitwise                                       = bitwise,
+        .passes                                        = &passes };
     int bad = door_check(d, d->fn.eg_graph_reverse(d->ctx, graph, &desc)) < 0;
     PyMem_Free(outputs);
     PyMem_Free(seeds);
     PyMem_Free(inputs);
     PyMem_Free(grads);
-    if (bad)
+    PyObject* flags = bad ? NULL : PyTuple_New(n_grads);
+    for (Py_ssize_t i = 0; flags && i < n_grads; i++)
+        PyTuple_SetItem(flags, i, PyBool_FromLong(bitwise[i]));
+    PyMem_Free(bitwise);
+    if (!flags)
         return NULL;
-    Py_RETURN_NONE;
+    PyObject* report = Py_BuildValue("(Oi)", flags, passes);
+    Py_DECREF(flags);
+    return report;
 }
 
 /* A tuple of ints from an array of n values of the given element type. */
@@ -1648,8 +1680,9 @@ static PyObject* m_runner_figures(PyObject* self, PyObject* args)
         return NULL;
     if (door_check(d, d->fn.eg_runner_figures(d->ctx, runner, &f)) < 0)
         return NULL;
-    return Py_BuildValue("{s:i,s:i,s:i,s:i,s:L}", "mode", f.mode, "block", f.block, "chunk",
-        f.chunk, "steps_reverse", f.steps_reverse, "grid", (long long)f.grid);
+    return Py_BuildValue("{s:i,s:i,s:i,s:i,s:L,s:i,s:i}", "mode", f.mode, "block", f.block, "chunk",
+        f.chunk, "steps_reverse", f.steps_reverse, "grid", (long long)f.grid, "reverse_passes",
+        f.reverse_passes, "reverse_bitwise", f.reverse_bitwise);
 }
 
 static PyObject* m_runner_reset(PyObject* self, PyObject* args)
@@ -1820,6 +1853,7 @@ static PyMethodDef door_methods[] = {
     { "reduce", KEYWORD_CALL(m_reduce), METH_VARARGS | METH_KEYWORDS, NULL },
     { "copy", m_copy, METH_VARARGS, NULL },
     { "record_begin", m_record_begin, METH_VARARGS, NULL },
+    { "record_abort", m_record_abort, METH_VARARGS, NULL },
     { "record_cond_begin", KEYWORD_CALL(m_record_cond_begin), METH_VARARGS | METH_KEYWORDS, NULL },
     { "record_cond_arm", m_record_cond_arm, METH_VARARGS, NULL },
     { "record_cond_end", m_record_cond_end, METH_VARARGS, NULL },
@@ -1829,7 +1863,7 @@ static PyMethodDef door_methods[] = {
     { "record_wait", m_record_wait, METH_VARARGS, NULL },
     { "record_end", m_record_end, METH_VARARGS, NULL },
     { "graph_launch", m_graph_launch, METH_VARARGS, NULL },
-    { "graph_reverse", m_graph_reverse, METH_VARARGS, NULL },
+    { "graph_reverse", KEYWORD_CALL(m_graph_reverse), METH_VARARGS | METH_KEYWORDS, NULL },
     { "graph_describe", m_graph_describe, METH_VARARGS, NULL },
     { "graph_free", m_graph_free, METH_VARARGS, NULL },
     { "device_count", m_device_count, METH_VARARGS, NULL },
@@ -1946,6 +1980,7 @@ static PyType_Spec handle_spec    = { "_osprey.Handle", sizeof(Handle), 0,
     X(EG_COND_WHILE)                                                                               \
     X(EG_COND_SWITCH)                                                                              \
     X(EG_COND_NEGATE)                                                                              \
+    X(EG_REVERSE_STRICT)                                                                           \
     X(EG_RECORD_DIFF)                                                                              \
     X(EG_GNODE_LAUNCH)                                                                             \
     X(EG_GNODE_RUN)                                                                                \

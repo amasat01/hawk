@@ -6,7 +6,7 @@ mod fakes;
 use aether_writers::contract::types::Target;
 use fakes::{script, store};
 use osprey_lowering::facts::{probe, Stated};
-use osprey_lowering::lower::request::{KernelAnswer, KernelRequest};
+use osprey_lowering::lower::request::{KernelAnswer, KernelRequest, LaneAxis};
 use osprey_lowering::lower::unit_meta::ImageFormat;
 use osprey_lowering::tool;
 use raptor_ir::door::{rx_ctx_free, rx_ctx_new, RX_OK};
@@ -461,4 +461,62 @@ fn the_device_build_request_filled_from_the_merged_answer_carries_the_define_in_
     );
     // SAFETY: the context is not used again.
     unsafe { rx_ctx_free(ctx) };
+}
+
+#[test]
+fn a_plane_the_request_states_a_broadcast_pattern_for_is_a_gathered_slot_with_the_full_keep_mask() {
+    let (ctx, sink) = kernel_named("mv_small");
+    let slot_a = |request: &KernelRequest| {
+        let answer = KernelAnswer::from_json(&lowered(ctx, request).unwrap()).unwrap();
+        answer.units[0]
+            .meta
+            .body
+            .slots
+            .iter()
+            .find(|s| s.name == "A")
+            .cloned()
+            .expect("the matrix plane A")
+    };
+    let plain = request_for(Target::Host, sink);
+    assert_eq!(slot_a(&plain).gather, None, "no pattern is stated");
+    let mut stated = plain.clone();
+    stated.broadcast = vec![("A".into(), vec![true])];
+    let held = slot_a(&stated);
+    assert_eq!(held.gather, Some(vec![true]));
+    assert_ne!(
+        held.flags & osprey_lowering::lower::unit_meta::SLOT_GATHER,
+        0
+    );
+    // SAFETY: `ctx` is the live context `kernel_named` made and nothing refers to it after this.
+    unsafe { rx_ctx_free(ctx) };
+}
+
+#[test]
+fn no_unit_the_lowering_emits_is_gathered_without_a_keep_mask_of_one_flag_per_lane_axis() {
+    // each kernel of the working-set oracle that reads a matrix plane `A`, asked with no pattern and with one flag per lane axis
+    for name in ["mv_small", "solve3", "mm_rolled", "inv_det"] {
+        let (ctx, sink) = kernel_named(name);
+        let mut plain = request_for(Target::Host, sink);
+        plain.lane_space = vec![LaneAxis {
+            label: Some("a".into()),
+            extent: None,
+        }];
+        let mut stated = plain.clone();
+        stated.broadcast = vec![("A".into(), vec![true])];
+        for request in [plain, stated] {
+            let answer = KernelAnswer::from_json(&lowered(ctx, &request).unwrap()).unwrap();
+            for unit in &answer.units {
+                let axes = unit.meta.launch.lane_labels.len();
+                for slot in &unit.meta.body.slots {
+                    let gathered = slot.flags & osprey_lowering::lower::unit_meta::SLOT_GATHER != 0;
+                    assert_eq!(gathered, slot.gather.is_some(), "{name}: {}", slot.name);
+                    if let Some(mask) = &slot.gather {
+                        assert_eq!(mask.len(), axes, "{name}: {}", slot.name);
+                    }
+                }
+            }
+        }
+        // SAFETY: `ctx` is the live context `kernel_named` made and nothing refers to it after this.
+        unsafe { rx_ctx_free(ctx) };
+    }
 }

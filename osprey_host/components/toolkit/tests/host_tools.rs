@@ -249,3 +249,11 @@ fn a_failed_compile_ends_with_the_folder_it_ran_in_and_the_way_out_the_tool_tabl
     let tail = message.rsplit_once("ran in ").map_or("", |(_, tail)| tail);
     assert!(tail.ends_with(fix) && tail.contains("; "), "{message}");
 }
+
+#[test]
+fn a_host_table_runs_here_whether_or_not_its_tools_are_found() {
+    let empty = scratch("runs_here_absent").display().to_string();
+    let answer = machine(&[("PATH", &empty), ("CXX", "no-such-compiler-xyz --flag")]);
+    assert!(matches!(answer.get("runs_here"), Some(J::Bool(true))));
+    assert_eq!(answer.get("why").and_then(J::str), Some(""));
+}

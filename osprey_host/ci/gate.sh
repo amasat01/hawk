@@ -10,7 +10,8 @@
 # and the libraries embed the headers it holds. The binding and tidy legs refuse by name a root that lacks one of eagle/door/eg_door.h, eagle/door/sources.txt
 # and plugin/dlpack.h. The build also needs CXX (a C++23 compiler; the cpu library links no threading runtime: the exports leg refuses one)
 # and the raptor sibling's cpu facts and host door rows (RAPTOR);
-# no prebuilt door library is an input.
+# no prebuilt door library is an input. The cuda library also embeds the door's device group when the machine has a CUDA toolkit (nvcc: HAWK_NVCC or PATH; see the header of
+# osprey_cuda/build.rs); without one it is built without the door, and the exports leg prints which mode it checked.
 # Each leg prints what it examined and is RED when it examined nothing. The exit status is non-zero when any leg is red.
 cd "$(dirname "$0")/.." || exit 2
 JOBS=${JOBS:-2}
@@ -81,9 +82,13 @@ leg_test() {
   need test "$n"
 }
 
-# each built library exports its entry and, when its manifest states a runtime, exactly the door functions of that runtime (check_exports.sh prints one line per library)
+# each built library exports its entry and, when it carries the runtime door, exactly the door functions of that runtime; no library
+# needs an OpenMP runtime or exports the CUDA runtime (check_exports.sh prints one line per library, the cuda one naming the mode it
+# checked: with or without the device runtime). The rules are tested on synthetic lists first.
 leg_exports() {
   build_env || return 1
+  sh ci/export_rules_test.sh >"$out" 2>&1 || { cat "$out"; echo "RED: ci/export_rules_test.sh"; return 1; }
+  echo "examined: $(cat "$out")"
   sh check_exports.sh >"$out" 2>"$out.err" || { tail -3 "$out" "$out.err"; echo "RED: check_exports.sh"; return 1; }
   n=$(grep -c . "$out"); echo "examined: $n libraries: $(tr '\n' ';' < "$out")"
   [ "$n" -eq 2 ] || { echo "RED: expected one symbol line for each of the two libraries, got $n"; return 1; }

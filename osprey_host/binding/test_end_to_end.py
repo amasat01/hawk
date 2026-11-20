@@ -158,6 +158,8 @@ def run(done, o, raises, folders, header_abi, make_nodes):
     ask = {"target": "host", "options": {}, "opt_level": "", "root": root}
     machine = json.loads(c.backend_machine(lib, json.dumps(ask)))
     assert machine["tools_absent"] is None, machine["tools_absent"]
+    assert machine["runs_here"] is True and machine["why"] == "", machine
+    done.append("end to end: the cpu machine runs here")
     asked = machine["stated"]["asked"]
     assert asked["opt_level"] == "O3", asked
     profile = asked["options"]["profile"]
@@ -252,6 +254,26 @@ def run(done, o, raises, folders, header_abi, make_nodes):
     cuda = c.backend_open(cuda_path)
     answered = json.loads(
         c.backend_machine(cuda, json.dumps({"target": "cuda", "options": {}, "opt_level": ""}))
+    )
+    assert isinstance(answered["runs_here"], bool), answered
+    if answered["runs_here"]:
+        assert answered["why"] == "", answered
+    else:
+        reason = answered["why"]
+        assert "driver" in reason or "without the device runtime" in reason, answered
+    if sys.platform == "darwin":
+        assert answered["runs_here"] is False, "no CUDA driver exists on macOS"
+    done.append("end to end: the cuda machine answers runs_here by its driver, and why when false")
+    # the library runs here only if it carries the device runtime, and it says so when it does not
+    try:
+        o.Door(cuda)
+        carries_runtime = True
+    except o.NotWritten:
+        carries_runtime = False
+    assert ("without the device runtime" in answered["why"]) == (not carries_runtime), answered
+    assert carries_runtime or not answered["runs_here"], answered
+    done.append(
+        "end to end: the cuda machine says 'without the device runtime' when no door is exported"
     )
     tooled = answered["tools_absent"] is None
     if tooled:

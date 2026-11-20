@@ -2,6 +2,7 @@
   "name": "cuda",
   "version": "@VERSION@",
   "door": @DOOR@,
+  @RUNTIME@
   "targets": [
     {
       "request": "cuda",

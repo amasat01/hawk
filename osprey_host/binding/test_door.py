@@ -788,6 +788,10 @@ def check_fork_and_cond(door, done, raises):
     door.copy(d1, d2)
     e = raises(o.BadRequest, door.record_fork_end, "record_fork_end: a race between branches")
     assert "RAW race between node 2" in refusal_text(door, e), str(e)
+    # the refused race leaves the fork open: the recording is still open, and abort ends it
+    e = raises(o.BadRequest, door.record_begin, "record_begin: the refused race left it open")
+    assert "already recording" in refusal_text(door, e), str(e)
+    door.record_abort()
     door.record_begin()
     door.record_fork_begin()
     door.copy(s1, d1)
@@ -883,6 +887,7 @@ def check_fork_and_cond(door, done, raises):
     door.launch(square)
     e = raises(o.BadRequest, door.record_fork_end, "record_fork_end: a race between launches")
     assert "race between node" in refusal_text(door, e), str(e)
+    door.record_abort()  # the refused race left the fork open
     door.record_begin()
     door.record_fork_begin()
     door.launch(scale)
@@ -1058,6 +1063,121 @@ def check_reverse_structure(door, done):
     )
 
 
+def check_gather_mask(door, done, raises):
+    """A gathered matrix with a keep mask binds with its column count, not with another."""
+    samples = 40
+    unit = door.unit_load(FIXTURE, "gathb", digest(0x61))
+    plan = door.plan_new(unit, o.EG_STRUCTURE_HOST_TEAM, 0, samples)
+    y = door.plane_wrap(np.zeros(samples))
+    # the mask keeps the one static axis of four columns: the matrix is (2, 2, 4)
+    good = door.plane_wrap(np.zeros((2, 2, 4)))
+    door.bind(plan, [0, 1], [y, good], [], [])
+    short = door.plane_wrap(np.zeros((2, 2, 3)))
+    e = raises(o.BadRequest, lambda: door.bind(plan, [1], [short], [], []), "bind: a short matrix")
+    assert "a plane of shape (2, 2, 4) is expected" in refusal_text(door, e), str(e)
+    done.append(
+        "bind: a gathered matrix of the mask's column count binds, a shorter one is refused"
+    )
+
+
+def check_reverse_options(door, done, raises):
+    """Rows of the report graph_reverse returns and of the options it takes."""
+    n = 7
+    names = (("scale", 0x10), ("scale_vjp", 0x11), ("scale_scatter_vjp", 0x1F))
+    units = {name: door.unit_load(GRAPH, name, digest(b)) for name, b in names}
+    x = 0.5 + 0.3 * np.arange(n)
+    w1, w2 = 1.7, -0.6
+
+    def build(second_vjp):
+        """Two launches computing y = w2 (w1 x), ended with the given vjp for the second."""
+        arrays = [x.copy(), np.zeros(n), np.zeros(n), np.array([w1]), np.array([w2]), np.ones(n)]
+        arrays += [np.full(n, -999.0), np.zeros(1), np.zeros(1)]
+        px, pu, py, pw1, pw2, one, gx, gw1, gw2 = (door.plane_wrap(a) for a in arrays)
+        plans = []
+        for unit, bound in (("scale", [px, pw1, pu]), ("scale", [pu, pw2, py])):
+            plan = door.plan_new(units[unit], o.EG_STRUCTURE_HOST_SERIAL, 0, n)
+            door.bind(plan, [0, 1, 2], bound, [], [])
+            plans.append(plan)
+        door.record_begin()
+        for plan in plans:
+            door.launch(plan)
+        graph = door.record_end([(0, units["scale_vjp"]), (1, units[second_vjp])])
+        door.graph_launch(graph)
+        grads = [(px, gx), (pw1, gw1), (pw2, gw2)]
+        return arrays, graph, [(py, one)], grads
+
+    # a plain chain: every gradient is bitwise, one pass, the closed forms
+    arrays, graph, seeds, grads = build("scale_vjp")
+    report = door.graph_reverse(graph, seeds, grads)
+    assert report == ((True, True, True), 1), report
+    assert np.allclose(arrays[6], w1 * w2) and np.allclose(arrays[7], w2 * x.sum())
+    assert np.allclose(arrays[8], w1 * x.sum())
+    done.append("graph_reverse: a plain chain reports every gradient bitwise and one pass")
+
+    # a scatter-add vjp taints the gradients its adjoint reaches, and strict refuses it
+    arrays, graph, seeds, grads = build("scale_scatter_vjp")
+    report = door.graph_reverse(graph, seeds, grads)
+    assert report == ((False, False, True), 1), report
+    assert np.allclose(arrays[6], w1 * w2) and np.allclose(arrays[8], w1 * x.sum())
+    arrays[6][:] = -999.0
+    e = raises(
+        o.BadRequest,
+        lambda: door.graph_reverse(graph, seeds, grads, strict=True),
+        "graph_reverse: strict over a tainted gradient",
+    )
+    assert "inputs[0]" in refusal_text(door, e) and "launch 1" in str(e), str(e)
+    assert (arrays[6] == -999.0).all()
+    done.append("graph_reverse: a scatter-add vjp is reported not bitwise and strict refuses it")
+    assert door.graph_reverse(graph, seeds, grads[2:])[0] == (True,)
+
+    # an integer input has no gradient
+    flags = np.array([7, 7, 7, 7], dtype=np.int32)
+    arrays, _, seeds, grads = build("scale_vjp")
+    flag, gflag = door.plane_wrap(flags), door.plane_wrap(np.zeros(1))
+    plan = door.plan_new(units["scale"], o.EG_STRUCTURE_HOST_SERIAL, 0, n)
+    door.bind(plan, [0, 1, 2], [grads[0][0], grads[1][0], seeds[0][0]], [], [])
+    door.record_begin()
+    door.record_cond_begin(o.EG_COND_IF, flag)
+    door.launch(plan)
+    door.record_cond_end()
+    graph = door.record_end([(0, units["scale_vjp"])])
+    door.graph_launch(graph)
+    e = raises(
+        o.BadRequest,
+        lambda: door.graph_reverse(graph, seeds, [(flag, gflag)]),
+        "graph_reverse: an integer input",
+    )
+    assert "is not a float plane" in refusal_text(door, e), str(e)
+    done.append("graph_reverse: an integer plane asked for a gradient is refused by name")
+
+
+def check_record_abort(door, done, raises):
+    """Rows of record_abort: nothing open, an open fork left by refusals, and a recording after."""
+    e = raises(o.BadRequest, door.record_abort, "record_abort: nothing open")
+    assert "eg_record_abort: no open recording" in refusal_text(door, e), str(e)
+    values = [np.array([v], dtype=np.int32) for v in (7, 0, 0)]
+    src, mid, dst = (door.plane_wrap(a) for a in values)
+    door.record_begin()
+    door.record_fork_begin()
+    raises(o.BadRequest, lambda: door.record_wait([mid]), "record_wait: no earlier sibling writes")
+    door.copy(src, mid)
+    door.record_fork_branch()  # the second branch is empty
+    door.record_abort()
+    raises(o.BadRequest, door.record_abort, "record_abort: the recording is gone")
+    # a bind (refused while recording) and a new recording work after the abort
+    unit = door.unit_load(GRAPH, "scale", digest(0x10))
+    plan = door.plan_new(unit, o.EG_STRUCTURE_HOST_SERIAL, 0, 1)
+    door.bind(plan, [], [], [], [])
+    assert values[1][0] == 0, "an aborted recording runs nothing"
+    door.record_begin()
+    door.copy(src, dst)
+    door.graph_launch(door.record_end())
+    assert values[2][0] == 7
+    done.append(
+        "record_abort: refused with nothing open; from an open fork it frees bind and recording"
+    )
+
+
 def device_door(backend):
     """A context on device 0, or None when the door was built without a device group."""
     try:
@@ -1152,11 +1272,23 @@ def run(done, raises, not_run, backends):
     e = raises(ValueError, lambda: o.Door(0), "Door: a handle that is no opened backend")
     assert "not an opened backend" in str(e), str(e)
     if "cuda" in backends:
-        e = raises(
-            o.NotWritten, lambda: o.Door(backends["cuda"]), "Door: a library that states no runtime"
-        )
-        assert "states no runtime" in str(e), str(e)
-        done.append("Door: the cuda library, which states no runtime, refuses by name")
+        # the cuda library carries the door only when built with a CUDA toolkit (a Mac has none)
+        try:
+            built_with = o.Door(backends["cuda"])
+        except o.NotWritten as refused:
+            assert "states no runtime" in str(refused), str(refused)
+            done.append("Door: the cuda library, which states no runtime, refuses by name")
+        else:
+            assert sys.platform != "darwin", "a Mac has no CUDA toolkit to build the door with"
+            assert built_with.ctx_info()["device"] == -1
+            done.append("Door: the cuda library built with the device runtime opens a host context")
+            on_device = device_door(backends["cuda"])
+            if on_device is not None and os.path.exists(DEVICE_FIXTURE):
+                check_device(on_device, done, raises)
+            else:
+                not_run.append(
+                    "the device rows on the cuda library: no device or no device fixture"
+                )
     else:
         not_run.append("Door: the cuda library refuses by name: no CUDA_LIB")
     door = o.Door(cpu)
@@ -1540,6 +1672,8 @@ def run(done, raises, not_run, backends):
         "chunk": -1,
         "steps_reverse": o.EG_STEPS_REVERSE_PER_STEP,
         "grid": -1,
+        "reverse_passes": 0,
+        "reverse_bitwise": 0,
     }, figures
     entry = door.plan_entry_figures(count_plan)
     assert entry["flags"] == 0 and not any(v for k, v in entry.items()), entry
@@ -1599,6 +1733,9 @@ def run(done, raises, not_run, backends):
     check_graph_reverse(door, done, raises)
     check_fork_and_cond(door, done, raises)
     check_reverse_structure(door, done)
+    check_gather_mask(door, done, raises)
+    check_reverse_options(door, done, raises)
+    check_record_abort(door, done, raises)
     check_segmented(door, done, raises)
     check_auto_set(door, done, raises)
     if device is None:

@@ -26,6 +26,8 @@ mod trees {
 }
 /// The library's own tool table: how its tools are found, probed and limited.
 const TOOL_TABLE: &str = include_str!("../facts/tools.json");
+/// What the machine answer says first when the build had no CUDA toolkit and so left the device runtime out.
+const WITHOUT_RUNTIME: &str = "built without the device runtime";
 
 /// The backend of this library.
 #[derive(Default)]
@@ -72,7 +74,15 @@ impl Backend for Cuda {
         /// The tool side, made on first use from the table, the trees and the process environment.
         static TOOLKIT: OnceLock<Result<Toolkit, toolkit::Refusal>> = OnceLock::new();
         TOOLKIT
-            .get_or_init(|| Toolkit::new(TOOL_TABLE, trees::TREES, Env::process()))
+            .get_or_init(|| {
+                Toolkit::new(TOOL_TABLE, trees::TREES, Env::process()).map(|toolkit| {
+                    if cfg!(device_runtime) {
+                        toolkit
+                    } else {
+                        toolkit.without_runtime(WITHOUT_RUNTIME)
+                    }
+                })
+            })
             .as_ref()
             .map_err(Clone::clone)
     }
@@ -101,6 +111,19 @@ mod tests {
 
     fn file(tree: &toolkit::HeaderTree, name: &str) -> Option<&'static [u8]> {
         tree.files.iter().find(|f| f.0 == name).map(|f| f.1)
+    }
+
+    /// Oracle: the build rule stated in build.rs. A library built with the device runtime leaves the verdict to the driver and never
+    /// calls itself device-less; one built without it answers false and says why, whatever the machine offers.
+    #[test]
+    fn the_machine_answer_states_the_build_mode() {
+        use osprey_lowering::backend::Backend;
+        let answer = super::Cuda.toolkit().unwrap().machine("{}").unwrap();
+        let without = answer.contains("built without the device runtime");
+        assert_eq!(without, !cfg!(device_runtime), "{answer}");
+        if without {
+            assert!(answer.contains("\"runs_here\":false"), "{answer}");
+        }
     }
 
     /// Oracle: the widths written by hand (`std::uint32_t` is 4 bytes, `std::uint64_t` 8): the library states the index width of

@@ -125,3 +125,98 @@ fn with_no_driver_library_the_arch_is_virtual_at_the_lowest_portable_toolkit_arc
         ("compute_61", "<null>", "<null>")
     );
 }
+
+/// A driver that initialises and finds no device.
+const DRIVER_WITHOUT_DEVICE: &str = r#"
+extern "C" {
+int cuInit(unsigned) { return 0; }
+int cuDriverGetVersion(int* v) { *v = 12060; return 0; }
+int cuCtxGetDevice(int*) { return 201; }
+int cuDeviceGet(int*, int) { return 100; }
+int cuDeviceGetAttribute(int*, int, int) { return 100; }
+}
+"#;
+
+/// A driver whose initialisation fails.
+const DRIVER_THAT_FAILS: &str = r#"
+extern "C" {
+int cuInit(unsigned) { return 999; }
+int cuDriverGetVersion(int*) { return 0; }
+int cuCtxGetDevice(int*) { return 201; }
+int cuDeviceGet(int*, int) { return 0; }
+int cuDeviceGetAttribute(int*, int, int) { return 0; }
+}
+"#;
+
+/// The machine answer's `runs_here` and `why` for a table whose driver library is `library`.
+fn runs_here(dir: &std::path::Path, library: &str) -> (bool, String) {
+    let nvcc = dir.join("nvcc");
+    script(&nvcc, "#!/bin/sh\ncase \"$1\" in --version) echo 'fake nvcc release 12.6'; exit 0;; --list-gpu-arch) printf 'compute_61\\ncompute_75\\n'; exit 0;; esac\n");
+    let env = Env::from_pairs(&[
+        ("FAKE_NVCC", nvcc.to_str().unwrap()),
+        ("PATH", "/bin:/usr/bin"),
+    ]);
+    let answer = Toolkit::new(&table(library), &[], env)
+        .unwrap()
+        .machine("{}")
+        .unwrap();
+    let answer = wire::parse("a", &answer).unwrap();
+    (
+        matches!(answer.get("runs_here"), Some(J::Bool(true))),
+        text(&answer, "why"),
+    )
+}
+
+#[test]
+fn the_machine_runs_a_device_target_only_when_a_driver_library_states_a_device() {
+    let dir = scratch("runs_here");
+    let present = build_shared(&dir, "fakedriver", DRIVER);
+    assert_eq!(
+        runs_here(&dir, present.to_str().unwrap()),
+        (true, String::new())
+    );
+    let (runs, why) = runs_here(&dir, "libdoes-not-exist-anywhere.so");
+    assert!(!runs && why.contains("no driver library found"), "{why}");
+    let empty = build_shared(&dir, "emptydriver", DRIVER_WITHOUT_DEVICE);
+    let (runs, why) = runs_here(&dir, empty.to_str().unwrap());
+    assert!(!runs && why.contains("states no device"), "{why}");
+    let failing = build_shared(&dir, "failingdriver", DRIVER_THAT_FAILS);
+    let (runs, why) = runs_here(&dir, failing.to_str().unwrap());
+    assert!(
+        !runs && why.contains("did not initialise (status 999)"),
+        "{why}"
+    );
+}
+
+/// Oracle: the reason a library states for lacking its runtime leads `why`, and the driver's own reason follows it when there is
+/// one; a working driver does not make a library without the runtime run.
+#[test]
+fn a_toolkit_without_the_runtime_never_runs_here_and_says_so_first() {
+    let dir = scratch("runs_here_without_runtime");
+    let present = build_shared(&dir, "fakedriver_without", DRIVER);
+    let nvcc = dir.join("nvcc");
+    script(&nvcc, "#!/bin/sh\necho 'fake nvcc release 12.6'\n");
+    let env = || {
+        Env::from_pairs(&[
+            ("FAKE_NVCC", nvcc.to_str().unwrap()),
+            ("PATH", "/bin:/usr/bin"),
+        ])
+    };
+    let why_of = |library: &str| {
+        let toolkit = Toolkit::new(&table(library), &[], env())
+            .unwrap()
+            .without_runtime("built without the device runtime");
+        let answer = wire::parse("a", &toolkit.machine("{}").unwrap()).unwrap();
+        assert!(matches!(answer.get("runs_here"), Some(J::Bool(false))));
+        text(&answer, "why")
+    };
+    assert_eq!(
+        why_of(present.to_str().unwrap()),
+        "built without the device runtime"
+    );
+    let why = why_of("libdoes-not-exist-anywhere.so");
+    assert!(
+        why.starts_with("built without the device runtime; no driver library found"),
+        "{why}"
+    );
+}

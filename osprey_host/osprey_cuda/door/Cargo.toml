@@ -3,6 +3,7 @@ name = "osprey_cuda_door"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+build = "build.rs"
 
 [lib]
 # the loadable object of the cuda OSPREY: libosprey_cuda.dylib / .so

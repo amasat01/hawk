@@ -3,6 +3,11 @@
 #![warn(missing_docs)]
 use osprey_lowering::door::OspreyV1;
 
+/// The build script's reader of the door's source list; here only so that its tests run with the crate's.
+#[cfg(test)]
+#[path = "../object_list.rs"]
+mod object_list;
+
 #[no_mangle]
 /// The one symbol of the library: the entry table.
 pub extern "C" fn osprey_v1() -> *const OspreyV1 {

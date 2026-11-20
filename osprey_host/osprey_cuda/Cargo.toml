@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 build = "build.rs"
+# the build script hands the toolkit root to the door package beside it (DEP_OSPREY_CUDA_DEVICE_ROOT); nothing is linked by this name
+links = "osprey_cuda_device"
 
 [lib]
 # the loadable object is made by the door package beside it, so that no other crate links the exported symbol

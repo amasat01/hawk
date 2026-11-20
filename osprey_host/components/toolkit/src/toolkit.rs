@@ -22,6 +22,8 @@ pub struct Toolkit {
     pub(crate) trees: Vec<HeaderTree>,
     /// The environment the discovery and the tools run in.
     pub(crate) env: Env,
+    /// Why the library this toolkit belongs to cannot run a target on any machine, when its build left the runtime out.
+    pub(crate) runtime_absent: Option<String>,
 }
 
 impl Toolkit {
@@ -36,7 +38,16 @@ impl Toolkit {
             spec,
             trees: trees.to_vec(),
             env,
+            runtime_absent: None,
         })
+    }
+
+    /// States that the library was built without the runtime a target runs on: `machine` then answers `runs_here` false whatever
+    /// the machine offers, and begins `why` with `reason`.
+    #[must_use]
+    pub fn without_runtime(mut self, reason: &str) -> Self {
+        self.runtime_absent = Some(reason.to_string());
+        self
     }
 
     /// The machine the tools run on, always stated: `{"key": <opaque>, "stated": {"tools", "headers", ...}, "tools_absent": <reason> |
@@ -79,7 +90,14 @@ impl Toolkit {
         if let Some(runtime) = &runtime {
             stated.push(("runtime", runtime_stated(runtime)?));
         }
-        stated.extend(self.determined(&ask, &found, runtime.as_ref(), absent.is_some())?);
+        let driver = self.probe_device()?;
+        stated.extend(self.determined(
+            &ask,
+            &found,
+            runtime.as_ref(),
+            absent.is_some(),
+            driver.as_ref(),
+        )?);
         let stated = wire::obj(stated);
         let terms = wire::texts(&ask, "key_terms", "the machine ask")?;
         let key = sha256::hex(
@@ -91,11 +109,28 @@ impl Toolkit {
             .as_bytes(),
         );
         let reason = absent.map_or(J::Null, |r| wire::s(&r));
+        let (runs_here, why) = runs_here(driver.as_ref());
+        let (runs_here, why) = match &self.runtime_absent {
+            Some(reason) if why.is_empty() => (false, reason.clone()),
+            Some(reason) => (false, format!("{reason}; {why}")),
+            None => (runs_here, why),
+        };
         Ok(wire::render(&wire::obj(vec![
             ("key", wire::s(&key)),
             ("stated", stated),
             ("tools_absent", reason),
+            ("runs_here", J::Bool(runs_here)),
+            ("why", wire::s(&why)),
         ])))
+    }
+
+    /// What the driver library states about the device, when the table has a `device` member: the driver, or the reason there is none.
+    fn probe_device(&self) -> Done<Option<Result<device::Driver, String>>> {
+        let Some(device) = self.spec.get("device") else {
+            return Ok(None);
+        };
+        let spec = wire::need(device, "driver", "device")?;
+        device::probe_driver(spec).map(Some)
     }
 
     /// The runtime compile library when a tool was replaced by it, and the reason for the tools still missing: the machine's own,
@@ -132,11 +167,12 @@ impl Toolkit {
         machine: &Machine,
         runtime: Option<&Runtime>,
         tool_missing: bool,
+        driver: Option<&Result<device::Driver, String>>,
     ) -> Done<Vec<(&'static str, J)>> {
         let root = ask.get("root").and_then(J::str).map(Path::new);
         let mut out = vec![];
         if self.spec.get("device").is_some() {
-            out.push(("device", self.device_stated(ask, machine, runtime)?));
+            out.push(("device", self.device_stated(ask, machine, runtime, driver)?));
         }
         if let (Some(reserved), false) = (ask.get("reserved_names"), tool_missing) {
             let names =
@@ -150,12 +186,18 @@ impl Toolkit {
     }
 
     /// The device record: the arch chosen and why, the GPU and driver the driver library stated, and the toolkit's archs.
-    fn device_stated(&self, ask: &J, machine: &Machine, runtime: Option<&Runtime>) -> Done<J> {
+    fn device_stated(
+        &self,
+        ask: &J,
+        machine: &Machine,
+        runtime: Option<&Runtime>,
+        driver: Option<&Result<device::Driver, String>>,
+    ) -> Done<J> {
         let device = wire::need(&self.spec, "device", "the tool table")?;
-        let driver = match device.get("driver") {
-            Some(spec) => device::probe_driver(spec)?.unwrap_or_default(),
-            None => device::Driver::default(),
-        };
+        let driver = driver
+            .and_then(|found| found.as_ref().ok())
+            .cloned()
+            .unwrap_or_default();
         let env = self.env.fresh();
         let policy = wire::need(device, "arch", "device")?;
         let toolkit = match runtime {
@@ -319,6 +361,19 @@ impl Toolkit {
             }
             refused
         })
+    }
+}
+
+/// Whether the target runs on this machine, and why not: a table with a `device` member needs a driver library that initialises and
+/// states a device; a table without one has no such requirement.
+fn runs_here(driver: Option<&Result<device::Driver, String>>) -> (bool, String) {
+    match driver {
+        Some(Err(why)) => (false, why.clone()),
+        Some(Ok(found)) if found.gpu_arch.is_none() => (
+            false,
+            "the driver library initialised and states no device".to_string(),
+        ),
+        _ => (true, String::new()),
     }
 }
 

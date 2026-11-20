@@ -288,3 +288,30 @@ fn a_device_unit_states_the_two_entry_names_its_text_holds_and_a_host_unit_state
     let host = read_record(&door, &dir.join(format!("{id}_walker_host.c")));
     assert!(host.contains("unit walker persist - range -\n"), "{host}");
 }
+
+const BROADCAST_REVERSE: &str =
+    "test_broadcast_matrix.py::test_recorded_reverse_with_a_broadcast_matrix";
+
+#[test]
+fn a_gathered_matrix_the_request_states_no_pattern_for_is_kept_along_every_lane_axis() {
+    if let Some(s) = meta_source("k8_record", BROADCAST_REVERSE, &["mscal_vjp"], "mscal_vjp") {
+        let matrix = s
+            .lines()
+            .find(|l| l.contains("M(name, \"M\")") || l.contains("\"M\""))
+            .unwrap_or_else(|| panic!("no slot M in {s}"));
+        assert!(matrix.contains("EG_SLOT_GATHER"), "{matrix}");
+        let keep: Vec<i64> = s
+            .lines()
+            .filter(|l| l.contains("_gather[] = {"))
+            .flat_map(|l| {
+                l.split(['{', '}'])
+                    .nth(1)
+                    .unwrap()
+                    .split(',')
+                    .map(|n| n.trim().parse().unwrap())
+                    .collect::<Vec<i64>>()
+            })
+            .collect();
+        assert_eq!(keep, [1, 1, 1], "the three lane axes of the recording");
+    }
+}
