@@ -7,17 +7,17 @@ Every file with its line count (this file excluded):
     118  osprey_host/Cargo.lock
       8  osprey_host/Cargo.toml
      12  osprey_host/Makefile
-     75  osprey_host/binding/build.sh
+     76  osprey_host/binding/build.sh
      11  osprey_host/binding/fixture/abi1.c
      95  osprey_host/binding/fixture/auto_set_meta.c
       8  osprey_host/binding/fixture/contract0.c
      11  osprey_host/binding/gen/Cargo.toml
    1408  osprey_host/binding/gen/src/main.rs
-   1698  osprey_host/binding/template/door.c
+   1822  osprey_host/binding/template/door.c
      45  osprey_host/binding/template/module.h
     116  osprey_host/binding/template/types.c
    1051  osprey_host/binding/test_binding.py
-   1265  osprey_host/binding/test_door.py
+   1374  osprey_host/binding/test_door.py
     292  osprey_host/binding/test_end_to_end.py
      96  osprey_host/binding/test_sideways.py
      27  osprey_host/check_exports.sh

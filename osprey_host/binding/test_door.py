@@ -21,6 +21,7 @@ EXT = "dylib" if sys.platform == "darwin" else "so"
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIXTURE = os.path.join(HERE, "build", f"libfixture_unit.{EXT}")
 REVERSE = os.path.join(HERE, "build", f"libfixture_reverse.{EXT}")
+GRAPH = os.path.join(HERE, "build", f"libfixture_graph.{EXT}")
 GEMM = os.path.join(HERE, "build", f"libfixture_gemm.{EXT}")
 # the unit libraries with device images are built by the door's own device build; they are
 # read only on a device context, which a library without a device group never makes
@@ -641,6 +642,113 @@ def check_fft(door, done, raises):
     done.append("fft_new refused while recording; a recorded run replays after fft_free")
 
 
+def check_graph_reverse(door, done, raises):
+    """Rows of record_end(diff) and graph_reverse; the closed forms in numpy are the oracle."""
+    n = 7
+    scale, scale_vjp = (
+        door.unit_load(GRAPH, name, digest(b)) for name, b in (("scale", 0x10), ("scale_vjp", 0x11))
+    )
+    square, square_vjp = (
+        door.unit_load(GRAPH, name, digest(b))
+        for name, b in (("square", 0x12), ("square_vjp", 0x13))
+    )
+    vjps = [(0, scale_vjp), (1, square_vjp)]
+    x0 = 0.5 + 0.3 * np.arange(n)
+
+    def rig(second_reads):
+        """Plans y = w x and a second launch over `second_reads` (planes by slot), recorded."""
+        arrays = {k: np.zeros(n) for k in ("y", "z", "gx", "ones")}
+        arrays.update(x=x0.copy(), w=np.array([1.7]), ones=np.ones(n), gw=np.zeros(1))
+        planes = {k: door.plane_wrap(a) for k, a in arrays.items()}
+        first = door.plan_new(scale, o.EG_STRUCTURE_HOST_SERIAL, o.EG_REDUCE_COMPENSATED, n)
+        door.bind(first, [0, 1, 2], [planes[k] for k in ("x", "w", "y")], [], [])
+        second = door.plan_new(square, o.EG_STRUCTURE_HOST_SERIAL, o.EG_REDUCE_COMPENSATED, n)
+        door.bind(second, [0, 1], [planes[k] for k in second_reads], [], [])
+        door.record_begin()
+        door.launch(first)
+        door.launch(second)
+        return arrays, planes, first, second
+
+    def release(planes, *plans, graph=None):
+        for handle in plans:
+            door.plan_free(handle)
+        for plane in planes.values():
+            door.plane_free(plane)
+        if graph is not None:
+            door.graph_free(graph)
+
+    # y = w x, z = y^2, J = sum z: dJ/dx = 2 w^2 x, dJ/dw = 2 w sum x^2
+    arrays, planes, first, second = rig(("y", "z"))
+    graph = door.record_end(vjps)
+    door.graph_launch(graph)
+    door.graph_reverse(
+        graph,
+        [(planes["z"], planes["ones"])],
+        [(planes["x"], planes["gx"]), (planes["w"], planes["gw"])],
+    )
+    w = 1.7
+    assert np.allclose(arrays["gx"], 2 * w * w * x0, rtol=1e-12)
+    assert np.allclose(arrays["gw"], 2 * w * np.sum(x0 * x0), rtol=1e-12)
+    done.append(
+        "record_end(diff), graph_reverse: y = w x, z = y^2 gives dJ/dx and dJ/dw as the closed form"
+    )
+
+    # a rebind of a plan of the recorded graph: the reverse is refused by the door's text
+    door.bind(first, [0], [planes["x"]], [], [])
+    e = raises(
+        o.BadRequest,
+        lambda: door.graph_reverse(
+            graph, [(planes["z"], planes["ones"])], [(planes["x"], planes["gx"])]
+        ),
+        "graph_reverse: after a rebind",
+    )
+    assert "rebound" in refusal_text(door, e), str(e)
+    release(planes, first, second, graph=graph)
+    done.append("graph_reverse: a graph whose plan was rebound is refused by name")
+
+    # x <- y^2 in place after y = w x read x: the snapshot gives the gradient at the original x
+    arrays, planes, first, second = rig(("y", "x"))
+    graph = door.record_end(vjps)
+    door.graph_launch(graph)
+    door.graph_reverse(
+        graph,
+        [(planes["x"], planes["ones"])],
+        [(planes["x"], planes["gx"]), (planes["w"], planes["gw"])],
+    )
+    assert np.allclose(arrays["gx"], 2 * w * w * x0, rtol=1e-12)
+    assert np.allclose(arrays["gw"], 2 * w * np.sum(x0 * x0), rtol=1e-12)
+    release(planes, first, second, graph=graph)
+    done.append(
+        "graph_reverse: a launch that overwrites a plane an earlier launch read is reversed "
+        "at the original values"
+    )
+
+    # a graph ended without a description is plain: it launches and graph_reverse refuses it
+    arrays, planes, first, second = rig(("y", "z"))
+    graph = door.record_end()
+    door.graph_launch(graph)
+    assert np.allclose(arrays["z"], (w * x0) ** 2)
+    e = raises(
+        o.BadRequest,
+        lambda: door.graph_reverse(
+            graph, [(planes["z"], planes["ones"])], [(planes["x"], planes["gx"])]
+        ),
+        "graph_reverse: a plain graph",
+    )
+    assert "not ended with EG_RECORD_DIFF" in refusal_text(door, e), str(e)
+    release(planes, first, second, graph=graph)
+    for what, call in (
+        ("a pair of three", lambda: door.record_end([(0, scale_vjp, 1)])),
+        ("a plane in place of a unit", lambda: door.record_end([(0, door.plane_wrap(x0))])),
+    ):
+        raises(TypeError, call, f"record_end: {what}")
+    done.append(
+        "record_end with no description: the graph launches as before; graph_reverse refuses it"
+    )
+    for unit in (scale, scale_vjp, square, square_vjp):
+        door.unit_free(unit)
+
+
 def device_door(backend):
     """A context on device 0, or None when the door was built without a device group."""
     try:
@@ -1180,6 +1288,7 @@ def run(done, raises, not_run, backends):
 
     check_fft(door, done, raises)
     check_gemm(door, done, raises)
+    check_graph_reverse(door, done, raises)
     check_segmented(door, done, raises)
     check_auto_set(door, done, raises)
     if device is None:

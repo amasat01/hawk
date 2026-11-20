@@ -48,6 +48,7 @@
     X(eg_record_cond_end)                                                                          \
     X(eg_record_end)                                                                               \
     X(eg_graph_launch)                                                                             \
+    X(eg_graph_reverse)                                                                            \
     X(eg_graph_free)                                                                               \
     X(eg_device_count)                                                                             \
     X(eg_device_props)                                                                             \
@@ -1024,16 +1025,138 @@ static PyObject* m_record_cond_end(PyObject* self, PyObject* args)
     Py_RETURN_NONE;
 }
 
-/* record_end(): the graph that replays the recording. */
+/* A sequence of (plane, plane) pairs as two arrays of door pointers, one per member. None or
+ * NULL: none. Both arrays are PyMem memory the caller frees. */
+static int seq_plane_pairs(Door* d, PyObject* seq, void*** a, void*** b, Py_ssize_t* n)
+{
+    *a = *b = NULL;
+    *n      = 0;
+    if (seq == NULL || seq == Py_None)
+        return 0;
+    PyObject* t = PySequence_Tuple(seq);
+    if (!t)
+        return -1;
+    *n     = PyTuple_Size(t);
+    *a     = PyMem_Malloc((size_t)(*n ? *n : 1) * sizeof(void*));
+    *b     = PyMem_Malloc((size_t)(*n ? *n : 1) * sizeof(void*));
+    int rc = (*a && *b) ? 0 : (PyErr_NoMemory(), -1);
+    for (Py_ssize_t i = 0; rc == 0 && i < *n; i++) {
+        PyObject* pair = PySequence_Tuple(PyTuple_GetItem(t, i));
+        if (!pair) {
+            rc = -1;
+        } else if (PyTuple_Size(pair) != 2) {
+            PyErr_SetString(PyExc_TypeError, "expected a pair");
+            rc = -1;
+        } else if (handle_ptr(d, PyTuple_GetItem(pair, 0), KIND_PLANE, &(*a)[i]) < 0
+            || handle_ptr(d, PyTuple_GetItem(pair, 1), KIND_PLANE, &(*b)[i]) < 0) {
+            rc = -1;
+        }
+        Py_XDECREF(pair);
+    }
+    Py_DECREF(t);
+    if (rc < 0) {
+        PyMem_Free(*a);
+        PyMem_Free(*b);
+        *a = *b = NULL;
+    }
+    return rc;
+}
+
+/* record_end(diff=None): the graph that replays the recording. diff is a sequence of (launch
+ * ordinal, vjp unit): the graph is then planned for graph_reverse. */
 static PyObject* m_record_end(PyObject* self, PyObject* args)
 {
     Door* d         = (Door*)self;
     eg_graph* graph = NULL;
-    if (!PyArg_ParseTuple(args, "") || !door_ready(d))
+    PyObject* odiff = Py_None;
+    if (!PyArg_ParseTuple(args, "|O", &odiff) || !door_ready(d))
         return NULL;
-    if (door_check(d, d->fn.eg_record_end(d->ctx, &graph)) < 0)
+    if (odiff == Py_None) {
+        if (door_check(d, d->fn.eg_record_end(d->ctx, NULL, &graph)) < 0)
+            return NULL;
+        return handle_make(d, KIND_GRAPH, graph);
+    }
+    PyObject* t = PySequence_Tuple(odiff);
+    if (!t)
         return NULL;
-    return handle_make(d, KIND_GRAPH, graph);
+    Py_ssize_t n            = PyTuple_Size(t);
+    struct eg_node_vjp* vjp = PyMem_Malloc((size_t)(n ? n : 1) * sizeof *vjp);
+    if (!vjp) {
+        Py_DECREF(t);
+        return PyErr_NoMemory();
+    }
+    for (Py_ssize_t i = 0; i < n; i++) {
+        PyObject* pair = PySequence_Tuple(PyTuple_GetItem(t, i));
+        long ordinal   = -1;
+        if (!pair)
+            goto fail;
+        if (PyTuple_Size(pair) != 2) {
+            PyErr_SetString(PyExc_TypeError, "expected a (launch ordinal, vjp unit) pair");
+            Py_DECREF(pair);
+            goto fail;
+        }
+        ordinal = PyLong_AsLong(PyTuple_GetItem(pair, 0));
+        if ((ordinal == -1 && PyErr_Occurred()) || ordinal < INT32_MIN || ordinal > INT32_MAX) {
+            if (!PyErr_Occurred())
+                PyErr_SetString(PyExc_OverflowError, "a launch ordinal does not fit 32 bits");
+            Py_DECREF(pair);
+            goto fail;
+        }
+        vjp[i].launch = (int32_t)ordinal;
+        void* unit;
+        int bad = handle_ptr(d, PyTuple_GetItem(pair, 1), KIND_UNIT, &unit) < 0;
+        Py_DECREF(pair);
+        if (bad)
+            goto fail;
+        vjp[i].vjp = unit;
+    }
+    struct eg_record_end_desc desc = {
+        .struct_size = sizeof desc, .flags = EG_RECORD_DIFF, .n_vjps = (int32_t)n, .vjps = vjp
+    };
+    int bad = door_check(d, d->fn.eg_record_end(d->ctx, &desc, &graph)) < 0;
+    PyMem_Free(vjp);
+    Py_DECREF(t);
+    return bad ? NULL : handle_make(d, KIND_GRAPH, graph);
+fail:
+    PyMem_Free(vjp);
+    Py_DECREF(t);
+    return NULL;
+}
+
+/* graph_reverse(graph, seeds, grads): seeds are (output plane, seed plane) pairs and grads are
+ * (input plane, gradient plane) pairs; the door matches the planes by handle. */
+static PyObject* m_graph_reverse(PyObject* self, PyObject* args)
+{
+    Door* d = (Door*)self;
+    PyObject *ograph, *oseeds, *ograds;
+    void* graph;
+    if (!PyArg_ParseTuple(args, "OOO", &ograph, &oseeds, &ograds) || !door_ready(d)
+        || handle_ptr(d, ograph, KIND_GRAPH, &graph) < 0)
+        return NULL;
+    void **outputs, **seeds, **inputs, **grads;
+    Py_ssize_t n_seeds, n_grads;
+    if (seq_plane_pairs(d, oseeds, &outputs, &seeds, &n_seeds) < 0)
+        return NULL;
+    if (seq_plane_pairs(d, ograds, &inputs, &grads, &n_grads) < 0) {
+        PyMem_Free(outputs);
+        PyMem_Free(seeds);
+        return NULL;
+    }
+    struct eg_graph_reverse_desc desc = { .struct_size = sizeof desc,
+        .n_seeds                                       = (int32_t)n_seeds,
+        .outputs                                       = (eg_plane* const*)outputs,
+        .seeds                                         = (eg_plane* const*)seeds,
+        .n_grads                                       = (int32_t)n_grads,
+        .inputs                                        = (eg_plane* const*)inputs,
+        .grads                                         = (eg_plane* const*)grads };
+    int bad = door_check(d, d->fn.eg_graph_reverse(d->ctx, graph, &desc)) < 0;
+    PyMem_Free(outputs);
+    PyMem_Free(seeds);
+    PyMem_Free(inputs);
+    PyMem_Free(grads);
+    if (bad)
+        return NULL;
+    Py_RETURN_NONE;
 }
 
 static PyObject* m_graph_launch(PyObject* self, PyObject* args)
@@ -1523,6 +1646,7 @@ static PyMethodDef door_methods[] = {
     { "record_cond_end", m_record_cond_end, METH_VARARGS, NULL },
     { "record_end", m_record_end, METH_VARARGS, NULL },
     { "graph_launch", m_graph_launch, METH_VARARGS, NULL },
+    { "graph_reverse", m_graph_reverse, METH_VARARGS, NULL },
     { "graph_free", m_graph_free, METH_VARARGS, NULL },
     { "device_count", m_device_count, METH_VARARGS, NULL },
     { "device_props", m_device_props, METH_VARARGS, NULL },
