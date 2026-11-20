@@ -749,6 +749,315 @@ def check_graph_reverse(door, done, raises):
         door.unit_free(unit)
 
 
+def check_fork_and_cond(door, done, raises):
+    """Rows of forks, waits, the conditional's fields and graph_describe; numpy gives the values."""
+
+    def cells(*values):
+        """Int32 arrays of the values, and a plane over each."""
+        arrays = [np.array([v], dtype=np.int32) for v in values]
+        return arrays, [door.plane_wrap(a) for a in arrays]
+
+    def end_replay():
+        """End the recording and replay it once."""
+        graph = door.record_end()
+        door.graph_launch(graph)
+        return graph
+
+    # two branches over disjoint planes, then the join
+    arrays, (s1, s2, d1, d2) = cells(11, 22, 0, 0)
+    door.record_begin()
+    door.record_fork_begin()
+    door.copy(s1, d1)
+    door.record_fork_branch()
+    door.copy(s2, d2)
+    door.record_fork_end()
+    graph = door.record_end()
+    assert arrays[2][0] == 0 and arrays[3][0] == 0
+    door.graph_launch(graph)
+    assert (arrays[2][0], arrays[3][0]) == (11, 22)
+    door.graph_free(graph)
+    done.append(
+        "record_fork_*: two disjoint branches then a join replay to the recording-order values"
+    )
+
+    # a race refused at fork_end with the door's text; a wait resolves it
+    door.record_begin()
+    door.record_fork_begin()
+    door.copy(s1, d1)
+    door.record_fork_branch()
+    door.copy(d1, d2)
+    e = raises(o.BadRequest, door.record_fork_end, "record_fork_end: a race between branches")
+    assert "RAW race between node 2" in refusal_text(door, e), str(e)
+    door.record_begin()
+    door.record_fork_begin()
+    door.copy(s1, d1)
+    door.record_fork_branch()
+    door.record_wait([d1])
+    door.copy(d1, d2)
+    door.record_fork_end()
+    graph = end_replay()
+    assert (arrays[2][0], arrays[3][0]) == (11, 11)
+    done.append("record_wait: a race refused by the door's text at record_fork_end is resolved")
+    door.graph_free(graph)
+
+    # graph_describe of fork + wait, then an IF_ELSE; the launches of a fork of units
+    cell_array, (cell,) = cells(1)
+    door.record_begin()
+    door.record_fork_begin()
+    door.copy(s1, d1)
+    door.record_fork_branch()
+    door.record_wait([d1])
+    door.copy(d1, d2)
+    door.record_fork_end()
+    door.record_cond_begin(o.EG_COND_IF_ELSE, cell)
+    door.copy(s2, d1)
+    door.record_cond_arm()
+    door.copy(s1, d1)
+    door.record_cond_end()
+    graph = door.record_end()
+    desc = door.graph_describe(graph, [s1, s2, d1, d2, cell])
+    nodes = desc["nodes"]
+    assert desc["flags"] == 0 and desc["n_levels"] == 9 and len(nodes) == 12
+    kinds = [
+        o.EG_GNODE_FORK, o.EG_GNODE_BRANCH, o.EG_GNODE_COPY, o.EG_GNODE_BRANCH, o.EG_GNODE_WAIT,
+        o.EG_GNODE_COPY, o.EG_GNODE_JOIN, o.EG_GNODE_COND, o.EG_GNODE_ARM, o.EG_GNODE_COPY,
+        o.EG_GNODE_ARM, o.EG_GNODE_COPY,
+    ]  # fmt: skip
+    assert [n["kind"] for n in nodes] == kinds
+    assert [n["parent"] for n in nodes] == [-1, 0, 1, 0, 3, 3, -1, -1, 7, 8, 7, 10]
+    assert [n["level"] for n in nodes] == [0, 1, 2, 1, 3, 4, 5, 6, 7, 8, 7, 8]
+    assert nodes[7]["arm"] == o.EG_COND_IF_ELSE and [nodes[8]["arm"], nodes[10]["arm"]] == [0, 1]
+    assert nodes[2]["planes"] == (0, 2) and nodes[2]["access"] == (1, 2)
+    assert nodes[2]["unit"] is None and nodes[2]["launch"] == -1 and not nodes[7]["has_baseline"]
+    edges = {(e["kind"], e["from"], e["to"]): e for e in desc["edges"]}
+    assert edges[(o.EG_GEDGE_WAIT, 2, 4)]["plane"] == 2
+    for key in ((o.EG_GEDGE_JOIN, 2, 6), (o.EG_GEDGE_JOIN, 5, 6), (o.EG_GEDGE_ORDER, 6, 7)):
+        assert key in edges and edges[key]["plane"] is None, key
+    assert sum(e["kind"] == o.EG_GEDGE_WAIT for e in desc["edges"]) == 1
+    door.graph_free(graph)
+    raises(ValueError, lambda: door.graph_describe(graph, []), "graph_describe: a freed graph")
+    done.append(
+        "graph_describe: node kinds, parents, levels, planes, WAIT and JOIN edges of a fork"
+    )
+
+    # each launch node carries the ordinal of its eg_launch call
+    unit_a, unit_b = (
+        door.unit_load(GRAPH, name, digest(b)) for name, b in (("scale", 0x10), ("square", 0x12))
+    )
+    xs = np.arange(1.0, 8.0)
+    arrays = [xs.copy(), np.array([1.7]), np.zeros(7), np.zeros(7), xs.copy(), np.zeros(7)]
+    ps = [door.plane_wrap(a) for a in arrays]
+    scale = door.plan_new(unit_a, o.EG_STRUCTURE_HOST_SERIAL, o.EG_REDUCE_COMPENSATED, 7)
+    door.bind(scale, [0, 1, 2], ps[:3], [], [])
+    square = door.plan_new(unit_b, o.EG_STRUCTURE_HOST_SERIAL, o.EG_REDUCE_COMPENSATED, 7)
+    door.bind(square, [0, 1], [ps[2], ps[3]], [], [])
+    other = door.plan_new(unit_b, o.EG_STRUCTURE_HOST_SERIAL, o.EG_REDUCE_COMPENSATED, 7)
+    door.bind(other, [0, 1], [ps[4], ps[5]], [], [])
+    door.record_begin()
+    door.record_fork_begin()
+    door.launch(scale)
+    door.record_fork_branch()
+    door.record_wait([ps[2]])
+    door.launch(square)
+    door.record_fork_end()
+    door.launch(scale)
+    graph = door.record_end()
+    desc = door.graph_describe(graph, ps)
+    nodes = desc["nodes"]
+    first = next(n for n in nodes if n["kind"] == o.EG_GNODE_LAUNCH)
+    assert first["planes"] == (0, 1, 2)
+    unlisted = door.graph_describe(graph, ps[:1])["nodes"]
+    assert next(n for n in unlisted if n["kind"] == o.EG_GNODE_LAUNCH)["planes"] == (0, -1, -1)
+    launches = [(n["unit"], n["launch"]) for n in nodes if n["kind"] == o.EG_GNODE_LAUNCH]
+    assert launches == [("scale", 0), ("square", 1), ("scale", 2)], launches
+    door.graph_launch(graph)
+    assert np.allclose(arrays[3], (1.7 * xs) ** 2)
+    door.graph_free(graph)
+    done.append("graph_describe: a launch node's ordinal is its place among the launches")
+
+    # a race between launches, refused; then the same fork over disjoint planes
+    door.record_begin()
+    door.record_fork_begin()
+    door.launch(scale)
+    door.record_fork_branch()
+    door.launch(square)
+    e = raises(o.BadRequest, door.record_fork_end, "record_fork_end: a race between launches")
+    assert "race between node" in refusal_text(door, e), str(e)
+    door.record_begin()
+    door.record_fork_begin()
+    door.launch(scale)
+    door.record_fork_branch()
+    door.launch(other)
+    door.record_fork_end()
+    graph = end_replay()
+    assert np.allclose(arrays[2], 1.7 * xs) and np.allclose(arrays[5], xs**2)
+    door.graph_free(graph)
+    door.plan_free(scale)
+    door.plan_free(square)
+    door.plan_free(other)
+    done.append("record_fork_end: launches over overlapping planes are a race, disjoint ones run")
+
+    # negate: IF takes its arm when the cell is zero
+    flag, flag_plane = cells(1)
+    for negate, flag_value in ((True, 1), (True, 0), (False, 1), (False, 0)):
+        flag[0][0] = flag_value
+        out, (src, dst) = cells(11, 0)
+        door.record_begin()
+        door.record_cond_begin(o.EG_COND_IF, flag_plane[0], negate=negate)
+        door.copy(src, dst)
+        door.record_cond_end()
+        graph = end_replay()
+        assert (out[1][0] == 11) == ((flag_value != 0) != negate), (negate, flag_value)
+        door.graph_free(graph)
+    done.append("record_cond_begin: negate runs an IF when the cell is zero, and not otherwise")
+
+    # max_iters: a shift register {1,1,1,1,0} leaves one place per pass; the cell is its first place
+    start = np.array([1, 1, 1, 1, 0], dtype=np.int32)
+    leading_ones = int(np.argmin(start))
+    for cap in (0, 2):
+        reg, planes = cells(*start)
+        door.record_begin()
+        door.record_cond_begin(o.EG_COND_WHILE, planes[0], max_iters=cap)
+        for i in range(4):
+            door.copy(planes[i + 1], planes[i])
+        door.record_cond_end()
+        graph = end_replay()
+        passes = min(cap or leading_ones, leading_ones)
+        want = np.concatenate((start[passes:], np.zeros(passes, dtype=np.int32)))
+        assert np.array_equal(np.concatenate(reg), want), (cap, reg)
+        door.graph_free(graph)
+    done.append("record_cond_begin: a WHILE with max_iters stops after that many passes")
+
+    # cell_index and baseline: the test reads lanes[2], then count[0] against base[1]
+    lane_array = np.array([9, 9, 0, 9], dtype=np.int32)
+    lane_plane = door.plane_wrap(lane_array)
+    out, (src, dst) = cells(11, 0)
+    door.record_begin()
+    door.record_cond_begin(o.EG_COND_IF, lane_plane, cell_index=2)
+    door.copy(src, dst)
+    door.record_cond_end()
+    graph = door.record_end()
+    door.graph_launch(graph)
+    assert out[1][0] == 0
+    lane_array[2] = 1
+    door.graph_launch(graph)
+    assert out[1][0] == 11
+    door.graph_free(graph)
+    count = np.array([3], dtype=np.int32)
+    base = np.array([0, 3], dtype=np.int32)
+    count_plane, base_plane = door.plane_wrap(count), door.plane_wrap(base)
+    for negate in (False, True):
+        door.record_begin()
+        door.record_cond_begin(
+            o.EG_COND_IF, count_plane, negate=negate, baseline=base_plane, baseline_index=1
+        )
+        door.copy(src, dst)
+        door.record_cond_end()
+        graph = door.record_end()
+        for value in (3, 4):
+            count[0], out[1][0] = value, 0
+            door.graph_launch(graph)
+            assert (out[1][0] == 11) == ((value != base[1]) != negate), (negate, value)
+        node = door.graph_describe(graph, [count_plane, base_plane])["nodes"][0]
+        assert node["has_baseline"] and node["cond_flags"] == (o.EG_COND_NEGATE if negate else 0)
+        door.graph_free(graph)
+    done.append("record_cond_begin: cell_index and a baseline element decide the test")
+
+
+def check_reverse_structure(door, done):
+    """Rows of graph_reverse through a fork, an IF and a WHILE; closed forms in numpy."""
+    n = 7
+    names = (("scale", 0x10), ("scale_vjp", 0x11), ("mul2", 0x14), ("mul2_vjp", 0x15))
+    units = {name: door.unit_load(GRAPH, name, digest(b)) for name, b in names}
+    units["tick"] = door.unit_load(GRAPH, "tick", digest(0x1E))
+    x = 0.5 + 0.3 * np.arange(n)
+
+    def planes(*arrays):
+        """A plane over each array."""
+        return [door.plane_wrap(a) for a in arrays]
+
+    def plan(unit, bound):
+        """A serial plan of the unit with the planes bound at slots 0, 1, ..."""
+        handle = door.plan_new(units[unit], o.EG_STRUCTURE_HOST_SERIAL, o.EG_REDUCE_COMPENSATED, n)
+        door.bind(handle, list(range(len(bound))), bound, [], [])
+        return handle
+
+    # a fork: y1 = w1 x and y2 = w2 x in two branches, z = y1 y2: dJ/dx = 2 w1 w2 x
+    w1, w2 = np.array([1.7]), np.array([-0.6])
+    arrays = [x.copy(), np.zeros(n), np.zeros(n), np.zeros(n), w1, w2, np.ones(n), np.zeros(n)]
+    px, py1, py2, pz, pw1, pw2, one, gx = planes(*arrays)
+    f1, f2, m = (
+        plan("scale", [px, pw1, py1]),
+        plan("scale", [px, pw2, py2]),
+        plan("mul2", [py1, py2, pz]),
+    )
+    door.record_begin()
+    door.record_fork_begin()
+    door.launch(f1)
+    door.record_fork_branch()
+    door.launch(f2)
+    door.record_fork_end()
+    door.launch(m)
+    graph = door.record_end(
+        [(0, units["scale_vjp"]), (1, units["scale_vjp"]), (2, units["mul2_vjp"])]
+    )
+    door.graph_launch(graph)
+    door.graph_reverse(graph, [(pz, one)], [(px, gx)])
+    assert np.allclose(arrays[7], 2 * w1[0] * w2[0] * x, rtol=1e-12)
+    done.append(
+        "graph_reverse: a fork of two branches then a join sums both paths, as the closed form"
+    )
+
+    # an IF on lane 2 of a flag array: y = w1 x, and when the flag is set y = w2 x2 (taken or not)
+    x2 = -1.5 + 0.3 * np.arange(n)
+    flags = np.array([7, 7, 0, 7], dtype=np.int32)
+    arrays = [x.copy(), x2, np.zeros(n), w1, w2, np.ones(n), np.zeros(n), np.zeros(n)]
+    px, px2, py, pw1, pw2, one, gx, gx2 = planes(*arrays)
+    flag = door.plane_wrap(flags)
+    f1, f2 = plan("scale", [px, pw1, py]), plan("scale", [px2, pw2, py])
+    door.record_begin()
+    door.launch(f1)
+    door.record_cond_begin(o.EG_COND_IF, flag, cell_index=2)
+    door.launch(f2)
+    door.record_cond_end()
+    graph = door.record_end([(0, units["scale_vjp"]), (1, units["scale_vjp"])])
+    for taken in (1, 0):
+        flags[2] = taken
+        door.graph_launch(graph)
+        door.graph_reverse(graph, [(py, one)], [(px, gx), (px2, gx2)])
+        # a taken arm overwrites y, so the first launch reaches nothing; a skipped one adds nothing
+        assert np.allclose(arrays[6], 0.0 if taken else w1[0]), taken
+        assert np.allclose(arrays[7], w2[0] if taken else 0.0), taken
+    done.append("graph_reverse: an IF taken follows its arm, an IF not taken contributes nothing")
+
+    # a WHILE whose counter ticks down per pass (t = a x, x = 1 t), capped at 3 passes
+    a, unit_gain = np.array([0.9]), np.ones(1)
+    for start, cap in ((2, 4), (6, 3), (0, 4)):
+        counter = np.full(n, start, dtype=np.int32)
+        arrays = [x.copy(), np.zeros(n), a, unit_gain, np.ones(n), np.zeros(n), np.zeros(1)]
+        px, pt, pa, pone, seed, gx, ga = planes(*arrays)
+        pc = door.plane_wrap(counter)
+        f1, f2 = plan("scale", [px, pa, pt]), plan("scale", [pt, pone, px])
+        tick = plan("tick", [pc])
+        door.record_begin()
+        door.record_cond_begin(o.EG_COND_WHILE, pc, max_iters=cap)
+        door.launch(f1)
+        door.launch(f2)
+        door.launch(tick)
+        door.record_cond_end()
+        graph = door.record_end([(0, units["scale_vjp"]), (1, units["scale_vjp"])])
+        door.graph_launch(graph)
+        passes = min(start, cap)
+        assert np.allclose(arrays[0], a[0] ** passes * x), (start, cap)
+        door.graph_reverse(graph, [(px, seed)], [(px, gx), (pa, ga)])
+        # J = sum of x after `passes` multiplications: dJ/dx0 = a^p, dJ/da = p a^(p-1) sum x0
+        assert np.allclose(arrays[5], a[0] ** passes), (start, cap)
+        assert np.allclose(arrays[6], passes * a[0] ** (passes - 1) * x.sum() if passes else 0.0)
+    done.append(
+        "graph_reverse: a WHILE stopped by its counter or by max_iters gives the unrolled gradient"
+    )
+
+
 def device_door(backend):
     """A context on device 0, or None when the door was built without a device group."""
     try:
@@ -1095,7 +1404,6 @@ def run(done, raises, not_run, backends):
         for call in (
             lambda: door.device_props(0),
             lambda: door.stream_use(0),
-            lambda: door.record_child(0),
         ):
             e = raises(o.NotWritten, call, "the device group: not built")
             assert "the device group is not built" in refusal_text(door, e)
@@ -1289,6 +1597,8 @@ def run(done, raises, not_run, backends):
     check_fft(door, done, raises)
     check_gemm(door, done, raises)
     check_graph_reverse(door, done, raises)
+    check_fork_and_cond(door, done, raises)
+    check_reverse_structure(door, done)
     check_segmented(door, done, raises)
     check_auto_set(door, done, raises)
     if device is None:

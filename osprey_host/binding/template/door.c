@@ -46,15 +46,19 @@
     X(eg_record_cond_begin)                                                                        \
     X(eg_record_cond_arm)                                                                          \
     X(eg_record_cond_end)                                                                          \
+    X(eg_record_fork_begin)                                                                        \
+    X(eg_record_fork_branch)                                                                       \
+    X(eg_record_fork_end)                                                                          \
+    X(eg_record_wait)                                                                              \
     X(eg_record_end)                                                                               \
     X(eg_graph_launch)                                                                             \
     X(eg_graph_reverse)                                                                            \
+    X(eg_graph_describe)                                                                           \
     X(eg_graph_free)                                                                               \
     X(eg_device_count)                                                                             \
     X(eg_device_props)                                                                             \
     X(eg_stream_use)                                                                               \
     X(eg_sync)                                                                                     \
-    X(eg_record_child)                                                                             \
     X(eg_plane_new)                                                                                \
     X(eg_plane_dlpack)                                                                             \
     X(eg_banded_pack)                                                                              \
@@ -987,19 +991,31 @@ static PyObject* m_record_begin(PyObject* self, PyObject* args)
     Py_RETURN_NONE;
 }
 
-/* record_cond_begin(kind, cell, n_arms=0): opens a conditional on the int32 cell plane. */
+/* record_cond_begin(kind, cell, n_arms=0, negate=False, max_iters=0, cell_index=0, baseline=None,
+ * baseline_index=0): opens a conditional on the int32 cell plane; the defaults are the header's. */
 static PyObject* m_record_cond_begin(PyObject* self, PyObject* args, PyObject* kw)
 {
-    static char* names[] = { "kind", "cell", "n_arms", NULL };
+    static char* names[] = { "kind", "cell", "n_arms", "negate", "max_iters", "cell_index",
+        "baseline", "baseline_index", NULL };
     Door* d              = (Door*)self;
-    PyObject* ocell;
-    int kind, n_arms = 0;
-    void* cell;
-    if (!PyArg_ParseTupleAndKeywords(args, kw, "iO|i", names, &kind, &ocell, &n_arms)
-        || !door_ready(d) || handle_ptr(d, ocell, KIND_PLANE, &cell) < 0)
+    PyObject *ocell, *obaseline = Py_None;
+    int kind, n_arms = 0, negate = 0;
+    long long max_iters = 0, cell_index = 0, baseline_index = 0;
+    void *cell, *baseline;
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "iO|ipLLOL", names, &kind, &ocell, &n_arms, &negate,
+            &max_iters, &cell_index, &obaseline, &baseline_index)
+        || !door_ready(d) || handle_ptr(d, ocell, KIND_PLANE, &cell) < 0
+        || handle_ptr_or_none(d, obaseline, KIND_PLANE, &baseline) < 0)
         return NULL;
-    struct eg_cond_desc desc
-        = { .struct_size = sizeof desc, .kind = kind, .n_arms = n_arms, .cell = cell };
+    struct eg_cond_desc desc = { .struct_size = sizeof desc,
+        .flags                                = negate ? EG_COND_NEGATE : 0,
+        .kind                                 = kind,
+        .n_arms                               = n_arms,
+        .cell                                 = cell,
+        .max_iters                            = max_iters,
+        .cell_index                           = cell_index,
+        .baseline                             = baseline,
+        .baseline_index                       = baseline_index };
     if (door_check(d, d->fn.eg_record_cond_begin(d->ctx, &desc)) < 0)
         return NULL;
     Py_RETURN_NONE;
@@ -1021,6 +1037,54 @@ static PyObject* m_record_cond_end(PyObject* self, PyObject* args)
     if (!PyArg_ParseTuple(args, "") || !door_ready(d))
         return NULL;
     if (door_check(d, d->fn.eg_record_cond_end(d->ctx)) < 0)
+        return NULL;
+    Py_RETURN_NONE;
+}
+
+static PyObject* m_record_fork_begin(PyObject* self, PyObject* args)
+{
+    Door* d = (Door*)self;
+    if (!PyArg_ParseTuple(args, "") || !door_ready(d))
+        return NULL;
+    if (door_check(d, d->fn.eg_record_fork_begin(d->ctx)) < 0)
+        return NULL;
+    Py_RETURN_NONE;
+}
+
+static PyObject* m_record_fork_branch(PyObject* self, PyObject* args)
+{
+    Door* d = (Door*)self;
+    if (!PyArg_ParseTuple(args, "") || !door_ready(d))
+        return NULL;
+    if (door_check(d, d->fn.eg_record_fork_branch(d->ctx)) < 0)
+        return NULL;
+    Py_RETURN_NONE;
+}
+
+static PyObject* m_record_fork_end(PyObject* self, PyObject* args)
+{
+    Door* d = (Door*)self;
+    if (!PyArg_ParseTuple(args, "") || !door_ready(d))
+        return NULL;
+    if (door_check(d, d->fn.eg_record_fork_end(d->ctx)) < 0)
+        return NULL;
+    Py_RETURN_NONE;
+}
+
+/* record_wait(planes): the rest of the current branch runs after the sibling branches that write
+ * the planes. */
+static PyObject* m_record_wait(PyObject* self, PyObject* args)
+{
+    Door* d = (Door*)self;
+    PyObject* oplanes;
+    void** planes;
+    Py_ssize_t n;
+    if (!PyArg_ParseTuple(args, "O", &oplanes) || !door_ready(d)
+        || seq_handles(d, oplanes, KIND_PLANE, &planes, &n) < 0)
+        return NULL;
+    int bad = door_check(d, d->fn.eg_record_wait(d->ctx, (int32_t)n, (eg_plane* const*)planes)) < 0;
+    PyMem_Free(planes);
+    if (bad)
         return NULL;
     Py_RETURN_NONE;
 }
@@ -1159,6 +1223,132 @@ static PyObject* m_graph_reverse(PyObject* self, PyObject* args)
     Py_RETURN_NONE;
 }
 
+/* A tuple of ints from an array of n values of the given element type. */
+#define INT_TUPLE(name, type)                                                                      \
+    static PyObject* name(const type* v, int32_t n)                                                \
+    {                                                                                              \
+        PyObject* t = PyTuple_New(n);                                                              \
+        for (int32_t i = 0; t && i < n; i++) {                                                     \
+            PyObject* x = PyLong_FromLongLong((long long)v[i]);                                    \
+            if (!x) {                                                                              \
+                Py_CLEAR(t);                                                                       \
+            } else {                                                                               \
+                PyTuple_SetItem(t, i, x);                                                          \
+            }                                                                                      \
+        }                                                                                          \
+        return t;                                                                                  \
+    }
+INT_TUPLE(access_tuple, uint8_t)
+INT_TUPLE(slot_tuple, int32_t)
+
+/* The planes the caller listed, as the door knows them: a description names a plane by its index
+ * in this list, or -1 when the caller did not list it. */
+typedef struct {
+    void** ptr;
+    Py_ssize_t n;
+} PlaneList;
+
+static long plane_index(const PlaneList* known, const eg_plane* plane)
+{
+    for (Py_ssize_t i = 0; i < known->n; i++)
+        if (known->ptr[i] == plane)
+            return (long)i;
+    return -1;
+}
+
+/* The planes of a node as their indices in the caller's list. */
+static PyObject* plane_tuple(const PlaneList* known, eg_plane* const* v, int32_t n)
+{
+    PyObject* t = PyTuple_New(n);
+    for (int32_t i = 0; t && i < n; i++) {
+        PyObject* x = PyLong_FromLong(plane_index(known, v[i]));
+        if (!x)
+            Py_CLEAR(t);
+        else
+            PyTuple_SetItem(t, i, x);
+    }
+    return t;
+}
+
+static PyObject* node_dict(const PlaneList* known, const struct eg_graph_node* n)
+{
+    PyObject* unit   = n->unit ? PyUnicode_FromString(n->unit) : (Py_INCREF(Py_None), Py_None);
+    PyObject* planes = plane_tuple(known, n->planes, n->n_planes);
+    PyObject* access = access_tuple(n->access, n->n_planes);
+    PyObject* slot   = slot_tuple(n->slot, n->n_planes);
+    PyObject* node   = NULL;
+    if (unit && planes && access && slot)
+        node = Py_BuildValue("{s:i,s:i,s:i,s:i,s:O,s:O,s:O,s:O,s:I,s:O,s:L,s:L,s:i,s:i}", "kind",
+            n->kind, "parent", n->parent, "level", n->level, "arm", n->arm, "unit", unit, "planes",
+            planes, "access", access, "slot", slot, "cond_flags", n->cond_flags, "has_baseline",
+            n->has_baseline ? Py_True : Py_False, "max_iters", (long long)n->max_iters,
+            "cell_index", (long long)n->cell_index, "n_plans", n->n_plans, "launch", n->launch);
+    Py_XDECREF(unit);
+    Py_XDECREF(planes);
+    Py_XDECREF(access);
+    Py_XDECREF(slot);
+    return node;
+}
+
+static PyObject* edge_dict(const PlaneList* known, const struct eg_graph_edge* e)
+{
+    PyObject* plane
+        = e->plane ? PyLong_FromLong(plane_index(known, e->plane)) : (Py_INCREF(Py_None), Py_None);
+    if (!plane)
+        return NULL;
+    PyObject* edge = Py_BuildValue("{s:i,s:i,s:i,s:i,s:i,s:O}", "from", e->from, "to", e->to,
+        "kind", e->kind, "from_slot", e->from_slot, "to_slot", e->to_slot, "plane", plane);
+    Py_DECREF(plane);
+    return edge;
+}
+
+/* A list of the dictionaries a builder makes for each of n array elements, which the door lays
+ * out `stride` bytes apart (its own struct size, not this file's). */
+#define DICT_LIST(name, type, build)                                                               \
+    static PyObject* name(const PlaneList* known, const type* v, int32_t n, uint32_t stride)       \
+    {                                                                                              \
+        PyObject* list = PyList_New(n);                                                            \
+        for (int32_t i = 0; list && i < n; i++) {                                                  \
+            PyObject* item = build(known, (const type*)((const char*)v + (size_t)i * stride));     \
+            if (!item)                                                                             \
+                Py_CLEAR(list);                                                                    \
+            else                                                                                   \
+                PyList_SetItem(list, i, item);                                                     \
+        }                                                                                          \
+        return list;                                                                               \
+    }
+DICT_LIST(node_list, struct eg_graph_node, node_dict)
+DICT_LIST(edge_list, struct eg_graph_edge, edge_dict)
+
+/* graph_describe(graph, planes): the recorded graph's nodes and edges, copied out of the door's
+ * arrays. A plane appears as its index in `planes`, or -1 when the door names one not listed. */
+static PyObject* m_graph_describe(PyObject* self, PyObject* args)
+{
+    Door* d = (Door*)self;
+    PyObject *ograph, *oplanes;
+    void* graph;
+    PlaneList known;
+    struct eg_graph_description desc = { .struct_size = sizeof desc };
+    if (!PyArg_ParseTuple(args, "OO", &ograph, &oplanes) || !door_ready(d)
+        || handle_ptr(d, ograph, KIND_GRAPH, &graph) < 0
+        || seq_handles(d, oplanes, KIND_PLANE, &known.ptr, &known.n) < 0)
+        return NULL;
+    if (door_check(d, d->fn.eg_graph_describe(d->ctx, graph, &desc)) < 0) {
+        PyMem_Free(known.ptr);
+        return NULL;
+    }
+    PyObject* nodes = node_list(&known, desc.nodes, desc.n_nodes, desc.node_size);
+    PyObject* edges = nodes ? edge_list(&known, desc.edges, desc.n_edges, desc.edge_size) : NULL;
+    PyMem_Free(known.ptr);
+    PyObject* out = NULL;
+    if (edges)
+        out = Py_BuildValue("{s:I,s:i,s:O,s:O}", "flags", desc.flags, "n_levels", desc.n_levels,
+            "nodes", nodes, "edges", edges);
+    Py_XDECREF(nodes);
+    Py_XDECREF(edges);
+    return out;
+}
+
 static PyObject* m_graph_launch(PyObject* self, PyObject* args)
 {
     Door* d = (Door*)self;
@@ -1217,17 +1407,6 @@ static PyObject* m_sync(PyObject* self, PyObject* args)
     if (!PyArg_ParseTuple(args, "") || !door_ready(d))
         return NULL;
     if (door_check(d, d->fn.eg_sync(d->ctx)) < 0)
-        return NULL;
-    Py_RETURN_NONE;
-}
-
-static PyObject* m_record_child(PyObject* self, PyObject* args)
-{
-    Door* d = (Door*)self;
-    unsigned long long graph;
-    if (!PyArg_ParseTuple(args, "K", &graph) || !door_ready(d))
-        return NULL;
-    if (door_check(d, d->fn.eg_record_child(d->ctx, graph)) < 0)
         return NULL;
     Py_RETURN_NONE;
 }
@@ -1644,15 +1823,19 @@ static PyMethodDef door_methods[] = {
     { "record_cond_begin", KEYWORD_CALL(m_record_cond_begin), METH_VARARGS | METH_KEYWORDS, NULL },
     { "record_cond_arm", m_record_cond_arm, METH_VARARGS, NULL },
     { "record_cond_end", m_record_cond_end, METH_VARARGS, NULL },
+    { "record_fork_begin", m_record_fork_begin, METH_VARARGS, NULL },
+    { "record_fork_branch", m_record_fork_branch, METH_VARARGS, NULL },
+    { "record_fork_end", m_record_fork_end, METH_VARARGS, NULL },
+    { "record_wait", m_record_wait, METH_VARARGS, NULL },
     { "record_end", m_record_end, METH_VARARGS, NULL },
     { "graph_launch", m_graph_launch, METH_VARARGS, NULL },
     { "graph_reverse", m_graph_reverse, METH_VARARGS, NULL },
+    { "graph_describe", m_graph_describe, METH_VARARGS, NULL },
     { "graph_free", m_graph_free, METH_VARARGS, NULL },
     { "device_count", m_device_count, METH_VARARGS, NULL },
     { "device_props", m_device_props, METH_VARARGS, NULL },
     { "stream_use", m_stream_use, METH_VARARGS, NULL },
     { "sync", m_sync, METH_VARARGS, NULL },
-    { "record_child", m_record_child, METH_VARARGS, NULL },
     { "plane_new", KEYWORD_CALL(m_plane_new), METH_VARARGS | METH_KEYWORDS, NULL },
     { "plane_dlpack", m_plane_dlpack, METH_VARARGS, NULL },
     { "banded_pack", m_banded_pack, METH_VARARGS, NULL },
@@ -1762,6 +1945,26 @@ static PyType_Spec handle_spec    = { "_osprey.Handle", sizeof(Handle), 0,
     X(EG_COND_IF_ELSE)                                                                             \
     X(EG_COND_WHILE)                                                                               \
     X(EG_COND_SWITCH)                                                                              \
+    X(EG_COND_NEGATE)                                                                              \
+    X(EG_RECORD_DIFF)                                                                              \
+    X(EG_GNODE_LAUNCH)                                                                             \
+    X(EG_GNODE_RUN)                                                                                \
+    X(EG_GNODE_REDUCE)                                                                             \
+    X(EG_GNODE_COPY)                                                                               \
+    X(EG_GNODE_FFT)                                                                                \
+    X(EG_GNODE_GEMM)                                                                               \
+    X(EG_GNODE_COND)                                                                               \
+    X(EG_GNODE_ARM)                                                                                \
+    X(EG_GNODE_FORK)                                                                               \
+    X(EG_GNODE_BRANCH)                                                                             \
+    X(EG_GNODE_JOIN)                                                                               \
+    X(EG_GNODE_WAIT)                                                                               \
+    X(EG_GEDGE_RAW)                                                                                \
+    X(EG_GEDGE_WAR)                                                                                \
+    X(EG_GEDGE_WAW)                                                                                \
+    X(EG_GEDGE_WAIT)                                                                               \
+    X(EG_GEDGE_JOIN)                                                                               \
+    X(EG_GEDGE_ORDER)                                                                              \
     X(EG_RUN_RECORD)                                                                               \
     X(EG_RUN_REORDER)                                                                              \
     X(EG_REPORT_DONE)                                                                              \
