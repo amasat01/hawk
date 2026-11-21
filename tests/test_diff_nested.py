@@ -162,7 +162,7 @@ def bundle64(tmp_path_factory, cache_dir):
 
 def _run(built, kernel, target, values: dict, dtype) -> dict:
     """One launch of ``kernel`` over ``values``; every mutable plane back as numpy,
-    and every sample_sum plane as its row sums (plane plus compensation)."""
+    and every sample_sum plane as the one cell the library folds its rows into."""
     xp = np
     if target == "cuda":
         import cupy as xp
@@ -174,10 +174,8 @@ def _run(built, kernel, target, values: dict, dtype) -> dict:
         if role == "mutable":
             outs[name] = bound[name] = xp.zeros(_shape(widths, name), dtype=dtype)
         elif role == "accum_out":
-            if name in summed:       # the host library folds the rows into the one cell and owns the compensation plane
-                outs[name] = bound[name] = xp.full(1 if target == "host" else -(-N // 32), np.nan, dtype=dtype)
-            elif target != "host":
-                bound[name] = xp.full(-(-N // 32), np.nan, dtype=dtype)
+            if name in summed:       # the library folds the rows into the one cell and makes the compensation plane
+                outs[name] = bound[name] = xp.full(1, np.nan, dtype=dtype)
         elif role == "terminated":
             bound[name] = xp.zeros(N, dtype=bool)
         elif role == "uniform":
@@ -191,12 +189,12 @@ def _run(built, kernel, target, values: dict, dtype) -> dict:
     else:
         bound_plan = hawk.plan(hawk.load(built.directory, kernel.name), hawk.DeviceKernel).bind(**bound)
     bound_plan.launch()
+    bound_plan.wait()                   # a launch over device memory is queued: the planes are read after it has run
 
     def host(a):
         return np.asarray(a.get() if target == "cuda" else a, dtype=np.float64)
 
-    return {n: host(a) + (host(bound[n + "_comp"]) if n in summed and target == "cuda" else 0.0)
-            for n, a in outs.items()}
+    return {n: host(a) for n, a in outs.items()}
 
 
 TARGETS = ["host", pytest.param("cuda", marks=pytest.mark.gpu)]

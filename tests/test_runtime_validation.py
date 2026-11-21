@@ -298,3 +298,14 @@ def test_an_array_that_exports_dlpack_without_a_buffer_and_needs_a_view_is_refus
         rt.run(kernel, x=_DlpackOnly(np.asfortranarray(x.T)), a=2.0, y=y)
     rt.run(kernel, x=_DlpackOnly(x), a=2.0, y=_DlpackOnly(y))
     np.testing.assert_array_equal(y, 2.0 * x)
+
+
+def test_an_array_of_another_library_with_no_element_is_contiguous_whatever_strides_it_states():
+    """An array library may state any strides for an array that holds nothing; NumPy calls such an array contiguous in both
+    orders, and so does the description hawk's bind checks read."""
+    from hawk._plane_layout import _Described
+
+    empty = _Described({"shape": (0,), "dtype": (2, 64, 1), "read_only": False, "strides": (0,)})
+    assert empty.c_contiguous and np.zeros(0).flags.c_contiguous
+    strided = _Described({"shape": (4,), "dtype": (2, 64, 1), "read_only": False, "strides": (2,)})
+    assert not strided.c_contiguous

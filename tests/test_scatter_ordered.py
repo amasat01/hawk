@@ -272,7 +272,7 @@ def test_a_vector_payload_adds_each_component_into_its_own_plane_of_cells(more, 
     rng = np.random.default_rng(13)
     key = rng.integers(0, 9, n).astype(np.int32)
     v = rng.normal(size=(3, n))
-    planes = {"key": key, "v": np.ascontiguousarray(v), "acc": np.zeros((3, 9) if target == "host" else 27)}
+    planes = {"key": key, "v": np.ascontiguousarray(v), "acc": np.zeros((3, 9))}
     got = _bits([_exec(more["add_vec"], "add_vec", target, planes) for _ in range(3)])
     want = np.zeros((3, 9))
     for e in range(3):

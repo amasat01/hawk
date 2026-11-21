@@ -46,7 +46,6 @@ import ctypes
 import pathlib
 from types import MappingProxyType, SimpleNamespace
 
-import hawk
 from hawk import _core
 from conftest import refuse_device_row
 
@@ -163,13 +162,6 @@ def device_plugin(bundle_dir, name, sidecar):
     # it the facts the view does not repeat (the row width of a kernel that reduces over samples)
     return SimpleNamespace(device_function=loaded.fn.kernel.ptr, sidecar=MappingProxyType(sidecar),
                            _keepalive=(reg, loaded), **view)
-
-
-def device_loaded(bundle_dir, name, sidecar=None):
-    """The loaded kernel of a bundle's DEVICE entry, for ``hawk.plan(loaded, hawk.DeviceKernel)``: a row on hawk's verbs
-    takes this and not :func:`device_plugin`, which is shaped for the previous package's plan."""
-    refuse_device_row()
-    return hawk.load(bundle_dir, name, sidecar)
 
 
 def host_plugin(bundle_dir, name, sidecar):

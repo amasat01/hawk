@@ -108,6 +108,8 @@ class _Described:
         self._strides = layout["strides"]
 
     def _contiguous(self, order) -> bool:
+        if 0 in self.shape:
+            return True         # no element: contiguous in both orders, whatever strides the library states
         if self._strides is None:
             return order == "C" or self.ndim <= 1
         expect, shape = 1, self.shape

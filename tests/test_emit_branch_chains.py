@@ -67,7 +67,9 @@ def _run(kernel, planes, out_shape, cache_dir, target):
     sink = np.zeros(out_shape)
     args = {**{k: v for k, v in planes.items() if k in {n for _, n in kernel.arg_spec}}, "out": sink}
     args = {k: xp.asarray(v) for k, v in args.items()}
-    hawk.deploy(kernel, targets=(target,), cache_dir=cache_dir).run(**args)
+    # a device row builds the host part too: the unit's record lives in the library that the host part makes
+    targets = ("host",) if target == "host" else (target, "host")
+    hawk.deploy(kernel, targets=targets, cache_dir=cache_dir).run(**args)
     hawk.synchronize()                  # a run over device memory is queued: the plane is read after the wait
     return np.array(args["out"].get() if hasattr(args["out"], "get") else args["out"])
 

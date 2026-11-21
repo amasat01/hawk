@@ -19,12 +19,10 @@ import ctypes
 import _deploy as L
 import numpy as np
 import pytest
-from _team_stages import needs_hawk
 from conftest import sidecar_of
 from test_host_interchange import _mixed, _planes, oscillator, rkf78_attempt
 from test_persist import _close
 
-import hawk
 from hawk.artifact import build_bundle
 from hawk.ext import Guard, Kind
 
@@ -43,21 +41,24 @@ FAST = (f"{FAST_ENTRIES_MACRO}=1",)
 @pytest.fixture(scope="module")
 def bundles(tmp_path_factory, cache_dir):
     root = tmp_path_factory.mktemp("fast_entries")
-    plain = build_bundle(list(KERNELS.values()), root / "plain", targets=("cuda", "host"),
+    plain = build_bundle(list(KERNELS.values()), root / "plain", targets=("cuda",),
                          cache_dir=cache_dir, defines=FAST)
-    active = build_bundle(list(KERNELS.values()), root / "active", targets=("cuda", "host"),
+    active = build_bundle(list(KERNELS.values()), root / "active", targets=("cuda",),
                           kind=ACTIVE, cache_dir=cache_dir, defines=FAST)
     return plain, active
 
 
 def _bind(bundle, name, planes, *, mapped):
-    """``(bound plan, device planes, counter, word, n)``; ``mapped``
+    """``(bound plan, device planes, counter, word, module, n)``; ``mapped``
     binds the identity map (every sample, ascending) and its count, or
     (``"decoy"``) a map of sample 0 alone, which an entry that read it would
     show."""
     import cupy as cp
+    import eagle.exec as eexec
+    from eagle import plan as eplan
+
     sidecar = sidecar_of(bundle, name)
-    loaded = L.device_loaded(bundle.directory, name, sidecar)
+    plugin = L.device_plugin(bundle.directory, name, sidecar)
     dev = {key: cp.asarray(value) for key, value in planes.items()}
     n = planes["terminated"].shape[0]
     counter = cp.zeros(1, dtype=cp.uint32)
@@ -71,29 +72,35 @@ def _bind(bundle, name, planes, *, mapped):
     elif mapped:
         kw["active_map"] = cp.arange(n, dtype=cp.int32)
         kw["active_count"] = cp.full(1, n, dtype=cp.uint32)
-    bound = hawk.plan(loaded, hawk.DeviceKernel).bind(finished_count=counter, fused_steps=word, **kw, **dev)
-    return bound, dev, counter, word, n
+    bound = eplan.plan(plugin, structure=eexec.DeviceKernel).bind(
+        finished_count=counter, fused_steps=word, **kw, **dev)
+    return bound, dev, counter, word, L.module_of(plugin._keepalive[1]), n
 
 
 def _snap(dev, counter):
     return {**{key: value.get() for key, value in dev.items()}, "counter": counter.get()}
 
 
-def _launch(bound, entry, n, grid, extra=()):
-    """Launch the named entry of ``bound``'s unit over ``grid`` blocks, with the range ``n`` and the ``extra`` arguments."""
-    needs_hawk("bound.launch_entry(entry: str, *, n: int, grid: int, extra: tuple = ()) -> None, "
-               "which launches a named entry of the unit the plan is bound over")
+def _launch(bound, module, entry, n, grid, extra=()):
+    import cupy as cp
+
+    boxes = [ctypes.c_longlong(0), ctypes.c_longlong(n), ctypes.c_longlong(n), *extra]
+    addrs = list(bound._addrs) + [ctypes.addressof(box) for box in boxes]
+    params = (ctypes.c_void_p * len(addrs))(*addrs)
+    fn = module.get_function(entry)
+    cp.cuda.driver.launchKernel(fn.kernel.ptr, grid, 1, 1, 256, 1, 1, 0, 0,
+                                ctypes.addressof(params), 0)
+    cp.cuda.runtime.deviceSynchronize()
 
 
 def _own(bundle, name, planes, budget, *, mapped=False, k_max=None):
     """The kernel's own entry: ONE launch of word ``budget``, or (``k_max``)
     launches of ``min(k_max, left)`` until every sample finished."""
-    bound, dev, counter, word, n = _bind(bundle, name, planes, mapped=mapped)
+    bound, dev, counter, word, _, n = _bind(bundle, name, planes, mapped=mapped)
     left = budget
     while left > 0 and int(counter[0]) != n:
         word[0] = left if k_max is None else min(k_max, left)
         bound.launch()
-        bound.wait()
         left -= int(word[0])
         if k_max is None:
             break
@@ -122,12 +129,12 @@ def _reported(name, before, after, cell, total):
 def _range(bundle, name, planes, budget, *, mapped="decoy"):
     import cupy as cp
 
-    bound, dev, counter, word, n = _bind(bundle, name, planes, mapped=mapped)
+    bound, dev, counter, word, module, n = _bind(bundle, name, planes, mapped=mapped)
     counter[0] = 0  # the entry counts the samples finished on entry itself
     word[0] = budget
     steps = cp.zeros(1, dtype=cp.uint32)
     total = cp.zeros(1, dtype=cp.uint64)
-    _launch(bound, f"{name}{RANGE_SUFFIX}", n, (n + 255) // 256,
+    _launch(bound, module, f"{name}{RANGE_SUFFIX}", n, (n + 255) // 256,
             (ctypes.c_void_p(steps.data.ptr), ctypes.c_void_p(total.data.ptr)))
     out = _snap(dev, counter)
     _reported(name, planes, out, steps, total)
@@ -137,13 +144,13 @@ def _range(bundle, name, planes, budget, *, mapped="decoy"):
 def _persist(bundle, name, planes, budget, grid, *, mapped):
     import cupy as cp
 
-    bound, dev, counter, word, n = _bind(bundle, name, planes, mapped=mapped)
+    bound, dev, counter, word, module, n = _bind(bundle, name, planes, mapped=mapped)
     counter[0] = 0  # the entry counts the samples finished on entry itself
     word[0] = budget
     nxt = cp.zeros(1, dtype=cp.uint32)
     steps = cp.zeros(1, dtype=cp.uint32)
     total = cp.zeros(1, dtype=cp.uint64)
-    _launch(bound, f"{name}_persist", n, grid,
+    _launch(bound, module, f"{name}_persist", n, grid,
             (ctypes.c_void_p(nxt.data.ptr), ctypes.c_void_p(0),
              ctypes.c_void_p(steps.data.ptr), ctypes.c_void_p(total.data.ptr),
              ctypes.c_uint(32)))
