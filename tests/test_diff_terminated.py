@@ -149,6 +149,7 @@ def test_compiled_device_vjp_and_jvp_zero_the_terminated_half(tmp_path, cache_di
     import cupy as cp
 
     def _get(a):
+        hawk.synchronize()          # a run over device memory is queued: the result is read after the wait
         return cp.asnumpy(a)
 
     bar_y = np.full(N, 2.0)
@@ -157,9 +158,9 @@ def test_compiled_device_vjp_and_jvp_zero_the_terminated_half(tmp_path, cache_di
     np.testing.assert_array_equal(bar_x[:N // 2], bar_y[:N // 2])
     np.testing.assert_array_equal(bar_x[N // 2:], np.zeros(N - N // 2))
 
-    plan = hawk.plan(hawk.load(bundle.directory, "diagnostic_jvp"), hawk.DeviceKernel)
     dot_x = np.full(N, 0.4)
-    dot_y = _get(plan.run(x=cp.asarray(x), terminated=cp.asarray(terminated), dot_x=cp.asarray(dot_x)))
+    dot_y = _get(_run_declared(bundle, "diagnostic_jvp", hawk.DeviceKernel, x=cp.asarray(x),
+                               terminated=cp.asarray(terminated), dot_x=cp.asarray(dot_x)))
     np.testing.assert_array_equal(dot_y[:N // 2], dot_x[:N // 2])
     np.testing.assert_array_equal(dot_y[N // 2:], np.zeros(N - N // 2))
 

@@ -143,15 +143,9 @@ def test_the_vjp_is_a_gather_and_matches_finite_differences(bundles, target):
         rt.run(kern, key=key, x=x, bar_acc=g, bar_x=bar)
     else:
         import cupy as cp
-        import _deploy as L
-        import eagle.exec as eexec
-        from eagle import plan as eplan
 
         planes = {"key": cp.asarray(key), "x": cp.asarray(x), "bar_acc": cp.asarray(g), "bar_x": cp.zeros(n)}
-        sidecar = sidecar_of(bundles["grad"], "add_sq_grad")
-        plugin = L.device_plugin(bundles["grad"].directory, "add_sq_grad", sidecar)
-        eplan.plan(plugin, structure=eexec.DeviceKernel).bind(**planes).launch()
-        cp.cuda.get_current_stream().synchronize()
+        run_staged(bundles["grad"], "add_sq_grad", planes, target)
         bar = cp.asnumpy(planes["bar_x"])
     np.testing.assert_array_equal(bar, 2 * x * g[key])
     eps = 1e-6

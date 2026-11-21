@@ -43,9 +43,9 @@ FAST = (f"{FAST_ENTRIES_MACRO}=1",)
 @pytest.fixture(scope="module")
 def bundles(tmp_path_factory, cache_dir):
     root = tmp_path_factory.mktemp("fast_entries")
-    plain = build_bundle(list(KERNELS.values()), root / "plain", targets=("cuda",),
+    plain = build_bundle(list(KERNELS.values()), root / "plain", targets=("cuda", "host"),
                          cache_dir=cache_dir, defines=FAST)
-    active = build_bundle(list(KERNELS.values()), root / "active", targets=("cuda",),
+    active = build_bundle(list(KERNELS.values()), root / "active", targets=("cuda", "host"),
                           kind=ACTIVE, cache_dir=cache_dir, defines=FAST)
     return plain, active
 
@@ -57,7 +57,7 @@ def _bind(bundle, name, planes, *, mapped):
     show."""
     import cupy as cp
     sidecar = sidecar_of(bundle, name)
-    loaded = L.device_plugin(bundle.directory, name, sidecar)
+    loaded = L.device_loaded(bundle.directory, name, sidecar)
     dev = {key: cp.asarray(value) for key, value in planes.items()}
     n = planes["terminated"].shape[0]
     counter = cp.zeros(1, dtype=cp.uint32)

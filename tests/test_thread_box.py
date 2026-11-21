@@ -32,8 +32,10 @@ def _run(bundle, target, rows, mode):
     n = rows * BATCH
     feat, th = _data(rows, mode)
     y = xp.full(n, np.nan, dtype=mode)
-    _launch(bundle, "kg_fwd", target, {"lane": xp.arange(n, dtype=np.int32),
-                                       "feat": xp.asarray(feat), "th": xp.asarray(th), "y": y}).launch()
+    bound = _launch(bundle, "kg_fwd", target, {"lane": xp.arange(n, dtype=np.int32),
+                                               "feat": xp.asarray(feat), "th": xp.asarray(th), "y": y})
+    bound.launch()
+    bound.wait()                    # a launch over device memory is queued: ``y`` is read after the wait
     return np.asarray(y.get() if hasattr(y, "get") else y)
 
 
@@ -61,7 +63,7 @@ def test_device_values_are_the_box_free_values_and_near_the_host(tmp_path, cache
     The old row also compared the boxed device build with a box-free one made under ``HAWK_BOX=0``; that switch is
     deleted (DECISIONS.md U-133 (3): "the HAWK_BOX environment switch is deleted"), so that arm has no way to be built."""
     host = build_bundle([kg_fwd], tmp_path / "h", mode=mode, targets=("host",), host_profile="native", cache_dir=cache_dir)
-    boxed = build_bundle([kg_fwd], tmp_path / "d", mode=mode, targets=("cuda",), host_profile="native", cache_dir=cache_dir)
+    boxed = build_bundle([kg_fwd], tmp_path / "d", mode=mode, targets=("cuda", "host"), host_profile="native", cache_dir=cache_dir)
     got = _run(boxed, "cuda", rows, mode)
     want = _run(host, "host", rows, mode)
     # the device may fuse a multiply into an add the host keeps apart

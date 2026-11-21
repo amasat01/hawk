@@ -302,11 +302,17 @@ def _error(got, terms, key, slots, mode, what):
     return scaled
 
 
+@pytest.mark.parametrize("check", ["values", "commits"])
 @pytest.mark.parametrize("contract", ["plain", "compensated", "auto"])
 @pytest.mark.parametrize("case", list(CASES))
 @pytest.mark.parametrize("target", TARGET_ARMS)
-def test_one_commit_per_run_within_the_sum_contract(bundles, target, case, contract):
-    """No contract binds a companion: the library owns it, and the target alone holds the compensated sum."""
+def test_one_commit_per_run_within_the_sum_contract(bundles, target, case, contract, check):
+    """No contract binds a companion: the library owns it, and the target alone holds the compensated sum.
+
+    ``values`` checks that sum against ``math.fsum`` on both targets; ``commits`` counts the run commits, which a device
+    row cannot read until hawk has a verb for it."""
+    if check == "commits" and target != "host":
+        _device_counts_unread()
     built, mode = bundles
     plain, comp, n, key, device_runs = CASES[case]
     kernel = {"plain": plain, "compensated": comp, "auto": AUTO.get(plain)}[contract]
@@ -323,9 +329,9 @@ def test_one_commit_per_run_within_the_sum_contract(bundles, target, case, contr
     got = _host(planes["acc"]).astype(np.float64)
     terms = x.astype(np.float64)        # the plane's values: exact terms on every arm
     what = f"{case} {contract} {target}"
-    assert _error(got, terms, key, slots, mode, what) <= _bound(compensated, case != "sorted_mixed")
-    if counts is None:
-        _device_counts_unread()
+    if check == "values":
+        assert _error(got, terms, key, slots, mode, what) <= _bound(compensated, case != "sorted_mixed")
+        return
     run, lane = counts
     assert lane == 0
     if target == "cuda" and compensated and case == "proven_8192":
@@ -518,10 +524,14 @@ def test_a_compensated_reverse_declares_its_companion():
     assert type(VREAD_C.sinks).__name__ == "Derived" and VREAD_C.sinks.wrt == ("th",)
 
 
+@pytest.mark.parametrize("check", ["values", "commits"])
 @pytest.mark.parametrize("compensated", [False, True], ids=["plain", "compensated"])
 @pytest.mark.parametrize("target", TARGET_ARMS)
-def test_the_reverse_of_a_sorted_read_commits_once_per_run(target, compensated, tmp_path,
+def test_the_reverse_of_a_sorted_read_commits_once_per_run(target, compensated, check, tmp_path,
                                                            cache_dir):
+    """``values``: the reverse sums to ``math.fsum`` per slot on both targets; ``commits``: the run commits are counted."""
+    if check == "commits" and target != "host":
+        _device_counts_unread()
     mode = "float64"
     kernel = VREAD_C if compensated else VREAD
     kw = dict(mode=mode, targets=("cuda", "host"), cache_dir=cache_dir, defines=COUNT)
@@ -540,9 +550,9 @@ def test_the_reverse_of_a_sorted_read_commits_once_per_run(target, compensated, 
     counts = _launch(bundle, kernel.name, target, planes)
     got = sum(_host(planes[p]) for p in (("bar_th", "bar_th_c") if compensated else ("bar_th",)))
     what = f"reverse {'compensated' if compensated else 'plain'} {target}"
-    assert _error(got, by * x, key, slots, mode, what) <= _bound(compensated, False)
-    if counts is None:
-        _device_counts_unread()
+    if check == "values":
+        assert _error(got, by * x, key, slots, mode, what) <= _bound(compensated, False)
+        return
     run, lane = counts
     assert lane == 0
     if target == "cuda":

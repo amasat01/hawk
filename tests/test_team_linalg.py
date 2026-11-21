@@ -90,7 +90,7 @@ def _data(n, make_matrix):
 
 
 def _build(kernel, tmp, target, form):
-    targets = ("host",) if target == "host" else ("cuda",)
+    targets = ("host",) if target == "host" else ("cuda", "host")
     return build_bundle([kernel], tmp, targets=targets, host_profile="native", linalg_form=form)
 
 
@@ -101,7 +101,7 @@ def _team_stages(kernel, tmp, form="auto"):
 
 
 def _build_all(kernels, tmp, target):
-    return build_bundle(kernels, tmp, targets=("host",) if target == "host" else ("cuda",),
+    return build_bundle(kernels, tmp, targets=("host",) if target == "host" else ("cuda", "host"),
                         host_profile="native", linalg_form="auto")
 
 
@@ -618,7 +618,7 @@ def _exact(j, r):
 
 
 def _build_sum(kernel, tmp, target, form="auto"):
-    targets = ("host",) if target == "host" else ("cuda",)
+    targets = ("host",) if target == "host" else ("cuda", "host")
     return build_bundle([kernel], tmp, targets=targets, host_profile="native", linalg_form=form)
 
 
@@ -688,7 +688,7 @@ def test_the_vjp_through_a_block_sum_matches_finite_differences(cache, make, tar
     p = 20
     primal = make(p, ROWS)
     pull = Kernel(f"{primal.name}_pull", vjp(primal, wrt=("j",)))
-    targets = ("host",) if target == "host" else ("cuda",)
+    targets = ("host",) if target == "host" else ("cuda", "host")
     first = build_bundle([primal], cache / f"vjp_primal_{primal.name}_{target}", targets=targets, host_profile="native")
     bundle = build_bundle([pull], cache / f"vjp_pull_{primal.name}_{target}", targets=targets, host_profile="native",
                           derivative={pull.name: (primal.name, first.digest)})
@@ -917,7 +917,7 @@ def test_a_transpose_product_sum_under_an_index_set_sums_the_live_lanes_rows(cac
     mat = rng.standard_normal((lanes, TOTAL_ROWS, p))
     live = np.array([0, 2, 3, 5, 6, 7, 8, 12, 14], dtype=np.int32)
     kernel = keyed_transpose_kernel(p, TOTAL_ROWS, ROWS, Kind("lane_set", lanes=IndexSet()))
-    bundle = build_bundle([kernel], cache / f"tgram_set_{target}", targets=(target if target == "host" else "cuda",),
+    bundle = build_bundle([kernel], cache / f"tgram_set_{target}", targets=("host",) if target == "host" else ("cuda", "host"),
                           host_profile="native")
     planes = {"mat": _plane_of(mat), "active_map": live, "active_count": np.array([len(live)], np.uint32)}
     out = _launch(bundle, kernel, planes, {"out": np.zeros((p, p, KEYS))}, target)
