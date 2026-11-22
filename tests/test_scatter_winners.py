@@ -210,9 +210,11 @@ def test_a_plane_without_winners_is_refused_by_name_when_asked_for_them(bundle, 
 
 
 @pytest.mark.gpu
-def test_the_device_winners_equal_the_scan(bundle, mode):
+def test_the_device_winners_equal_the_scan(mode, tmp_path, cache_dir):
     import cupy as cp
 
+    # the module's bundle holds host images only: the device row builds the device image of its kernel
+    bundle = build_bundle([ranked], tmp_path, mode=mode, targets=("cuda", "host"), cache_dir=cache_dir)
     key, x = _tied(np.random.default_rng(8), _real(mode))
     lo, hi = cp.full(CELLS, np.inf, x.dtype), cp.full(CELLS, -np.inf, x.dtype)
     plan = _launch(bundle, "ranked", "cuda", {"key": cp.asarray(key), "x": cp.asarray(x), "lo": lo, "hi": hi})
