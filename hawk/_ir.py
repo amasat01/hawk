@@ -453,14 +453,16 @@ def operation_fields(sink: Any) -> dict:
 def update(
     name: str, value: Any, *, indices: Sequence[Any] = (), op: str = "add", summation: str = "auto",
     order: str = "any", edge: str = "unchecked", axes: Sequence[tuple[str, int | None]] = (), reduced: Any = None,
+    conflict: str = "unique", returns_old: bool = False,
 ) -> Any:
     """Make the update of ``value`` into the plane ``name`` (at ``indices``, one per axis of ``axes``; none: the lane's cell).
 
+    A ``compare_exchange`` takes the expected value as the first of ``indices``, ahead of the plane's own indices.
     ``reduced`` is the sum over samples this update stores one entry of, which states the flat key of the lane's run."""
     refs = [value, *indices]
     at = f", ('indices', ({''.join(f'#{k + 1}, ' for k in range(len(indices)))}))"
     fields = f"(('name', {name!r}), ('value', #0){at}, ('op', {op!r}), ('summation', {summation!r}), "
-    fields += f"('order', {order!r}), "
+    fields += f"('order', {order!r}), ('conflict', {conflict!r}), ('returns_old', {returns_old!r}), "
     if reduced is not None:
         refs.append(reduced)
         fields += f"('reduced', #{len(refs) - 1}), "

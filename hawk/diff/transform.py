@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import functools
 from collections.abc import Iterable, Mapping, Sequence
+from types import MappingProxyType
 from typing import Any
 
 from .. import _ir
@@ -1146,11 +1147,40 @@ def _accumulate(store: dict, key: Any, node: Any, contribution: Any) -> None:
     store[slot] = contribution if held is None else _ir.make("add", (held, contribution))
 
 
-def _sets_bits(node: Any) -> bool:
-    """Whether ``node`` is an OR-scatter, or a loop whose body holds one."""
+#: What each update with no derivative is written as, and why it has none. The derivative of a keyed minimum or maximum is
+#: not refused for good: it is written under the ordered contract, in a later step.
+_NO_DERIVATIVE = MappingProxyType({
+    "min": ("is a keyed minimum (`.min`)", "the derivative of a keyed minimum is written under the ordered contract, which "
+            "is not written yet"),
+    "max": ("is a keyed maximum (`.max`)", "the derivative of a keyed maximum is written under the ordered contract, which "
+            "is not written yet"),
+    "and": ("is a bitwise and by key (`.and_`)", "an integer mask has no derivative"),
+    "xor": ("is a bitwise xor by key (`.xor`)", "an integer mask has no derivative"),
+    "exchange": ("exchanges by key (`.exchange`)", "the old value it returns depends on the order lanes arrive in"),
+    "compare_exchange": ("compare-exchanges by key (`.compare_exchange`)",
+                         "the old value it returns depends on the order lanes arrive in"),
+})
+
+
+def _refused_update(node: Any) -> tuple[str, str] | None:
+    """What ``node`` is and why it has no derivative, when it is an update the derivative refuses (or a loop whose body holds
+    one): a bit mask, the operations of :data:`_NO_DERIVATIVE`, a store under ``conflict='any'``, or an add that returns the
+    value it found."""
     if _ir.is_a(node, "loop"):
-        return any(_sets_bits(s) for s in node.field_nodes("body_sinks"))
-    return _ir.sets_bits(node)
+        return next((r for s in node.field_nodes("body_sinks") if (r := _refused_update(s))), None)
+    if not _ir.is_a(node, "update"):
+        return None
+    op = node.field_text("op")
+    if op == "or":
+        return ("sets bits by key (`|=`)", "a bit mask is discrete and has no derivative")
+    if op in _NO_DERIVATIVE:
+        return _NO_DERIVATIVE[op]
+    if node.field_text("conflict") == "any":
+        return ("stores by key under conflict='any'", "the lane that wins a shared key differs between runs")
+    if node.field_flag("returns_old"):
+        return ("adds by key and returns the old value (`.add(v, old=True)`)",
+                "the old value it returns depends on the order lanes arrive in")
+    return None
 
 
 def _sinks_of(primal: Any) -> tuple[Any, ...]:
@@ -1164,12 +1194,10 @@ def _sinks_of(primal: Any) -> tuple[Any, ...]:
     # so the derived kernel binds no counter, writes no mask and carries no
     # sidecar ``finish``; it keeps the primal's mask READ (``_mask_termination``).
     kept = _ir.expand_stores([s for s in sinks if not _ir.is_a(s, "finish")])
-    if any(_sets_bits(s) for s in kept):
-        raise HawkError(
-            f"{primal!r} sets bits by key (`|=`): a bit mask is "
-            "discrete and has no derivative; differentiate a kernel that does not "
-            "write it"
-        )
+    refused = next((r for s in kept if (r := _refused_update(s))), None)
+    if refused:
+        what, why = refused
+        raise HawkError(f"{primal!r} {what}: {why}; differentiate a kernel that does not write it")
     if not kept:
         raise HawkError(
             f"{primal!r} only finishes its sample — it commits no plane to differentiate"

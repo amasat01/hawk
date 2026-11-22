@@ -377,7 +377,7 @@ class _Stored:
     __truediv__ = __rtruediv__ = __neg__ = __pow__ = __getitem__ = _hawk_refuse
 
 
-def scatter(sink: Any, contract: str = "auto") -> Any:
+def scatter(sink: Any, contract: str = "auto", conflict: str = "unique") -> Any:
     """``hawk.scatter(sink)[key] += v`` adds ``v`` into ``sink`` at ``key``,
     ``= v`` stores it there. Many lanes may share a key; the adds are combined
     (atomics or a segmented sum), never a race; the order is not fixed unless
@@ -396,6 +396,21 @@ def scatter(sink: Any, contract: str = "auto") -> Any:
     the target's atomic OR, so any number of lanes may hit one word and the
     result is the exact ``np.bitwise_or.at``; the C target ORs serially. A bit
     mask is discrete: ``vjp`` and ``jvp`` of a kernel that writes one refuse by name.
+
+    The same object has one method per other operation, each a statement of the kernel body. The folds combine
+    every lane's value with the plane's initial value, in any order (the result is that of ``np.minimum.at``,
+    ``np.maximum.at``, ``np.bitwise_and.at``, ``np.bitwise_xor.at``): ``hawk.scatter(y)[k].min(v)``, ``.max(v)``,
+    ``.and_(b)`` and ``.xor(b)`` (the integer planes take ``and_`` and ``xor``, the ordered types ``min`` and
+    ``max``; a NaN absorbs). The plane keeps the value the caller gave it as the fold's start. Two
+    methods return the value the element held before this lane's update, which depends on the order the lanes arrive
+    in: ``old = hawk.scatter(y)[k].exchange(v)`` and
+    ``old = hawk.scatter(y)[k].compare_exchange(expected, v)`` (the lane that finds ``expected`` there installs
+    ``v``; exactly one lane wins a cell that starts at ``expected``), and ``old = hawk.scatter(y)[k].add(v, old=True)``
+    adds and returns the partial sum before this lane's term (a ticket counter). None of these has a derivative:
+    ``vjp`` and ``jvp`` of a kernel that writes one refuse by name.
+
+    ``conflict="unique"`` (the default) promises that no two lanes store at one key; ``conflict="any"`` lets them: some
+    lane's value wins, never a torn one, and the kernel has no derivative.
     Written only as the target of a store in a kernel body."""
     raise HawkError(
         "hawk.scatter(y) is the target of a store: write hawk.scatter(y)[key] += v "
@@ -422,14 +437,21 @@ def _key_indices(ref: Any, key: Any, where: str) -> list:
     return [index_node(key)]
 
 
+#: The operations that return the value the element held.
+_RETURNING = ("exchange", "compare_exchange")
+
+
 def scatter_store(refs: dict, name: str, key: Any, value: Any, op: str, current: Any,
-                  contract: str = "auto") -> Any:
+                  contract: str = "auto", conflict: str = "unique", expected: Any = None,
+                  old: bool = False) -> Any:
     """``hawk.scatter(name, contract=...)[key] (op)= value``, as the ast pass
     reaches it: ``+=`` accumulates (an ``Update`` that adds), ``=`` stores
-    (an ``Update`` that stores)."""
+    (an ``Update`` that stores). A method (``op`` an operation name, not an augmented assignment) returns the pair of the
+    marker the plane's name takes and the old value its element held (``None`` when the method returns none)."""
     from .value import MutableRef, _SinkRef, by_key
 
-    where = f"hawk.scatter({name})[key] {op} v"
+    method = op not in ("=", "+=", "|=")
+    where = f"hawk.scatter({name})[key] {op}{'' if method else ' v'}"
     ref = refs.get(name)
     if not isinstance(ref, _SinkRef):
         raise HawkError(f"{where}: {name!r} is not an output plane (declare it "
@@ -439,8 +461,14 @@ def scatter_store(refs: dict, name: str, key: Any, value: Any, op: str, current:
     contract = _contract(contract, where, _ir.SCATTER_CONTRACTS)
     if isinstance(key, Value) and key.ttype.dtype == "bool":
         raise HawkError(f"{where}: {_MASK_STORE}")
-    if op != "+=" and contract != "auto":
-        raise HawkError(f"{where}: a {'store' if op == '=' else 'bit-or'} has no sum contract; contract= is for += only")
+    if conflict not in ("unique", "any"):
+        raise HawkError(f"{where}: conflict is 'unique' (no two lanes store at one key) or 'any' (some lane's value wins)")
+    if conflict != "unique" and op != "=":
+        raise HawkError(f"{where}: conflict= is for a store, hawk.scatter(y, conflict='any')[key] = v; "
+                        "the other operations resolve their conflicts themselves")
+    if op not in ("+=", "add") and contract != "auto":
+        kind = {"=": "store", "|=": "bit-or"}.get(op, f".{op}")
+        raise HawkError(f"{where}: a {kind} has no sum contract; contract= is for += and .add only")
     if op == "|=":
         contract = "or"
     if contract == "ordered" and op == "+=" and len(ref.ttype.shape) > 1:
@@ -450,8 +478,11 @@ def scatter_store(refs: dict, name: str, key: Any, value: Any, op: str, current:
         raise HawkError(
             f"{name!r} is written per lane (locked) and by key "
             f"(hawk.scatter({name})[key]): one plane has one extent")
-    by_key(ref, _key_indices(ref, key, where), value, op != "=", contract)
-    return current if isinstance(current, _Stored) else _Stored(name)
+    operation = {"=": "store", "+=": "add", "|=": "or"}.get(op, op)
+    returned = by_key(ref, _key_indices(ref, key, where), value, operation, contract, conflict=conflict,
+                      expected=expected, returns_old=operation in _RETURNING or old)
+    marker = current if isinstance(current, _Stored) else _Stored(name)
+    return (marker, returned) if method else marker
 
 
 def logic(which: str, *args: Any) -> Any:

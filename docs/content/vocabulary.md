@@ -83,6 +83,10 @@ Declaring the shape of your lanes brings a few more words; the [glossary](glossa
       bit = hawk.math.select(x.at(i) * x.at(j) > 0.5, hawk.math.uint32(1) << hawk.math.uint32(j & 31), hawk.math.uint32(0))
       hawk.scatter(mask)[i * 4 + (j >> 5)] |= bit      # 4 words of 32 bits per row: up to 128 items
   ```
+- A keyed **fold** other than a sum is a method of the same object: `hawk.scatter(y)[k].min(v)`, `.max(v)`, `.and_(bits)`
+  and `.xor(bits)` combine every lane's value with the plane's start value in any order. `hawk.scatter(y, conflict="any")[k] = v`
+  lets lanes share a key (some lane's value wins). `old = hawk.scatter(y)[k].exchange(v)`, `.compare_exchange(expected, v)` and
+  `.add(v, old=True)` return what the cell held, in the order the lanes arrived. None of them has a derivative.
 - An **index set** (`Kind("screen", lanes=IndexSet())`) runs a list of lanes you built: launch lane `t` runs lane
   `map[t]`, with the map and its count bound as `active_map` and `active_count`. `hawk.sample_position()` is `t`
   where `hawk.math.sample_index()` is `map[t]`. See [Run only the lanes you list](howto_index_set).

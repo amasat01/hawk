@@ -1058,10 +1058,18 @@ def _is_stored(value: Any) -> bool:
     return isinstance(value, _Stored)
 
 
-def by_key(ref: Any, indices: list, value: Any, accumulate: bool, contract: str = "auto") -> None:
-    """One store by key into ``ref`` at ``indices``, one per axis of the sink: an accumulate
-    (an ``Update`` that adds) or a store (an ``Update`` that stores). A vector or matrix payload into
-    a sink declared with named axes is summed per key (``ReduceSamples``), payload first."""
+#: The operations a by-key update may name, and the ones that fold commutatively (a plane takes several statements of one fold).
+_FOLDS = ("add", "min", "max", "and", "or", "xor")
+
+
+def by_key(
+    ref: Any, indices: list, value: Any, op: str, contract: str = "auto", *, conflict: str = "unique",
+    expected: Any = None, returns_old: bool = False,
+) -> Any:
+    """One update by key into ``ref`` at ``indices``, one per axis of the sink: an ``Update`` of the operation ``op``
+    (``store``, ``add``, ``min``, ``max``, ``and``, ``or``, ``xor``, ``exchange`` or ``compare_exchange``, which also takes the
+    ``expected`` value). Returns the old value the element held, as a value, when ``returns_old``. A vector or matrix payload
+    into a sink declared with named axes is summed per key, payload first."""
     where = f"hawk.scatter({ref.name})[key]"
     if any(not _ir.is_a(k, "update") for k in ref.sinks):
         raise HawkError(
@@ -1071,31 +1079,37 @@ def by_key(ref: Any, indices: list, value: Any, accumulate: bool, contract: str 
         key_type = _ir.type_of(index)
         if key_type.shape != () or key_type.dtype not in _INDEX_DTYPES:
             raise HawkError(f"{where}: key is an Index or an integer value, got {key_type!r}")
-    if contract == "or" and (ref.ttype.shape or ref.ttype.dtype not in _ir.INT_PLANE_DTYPES):
+    if op == "or" and (ref.ttype.shape or ref.ttype.dtype not in _ir.INT_PLANE_DTYPES):
         raise HawkError(
             f"{where}: |= sets bits of an Int32 or UInt32 plane (a word per key), "
             f"{ref.name!r} is declared {ref.ttype!r}")
-    kind = "accum" if accumulate else "wide_out"
-    if ref.ttype.shape and not (accumulate and ref.axes):
+    kind = "wide_out" if op == "store" else "accum"
+    if ref.ttype.shape and not (op == "add" and ref.axes):
         raise HawkError(
             f"{where}: a vector payload is added by key into a sink declared with "
             f"named axes (Mutable[Vector[w], \"bin\":n]); a flat sink takes one "
             f"Mutable[Scalar] plane per component ({ref.name}0, ...) and "
             f"hawk.scatter({ref.name}0)[key] += u[0]")
-    if ref.by_key_kind is not None and (ref.by_key_kind != kind or not accumulate):
+    if ref.by_key_kind is not None and (ref.by_key_kind != kind or op not in _FOLDS or ref.by_key_op != op):
         raise HawkError(
-            f"{ref.name!r} is stored by key twice (or both accumulated and stored): "
-            "one plane takes one by-key statement, or several `+=`")
-    if not accumulate:
-        ref.sinks = [_ir.make_node("Update", ref.ttype, [ref._typed(value), *indices], name=ref.name,
-                                   op="store", edge="unchecked", axes=ref.axes)]
-    elif ref.ttype.shape:
+            f"{ref.name!r} is written by key twice with different operations, or twice by an operation that is not a "
+            "fold: one plane takes one by-key statement, or several of one of += , .min, .max, .and_, .xor, |=")
+    typed = ref._typed(value)
+    if op == "add" and ref.ttype.shape and not returns_old:
         ref.sinks.extend(_payload_sums(ref, indices, value, contract))
+        node = None
     else:
-        ref.sinks.append(_ir.make_node("Update", ref.ttype, [ref._typed(value), *indices],
-                                       name=ref.name, **_keyed_fields(contract), reduced=None, edge="unchecked",
-                                       axes=ref.axes))
-    ref.by_key_kind = kind
+        fields = {"op": op, "conflict": conflict, "returns_old": returns_old}
+        if op == "add":
+            fields.update(_keyed_fields(contract))
+            if returns_old:
+                fields["summation"] = "plain"
+        operands = [typed, *([ref._typed(expected)] if op == "compare_exchange" else []), *indices]
+        node = _ir.make_node("Update", ref.ttype, operands, name=ref.name, **fields, reduced=None, edge="unchecked",
+                             axes=ref.axes)
+        ref.sinks = [node] if op in ("store", "exchange", "compare_exchange") else [*ref.sinks, node]
+    ref.by_key_kind, ref.by_key_op = kind, op
+    return Value(node) if returns_old else None
 
 
 def _keyed_fields(contract: str) -> dict:
@@ -1152,7 +1166,7 @@ class _SinkRef:
     """Shared write-side state: the sinks a body commits through one plane.
     ``axes`` are the sink's declared named axes ``((label, extent), ...)``."""
 
-    __slots__ = ("name", "ttype", "sinks", "by_key_kind", "axes")
+    __slots__ = ("name", "ttype", "sinks", "by_key_kind", "by_key_op", "axes")
 
     def __init__(self, name: str, ttype: _ir.TensorType, axes: tuple = ()) -> None:
         self.name = name
@@ -1160,6 +1174,7 @@ class _SinkRef:
         self.axes = axes
         self.sinks: list[Any] = []
         self.by_key_kind: str | None = None
+        self.by_key_op: str | None = None
 
     def _typed(self, value: Any) -> Any:
         node = _ir.as_matrix(node_of(value))
@@ -1314,6 +1329,7 @@ class MutableRef(_SinkRef):
         self.sinks = ([_block_write(self, node)] if _ir.is_a(node, "block_sum")
                       else self._addressed(_ir.cells_stored(node, self.name), value.coordinates, node))
         self.by_key_kind = "accum"
+        self.by_key_op = "add"
 
 
 class WideOutRef(_SinkRef):

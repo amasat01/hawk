@@ -31,6 +31,7 @@ from __future__ import annotations
 import ast
 import builtins
 import copy
+from types import MappingProxyType
 from typing import Any
 
 from .. import _ir
@@ -689,7 +690,8 @@ def _validate(stmts: list[ast.stmt], filename: str, sinks: frozenset[str],
             raise _err(st, filename,
                        "a sink commit may not sit inside a branch — it would commit "
                        "unconditionally; assign the value and commit once")
-        if isinstance(st, ast.Expr) and in_loop and isinstance(st.value, ast.Call):
+        if (isinstance(st, ast.Expr) and in_loop and isinstance(st.value, ast.Call)
+                and _method_site(st) is None):
             if _is_sink_call(st, sinks):
                 raise _err(st, filename,
                            "a sink commit may not sit inside a `for` — the body is "
@@ -744,11 +746,14 @@ def _check_view_store(st: ast.stmt, filename: str, in_branch: bool,
                                "collective every lane reaches: it may not sit inside a "
                                "branch or a `for`; reduce at the top level and fold the "
                                "condition into where=")
+    site = _method_site(st)
     target = (st.targets[0] if isinstance(st, ast.Assign) and len(st.targets) == 1
               else getattr(st, "target", None))
-    t = _view_target(target) if target is not None else None
+    t = site[0] if site is not None else (_view_target(target) if target is not None else None)
     if t is None:
         return
+    if site is not None:
+        _check_method_site(st, site, filename)
     if in_branch:
         raise _err(st, filename,
                    "a store through hawk.scatter(y)[...] may not sit inside a "
@@ -756,18 +761,60 @@ def _check_view_store(st: ast.stmt, filename: str, in_branch: bool,
                    "m.where(cond, v, 0.0) instead")
     call = t.value
     if (len(call.args) != 1 or not isinstance(call.args[0], ast.Name)
-            or any(k.arg != "contract" for k in call.keywords)):
+            or any(k.arg not in ("contract", "conflict") for k in call.keywords)):
         raise _err(st, filename,
                    "a store target is hawk.scatter(name)[...] (or "
-                   "hawk.scatter(name, contract=...)[...]) with the name of an output plane")
+                   "hawk.scatter(name, contract=..., conflict=...)[...]) with the name of an output plane")
     if isinstance(st, ast.AugAssign) and not isinstance(st.op, (ast.Add, ast.BitOr)):
         raise _err(st, filename,
-                   "only `hawk.scatter(y)[key] += t` accumulates by key, and "
-                   "`hawk.scatter(y)[key] |= bits` sets bits; "
-                   "`-=` is `+= -t`, and max/min by key are not in this release")
+                   "only `hawk.scatter(y)[key] += t` accumulates by key and `hawk.scatter(y)[key] |= bits` sets "
+                   "bits; `-=` is `+= -t`; the other operations are methods: "
+                   f"{_METHOD_FORMS}")
 
 
 _STORE_OPS = {ast.Add: "+=", ast.BitOr: "|="}
+
+#: The methods of ``hawk.scatter(y)[key]``, as the refusals list them.
+_METHOD_FORMS = ("hawk.scatter(y)[key].min(v), .max(v), .and_(bits), .xor(bits), old = .exchange(v), "
+                 "old = .compare_exchange(expected, v), old = .add(v, old=True)")
+#: The positional operands of each method, in the order the author writes them.
+_METHOD_OPS = MappingProxyType({"min": "min", "max": "max", "and_": "and", "xor": "xor", "exchange": "exchange",
+                                "compare_exchange": "compare_exchange", "add": "add"})
+_METHOD_ARGS = MappingProxyType({"min": 1, "max": 1, "and_": 1, "xor": 1, "exchange": 1, "compare_exchange": 2, "add": 1})
+
+
+def _method_site(st: ast.stmt) -> tuple[ast.Subscript, ast.Call] | None:
+    """``(target, call)`` when ``st`` is ``hawk.scatter(y)[key].method(...)`` as a statement or as the value of one
+    assignment to a name, else ``None``."""
+    call = st.value if isinstance(st, ast.Expr) or (
+        isinstance(st, ast.Assign) and len(st.targets) == 1 and isinstance(st.targets[0], ast.Name)) else None
+    if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute):
+        t = _view_target(call.func.value)
+        if t is not None:
+            return t, call
+    return None
+
+
+def _returns_old(call: ast.Call) -> bool:
+    """Whether the method call returns the value the element held."""
+    return call.func.attr in ("exchange", "compare_exchange") or any(
+        k.arg == "old" and isinstance(k.value, ast.Constant) and k.value.value is True for k in call.keywords)
+
+
+def _check_method_site(st: ast.stmt, site: tuple[ast.Subscript, ast.Call], filename: str) -> None:
+    """The static refusals of a method of ``hawk.scatter(y)[key]``: an unknown method, the wrong operands, a returned value
+    that the method does not give."""
+    _, call = site
+    method = call.func.attr
+    if method not in _METHOD_ARGS:
+        raise _err(st, filename, f"hawk.scatter(y)[key].{method}(...) is not an operation; the forms are: {_METHOD_FORMS}")
+    if len(call.args) != _METHOD_ARGS[method] or any(k.arg != "old" or method != "add" for k in call.keywords):
+        raise _err(st, filename, f".{method}() takes {_METHOD_ARGS[method]} operand"
+                   f"{'s' if _METHOD_ARGS[method] > 1 else ''}{' and old=True' if method == 'add' else ''}; "
+                   f"the forms are: {_METHOD_FORMS}")
+    if isinstance(st, ast.Assign) and not _returns_old(call):
+        raise _err(st, filename, f".{method}() returns nothing: the methods that return the old value are "
+                   ".exchange(v), .compare_exchange(expected, v) and .add(v, old=True)")
 
 
 def _rewrite_view_stores(stmts: list[ast.stmt], in_loop: bool = False) -> list[ast.stmt]:
@@ -780,6 +827,10 @@ def _rewrite_view_stores(stmts: list[ast.stmt], in_loop: bool = False) -> list[a
         if isinstance(st, ast.For):
             st.body = _rewrite_view_stores(st.body, True)
             out.append(st)
+            continue
+        site = _method_site(st)
+        if site is not None:
+            out.extend(_rewrite_method_site(st, site, in_loop))
             continue
         target = (st.targets[0] if isinstance(st, ast.Assign) and len(st.targets) == 1
                   else getattr(st, "target", None))
@@ -798,6 +849,37 @@ def _rewrite_view_stores(stmts: list[ast.stmt], in_loop: bool = False) -> list[a
         out.append(ast.copy_location(ast.Expr(value=call) if in_loop else ast.Assign(
             targets=[ast.Name(id=name, ctx=ast.Store())], value=call), st))
     return out
+
+
+def _rewrite_method_site(st: ast.stmt, site: tuple[ast.Subscript, ast.Call], in_loop: bool) -> list[ast.stmt]:
+    """``hawk.scatter(y)[k].method(args)`` as a call of the same helper that answers the pair ``(marker, old)``: the
+    statement keeps the marker in ``y`` (outside a ``for``) and binds ``old`` when it is assigned."""
+    t, call = site
+    name = t.value.args[0].id
+    values = list(call.args)
+    positional = [t.slice, values[-1]]
+    keywords = list(t.value.keywords)
+    if call.func.attr == "compare_exchange":
+        keywords.append(ast.keyword(arg="expected", value=values[0]))
+    if any(k.arg == "old" for k in call.keywords):
+        keywords.append(ast.keyword(arg="old", value=ast.Constant(value=True)))
+    helper = ast.Call(
+        func=ast.Name(id=SCATTER_HELPER, ctx=ast.Load()),
+        args=[ast.Name(id=REFS, ctx=ast.Load()), ast.Constant(value=name), *positional,
+              ast.Constant(value=_METHOD_OPS[call.func.attr]), ast.Name(id=name, ctx=ast.Load())],
+        keywords=keywords)
+
+    def pick(k: int) -> ast.Subscript:
+        return ast.Subscript(value=helper, slice=ast.Constant(value=k), ctx=ast.Load())
+
+    marker = ast.Name(id=name, ctx=ast.Store())
+    if isinstance(st, ast.Assign):
+        old = st.targets[0]
+        made = (ast.Assign(targets=[old], value=pick(1)) if in_loop else ast.Assign(
+            targets=[ast.Tuple(elts=[marker, old], ctx=ast.Store())], value=helper))
+    else:
+        made = ast.Expr(value=helper) if in_loop else ast.Assign(targets=[marker], value=pick(0))
+    return [ast.copy_location(made, st)]
 
 
 def _is_break_if(st: ast.stmt) -> bool:
