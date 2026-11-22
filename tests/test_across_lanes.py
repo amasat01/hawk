@@ -536,7 +536,7 @@ def test_ordered_over_some_axes_is_a_block_sum_and_an_ordered_scatter_is_a_keyed
     def k3(x: Vector[3], key: Index, acc: Mutable[Vector[3], "bin":4]):
         hawk.scatter(acc, contract="ordered")[key] += x
 
-    assert {s.field_text("order") for s in k3.sinks} == {"lane"} and len(k3.sinks) == 3
+    assert {s.field_text("order") for s in k3.sinks} == {"lane"} and len(k3.sinks) == 1
 
 
 def test_refuses_a_contract_on_a_store():
@@ -679,7 +679,7 @@ def test_a_vector_by_key_into_a_named_axis_sink_is_payload_first():
         hawk.scatter(acc)[lane] += u
 
     entries = [s for s in k.sinks if s.field_text("name") == "acc"]
-    assert len(entries) == 3 and all(_ir.is_accumulate(s) and len(s.operands) == 3 for s in entries)
+    assert len(entries) == 1 and _ir.is_accumulate(entries[0]) and len(entries[0].operands) == 2
 
 
 def test_masked_mean_names_the_count():

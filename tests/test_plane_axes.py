@@ -253,8 +253,9 @@ def test_a_keyed_vector_sum_into_a_two_axis_sink_equals_add_at():
     shape = (2, 3, 4)
     sinks = _vector_sum.sinks
     stores = [n for n in _elements(_vector_sum) if _ir.is_accumulate(n) and n.field_text("name") == "y"]
-    assert len(stores) == 2 and all(len(s.operands) == 4 for s in stores)
-    assert _ir.field_pairs(stores[0], "axes") == (("component", 2), ("bin", 3), ("slot", 4))
+    assert len(stores) == 1 and len(stores[0].operands) == 3
+    assert _ir.type_of(stores[0]).shape == (2,)
+    assert _ir.field_pairs(stores[0], "axes") == (("bin", 3), ("slot", 4))
     got, expected = np.zeros(shape), np.zeros(shape)
     for _ in range(40):
         where, payload = [int(RNG.integers(0, 3)), int(RNG.integers(0, 4))], RNG.normal(size=2)

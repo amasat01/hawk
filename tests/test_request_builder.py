@@ -171,11 +171,11 @@ def test_a_kernel_with_compensated_sums_states_no_companion_plane_and_no_compens
 
 
 def test_a_sink_with_named_axes_states_its_payload_in_the_ir_and_not_in_the_request():
-    """The plane is bound (payload, then named axes): the sink states the payload as leading labelled axes, so the request
-    states no axes of its own."""
+    """The plane is bound (payload, then named axes): the sink states its declared axes and the type of its value carries the
+    payload, so the request states no axes of its own."""
     assert "sink_axes" not in built(add_vec) and "sink_axes" not in built(add_one)
     vector = {_ir.field_pairs(s, "axes") for s in add_vec.sinks}
-    assert vector == {(("component", 3), ("bin", 9))}
+    assert vector == {(("bin", 9),)} and {_ir.type_of(s).shape for s in add_vec.sinks} == {(3,)}
     scalar = {_ir.field_pairs(s, "axes") for s in add_one.sinks}
     assert scalar == {(("bin", 9),)}
 

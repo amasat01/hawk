@@ -340,9 +340,10 @@ def add_one(key: hawk.Index, x: hawk.Scalar, acc: hawk.Mutable[hawk.Scalar, "bin
 
 @pytest.mark.parametrize("target_kernel, shape", [(add_vec, [3]), (add_one, [])], ids=["vector", "scalar"])
 def test_the_record_of_a_sink_with_named_axes_states_the_payload_as_leading_axes(target_kernel, shape):
-    """The runtime binds the plane (payload, then named axes) from the record alone: the plane's axes are the payload's, then
-    the declared ones."""
+    """The runtime binds the plane (payload, then named axes) from the record alone: the slot states the value's shape and the
+    axes the declared ones, so the bound array is the payload's extents, then the declared ones."""
     units = [u["meta"] for u in lowered(target_kernel)["units"]]
-    stated = [a for m in units for a in m["launch"]["plane_axes"] if m["body"]["slots"][a["slot"]]["name"] == "acc"]
-    assert stated and all(a["extents"] == [*shape, 9] for a in stated)
+    stated = [(m["body"]["slots"][a["slot"]]["shape"], a["extents"]) for m in units for a in m["launch"]["plane_axes"]
+              if m["body"]["slots"][a["slot"]]["name"] == "acc"]
+    assert stated and all([*payload, *extents] == [*shape, 9] for payload, extents in stated)
 

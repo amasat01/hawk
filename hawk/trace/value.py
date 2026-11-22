@@ -1107,21 +1107,17 @@ def by_key(
             f"{ref.name!r} is written by key twice with different operations, or twice by an operation that is not a "
             "fold: one plane takes one by-key statement, or several of one of += , .min, .max, .and_, .xor, |=")
     typed = ref._typed(value)
-    if op == "add" and ref.ttype.shape and not returns_old:
-        ref.sinks.extend(_payload_sums(ref, indices, value, contract))
-        node = None
-    else:
-        fields = {"op": op, "conflict": conflict, "returns_old": returns_old}
-        if op == "add":
-            fields.update(_keyed_fields(contract))
-            if returns_old:
-                fields["summation"] = "plain"
-        elif op in ("min", "max") and contract == "ordered":
-            fields["order"] = "lane"
-        operands = [typed, *([ref._typed(expected)] if op == "compare_exchange" else []), *indices]
-        node = _ir.make_node("Update", ref.ttype, operands, name=ref.name, **fields, reduced=None, edge=edge,
-                             axes=ref.axes)
-        ref.sinks = [node] if op in ("store", "exchange", "compare_exchange") and not several else [*ref.sinks, node]
+    fields = {"op": op, "conflict": conflict, "returns_old": returns_old}
+    if op == "add":
+        fields.update(_keyed_fields(contract))
+        if returns_old:
+            fields["summation"] = "plain"
+    elif op in ("min", "max") and contract == "ordered":
+        fields["order"] = "lane"
+    operands = [typed, *([ref._typed(expected)] if op == "compare_exchange" else []), *indices]
+    node = _ir.make_node("Update", ref.ttype, operands, name=ref.name, **fields, reduced=None, edge=edge,
+                         axes=ref.axes)
+    ref.sinks = [node] if op in ("store", "exchange", "compare_exchange") and not several else [*ref.sinks, node]
     ref.by_key_kind, ref.by_key_op = kind, op
     return Value(node) if returns_old else None
 
@@ -1143,21 +1139,6 @@ def _payload_axes(ref: Any) -> tuple:
         taken.add(stem)
         axes.append((stem, extent))
     return tuple(axes)
-
-
-def _payload_sums(ref: Any, indices: list, value: Any, contract: str) -> list:
-    """The sum of a vector or matrix payload into a sink with axes: one accumulate per payload entry, at the entry's
-    coordinates followed by the key's, into the plane whose axes are the payload's then the sink's."""
-    node = ref._typed(value)
-    scalar = _ir.TensorType((), ref.ttype.dtype)
-    axes = _payload_axes(ref) + ref.axes
-    sums = []
-    for entry in itertools.product(*(range(extent) for extent in ref.ttype.shape)):
-        part = _ir.make("component", (node,), literal=entry if len(entry) > 1 else entry[0])
-        coordinates = [_ir.const(part.ctx, k, _ir.type_of(indices[0])) for k in entry]
-        sums.append(_ir.make_node("Update", scalar, [part, *coordinates, *indices], name=ref.name,
-                                  **_keyed_fields(contract), reduced=None, edge="unchecked", axes=axes))
-    return sums
 
 
 def retired_sink_method(name: str, method: str) -> str:
