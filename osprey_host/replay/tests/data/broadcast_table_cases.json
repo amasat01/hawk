@@ -1,6 +1,6 @@
 {
  "bcast_two": {
-  "dump": "raptor.ir.dump/1\nn|Const|f64|()|None|()|(('literal', 2.0),)\nn|Const|f64|()|None|()|(('literal', 1.0),)\nn|Leaf|f64|()|None|()|(('kind', 'table_read'), ('role', 'lookup'), ('name', 'x'), ('quantity', None), ('wire_index', 0), ('sorted', False))\nn|SampleIndex|i32|()|None|()|()\nn|RoleConst|i32|()|None|()|(('literal', 4), ('label', 'lane_a_stride'))\nn|Op|i32|()|None|(#3, #4)|(('kind', 'div'), ('literal', None))\nn|RoleConst|i32|()|None|()|(('literal', 1), ('label', 'x_a_stride'))\nn|Const|i32|()|None|()|(('literal', 3),)\nn|Op|i32|()|None|(#5, #7)|(('kind', 'clamp_index'), ('literal', None))\nn|Op|i32|()|None|(#8, #6)|(('kind', 'mul'), ('literal', None))\nn|At|f64|()|None|(#2, #9)|(('kind', 'at'), ('literal', None))\nn|Op|f64|()|None|(#0, #10)|(('kind', 'mul'), ('literal', None))\nn|Op|f64|()|None|(#11, #1)|(('kind', 'add'), ('literal', None))\nn|Assign|f64|()|None|(#12,)|(('kind', 'assign'), ('role', 'mutable'), ('name', 'out'))\nroot|#13\n",
+  "dump": "raptor.ir.dump/1\nn|Const|f64|()|None|()|(('literal', 2.0),)\nn|Const|f64|()|None|()|(('literal', 1.0),)\nn|Leaf|f64|()|None|()|(('kind', 'table_read'), ('role', 'lookup'), ('name', 'x'), ('quantity', None), ('wire_index', 0), ('sorted', False), ('axes', (('a', 3),)))\nn|SampleIndex|i32|()|None|()|()\nn|RoleConst|i32|()|None|()|(('literal', 4), ('label', 'lane_a_stride'))\nn|Op|i32|()|None|(#3, #4)|(('kind', 'div'), ('literal', None))\nn|At|f64|()|None|(#2, #5)|(('kind', 'at'), ('literal', None), ('edge', 'clamp'))\nn|Op|f64|()|None|(#0, #6)|(('kind', 'mul'), ('literal', None))\nn|Op|f64|()|None|(#7, #1)|(('kind', 'add'), ('literal', None))\nn|Assign|f64|()|None|(#8,)|(('kind', 'assign'), ('role', 'mutable'), ('name', 'out'), ('axes', ()))\nroot|#9\n",
   "lane_space": [
    {
     "label": "a",
@@ -23,7 +23,7 @@
   ]
  },
  "vec_two": {
-  "dump": "raptor.ir.dump/1\nn|Const|f64|()|None|()|(('literal', 2.0),)\nn|Leaf|f64|()|None|()|(('kind', 'table_read'), ('role', 'lookup'), ('name', 'v'), ('quantity', None), ('wire_index', 0), ('sorted', False))\nn|SampleIndex|i32|()|None|()|()\nn|RoleConst|i32|()|None|()|(('literal', 4), ('label', 'lane_a_stride'))\nn|Op|i32|()|None|(#2, #3)|(('kind', 'div'), ('literal', None))\nn|RoleConst|i32|()|None|()|(('literal', 3), ('label', 'v_component_stride'))\nn|Const|i32|()|None|()|(('literal', 0),)\nn|Op|i32|()|None|(#6, #5)|(('kind', 'mul'), ('literal', None))\nn|RoleConst|i32|()|None|()|(('literal', 1), ('label', 'v_a_stride'))\nn|Const|i32|()|None|()|(('literal', 3),)\nn|Op|i32|()|None|(#4, #9)|(('kind', 'clamp_index'), ('literal', None))\nn|Op|i32|()|None|(#10, #8)|(('kind', 'mul'), ('literal', None))\nn|Op|i32|()|None|(#7, #11)|(('kind', 'add'), ('literal', None))\nn|At|f64|()|None|(#1, #12)|(('kind', 'at'), ('literal', None))\nn|RoleConst|i32|()|None|()|(('literal', 3), ('label', 'v_component_stride'))\nn|Const|i32|()|None|()|(('literal', 1),)\nn|Op|i32|()|None|(#15, #14)|(('kind', 'mul'), ('literal', None))\nn|RoleConst|i32|()|None|()|(('literal', 1), ('label', 'v_a_stride'))\nn|Const|i32|()|None|()|(('literal', 3),)\nn|Op|i32|()|None|(#4, #18)|(('kind', 'clamp_index'), ('literal', None))\nn|Op|i32|()|None|(#19, #17)|(('kind', 'mul'), ('literal', None))\nn|Op|i32|()|None|(#16, #20)|(('kind', 'add'), ('literal', None))\nn|At|f64|()|None|(#1, #21)|(('kind', 'at'), ('literal', None))\nn|RoleConst|i32|()|None|()|(('literal', 3), ('label', 'v_component_stride'))\nn|Const|i32|()|None|()|(('literal', 2),)\nn|Op|i32|()|None|(#24, #23)|(('kind', 'mul'), ('literal', None))\nn|RoleConst|i32|()|None|()|(('literal', 1), ('label', 'v_a_stride'))\nn|Const|i32|()|None|()|(('literal', 3),)\nn|Op|i32|()|None|(#4, #27)|(('kind', 'clamp_index'), ('literal', None))\nn|Op|i32|()|None|(#28, #26)|(('kind', 'mul'), ('literal', None))\nn|Op|i32|()|None|(#25, #29)|(('kind', 'add'), ('literal', None))\nn|At|f64|()|None|(#1, #30)|(('kind', 'at'), ('literal', None))\nn|Op|f64|(3,)|None|(#13, #22, #31)|(('kind', 'vec'), ('literal', None))\nn|Op|f64|()|None|(#32,)|(('kind', 'component'), ('literal', 0))\nn|Op|f64|()|None|(#32,)|(('kind', 'component'), ('literal', 1))\nn|Op|f64|()|None|(#33, #34)|(('kind', 'mul'), ('literal', None))\nn|Op|f64|()|None|(#32,)|(('kind', 'component'), ('literal', 2))\nn|Op|f64|()|None|(#0, #36)|(('kind', 'mul'), ('literal', None))\nn|Op|f64|()|None|(#35, #37)|(('kind', 'add'), ('literal', None))\nn|Assign|f64|()|None|(#38,)|(('kind', 'assign'), ('role', 'mutable'), ('name', 'out'))\nroot|#39\n",
+  "dump": "raptor.ir.dump/1\nn|Const|f64|()|None|()|(('literal', 2.0),)\nn|Leaf|f64|()|None|()|(('kind', 'table_read'), ('role', 'lookup'), ('name', 'v'), ('quantity', None), ('wire_index', 0), ('sorted', False), ('axes', (('component', 3), ('a', 3))))\nn|SampleIndex|i32|()|None|()|()\nn|RoleConst|i32|()|None|()|(('literal', 4), ('label', 'lane_a_stride'))\nn|Op|i32|()|None|(#2, #3)|(('kind', 'div'), ('literal', None))\nn|Const|i32|()|None|()|(('literal', 0),)\nn|At|f64|()|None|(#1, #5, #4)|(('kind', 'at'), ('literal', None), ('edge', 'clamp'))\nn|Const|i32|()|None|()|(('literal', 1),)\nn|At|f64|()|None|(#1, #7, #4)|(('kind', 'at'), ('literal', None), ('edge', 'clamp'))\nn|Const|i32|()|None|()|(('literal', 2),)\nn|At|f64|()|None|(#1, #9, #4)|(('kind', 'at'), ('literal', None), ('edge', 'clamp'))\nn|Op|f64|(3,)|None|(#6, #8, #10)|(('kind', 'vec'), ('literal', None))\nn|Op|f64|()|None|(#11,)|(('kind', 'component'), ('literal', 0))\nn|Op|f64|()|None|(#11,)|(('kind', 'component'), ('literal', 1))\nn|Op|f64|()|None|(#12, #13)|(('kind', 'mul'), ('literal', None))\nn|Op|f64|()|None|(#11,)|(('kind', 'component'), ('literal', 2))\nn|Op|f64|()|None|(#0, #15)|(('kind', 'mul'), ('literal', None))\nn|Op|f64|()|None|(#14, #16)|(('kind', 'add'), ('literal', None))\nn|Assign|f64|()|None|(#17,)|(('kind', 'assign'), ('role', 'mutable'), ('name', 'out'), ('axes', ()))\nroot|#18\n",
   "lane_space": [
    {
     "label": "a",
@@ -48,7 +48,7 @@
   ]
  },
  "shared_two": {
-  "dump": "raptor.ir.dump/1\nn|Leaf|f64|()|None|()|(('kind', 'table_read'), ('role', 'lookup'), ('name', 'table'), ('quantity', None), ('wire_index', 0), ('sorted', False))\nn|Leaf|f64|()|None|()|(('kind', 'vocab_read'), ('role', 'per_sample'), ('name', 'x'), ('quantity', None), ('wire_index', 0), ('sorted', False))\nn|Const|i32|()|None|()|(('literal', 1),)\nn|PlaneExtent|i32|()|None|(#0,)|()\nn|Op|i32|()|None|(#2, #3)|(('kind', 'clamp_index'), ('literal', None))\nn|At|f64|()|None|(#0, #4)|(('kind', 'at'), ('literal', None))\nn|Op|f64|()|None|(#1, #5)|(('kind', 'add'), ('literal', None))\nn|Assign|f64|()|None|(#6,)|(('kind', 'assign'), ('role', 'mutable'), ('name', 'out'))\nroot|#7\n",
+  "dump": "raptor.ir.dump/1\nn|Leaf|f64|()|None|()|(('kind', 'table_read'), ('role', 'lookup'), ('name', 'table'), ('quantity', None), ('wire_index', 0), ('sorted', False), ('axes', ()))\nn|Leaf|f64|()|None|()|(('kind', 'vocab_read'), ('role', 'plane_in'), ('name', 'x'), ('quantity', None), ('wire_index', 0), ('sorted', False), ('axes', ()))\nn|Const|i32|()|None|()|(('literal', 1),)\nn|At|f64|()|None|(#0, #2)|(('kind', 'at'), ('literal', None), ('edge', 'clamp'))\nn|Op|f64|()|None|(#1, #3)|(('kind', 'add'), ('literal', None))\nn|Assign|f64|()|None|(#4,)|(('kind', 'assign'), ('role', 'mutable'), ('name', 'out'), ('axes', ()))\nroot|#5\n",
   "lane_space": [
    {
     "label": "a",
@@ -60,5 +60,28 @@
    }
   ],
   "broadcast": []
+ },
+ "own_axis_two": {
+  "dump": "raptor.ir.dump/1\nn|Leaf|f64|()|None|()|(('kind', 'table_read'), ('role', 'lookup'), ('name', 't'), ('quantity', None), ('wire_index', 0), ('sorted', False), ('axes', (('elem', 3),)))\nn|Const|i32|()|None|()|(('literal', 1),)\nn|At|f64|()|None|(#0, #1)|(('kind', 'at'), ('literal', None), ('edge', 'unchecked'))\nn|Assign|f64|()|None|(#2,)|(('kind', 'assign'), ('role', 'mutable'), ('name', 'out'), ('axes', ()))\nroot|#3\n",
+  "lane_space": [
+   {
+    "label": "a",
+    "extent": 3
+   },
+   {
+    "label": "b",
+    "extent": 4
+   }
+  ],
+  "broadcast": [
+   {
+    "plane": "t",
+    "axes": [
+     true,
+     false
+    ],
+    "payload": []
+   }
+  ]
  }
 }

@@ -1,8 +1,8 @@
 //! The fused step: lanes written one after the other in one body, each in a scope of its own, as one unit. The unit's walk binds
 //! every slot each lane binds, so that the fused entry has the signature of all its lanes.
-use super::request::{DeclaredSlot, Member};
+use super::request::{DeclaredSlot, LaneAxis, Member};
 use super::{canonical, carries_no_forced_access, held_exempt, merge_slot, typed_walk, Pending};
-use aether_writers::contract::types::FusedLane;
+use aether_writers::contract::types::{FusedLane, Role};
 use aether_writers::refuse::{not_written, Refusal};
 use raptor_ir::record::Ctx;
 
@@ -12,12 +12,23 @@ fn bound_slots(ctx: *mut Ctx, lane: &Member) -> Result<Vec<DeclaredSlot>, Refusa
     Ok(typed_walk(ctx, walk)?
         .slots
         .into_iter()
+        // the extent slots are written again from the planes' axes by the fused walk
+        .filter(|slot| slot.role != Role::Extent)
         .map(|slot| DeclaredSlot {
             role: slot.role,
             name: slot.name,
             dtype: slot.dtype,
             shape: slot.shape,
             tag: None,
+            axes: slot
+                .axes
+                .unwrap_or_default()
+                .into_iter()
+                .map(|a| LaneAxis {
+                    label: Some(a.label),
+                    extent: a.extent,
+                })
+                .collect(),
         })
         .collect())
 }

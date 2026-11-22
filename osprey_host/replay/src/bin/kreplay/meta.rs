@@ -1218,6 +1218,8 @@ pub fn emit(file: &Path, dir: &Path, only: Option<&str>, sets: bool) {
     let mut expected = None;
     for line in text.lines() {
         let mut call = json::parse(line).expect("a call");
+        // the recorded calls name the read planes as they were named before the planes shared one role
+        raptor_support::migrate::migrate_roles(&mut call);
         if only.is_some_and(|wanted| call.get("call").and_then(J::str) != Some(wanted)) {
             continue;
         }

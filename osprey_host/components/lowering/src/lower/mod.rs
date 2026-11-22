@@ -34,8 +34,8 @@ mod warp;
 pub use merge::merge;
 
 use aether_writers::contract::types::{
-    Access, Active, BodySource, Build, Dtype, Exports, Form, FusedLane, Kind, Machine, OneStep,
-    Scalar, Segment, SelectWeight, Slot, Target, Unit, Walk, DEFAULT_ROWS,
+    Access, Active, Axis, BodySource, Build, Dtype, Exports, Form, FusedLane, Kind, Machine,
+    OneStep, Role, Scalar, Segment, SelectWeight, Slot, Target, Unit, Walk, DEFAULT_ROWS,
 };
 use aether_writers::contract::{Contract, Json};
 use aether_writers::refuse::{bad, fault, nib, not_written, Refusal};
@@ -43,9 +43,11 @@ use aether_writers::RxCtx;
 
 use crate::backend::{unserved, Backend, Renderer};
 use crate::facts::CardSet;
+use aether_writers::unit::extent_name;
 use card::{BuildCard, DeviceCard};
 use raptor_ir::canon::{Tt, WalkRes};
 use raptor_ir::record::{Ctx, Fault};
+use raptor_ir::value::{text_val, Val};
 use raptor_wings::team::TeamSpec;
 use raptor_wings::working_set::working_set_bytes;
 use request::{Body, DeclaredSlot, KernelAnswer, KernelRequest, Member, Settings, TargetText};
@@ -855,8 +857,55 @@ fn declared_leaf(slot: &DeclaredSlot) -> ((String, String), Tt) {
             dtype: slot.dtype.name().into(),
             shape: slot.shape.clone(),
             tag: slot.tag.clone(),
+            axes: axes_text(&slot.axes),
         },
     )
+}
+
+/// The axes of a plane from the text a type states them in (empty text: none).
+fn axes_of(text: &str) -> Vec<request::LaneAxis> {
+    let Ok(Val::Tuple(declared)) = raptor_ir::value::parse(text) else {
+        return vec![];
+    };
+    declared
+        .iter()
+        .filter_map(|axis| match axis {
+            Val::Tuple(pair) => match pair.as_slice() {
+                [Val::Str(label), extent] => Some(request::LaneAxis {
+                    label: Some(label.clone()),
+                    extent: match extent {
+                        Val::Int(n) => i64::try_from(*n).ok(),
+                        _ => None,
+                    },
+                }),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
+}
+
+/// An axis as the writers state it.
+fn axis_of(axis: &request::LaneAxis) -> Axis {
+    Axis {
+        label: axis.label.clone().unwrap_or_default(),
+        extent: axis.extent,
+    }
+}
+
+/// The axis list of a declared plane in the text the digest states it in: a tuple of `(label, extent)` pairs, an extent
+/// known at run time being `None`; empty for a plane declared without axes.
+fn axes_text(axes: &[request::LaneAxis]) -> String {
+    if axes.is_empty() {
+        return String::new();
+    }
+    let pair = |a: &request::LaneAxis| {
+        Val::Tuple(vec![
+            Val::Str(a.label.clone().unwrap_or_default()),
+            a.extent.map_or(Val::None, |n| Val::Int(i128::from(n))),
+        ])
+    };
+    text_val(&Val::Tuple(axes.iter().map(pair).collect()))
 }
 
 /// The kernel's canonical walk over the member's sinks and declared slots (the wing adds the companion, finished-count and
@@ -895,6 +944,7 @@ fn leaf_slots(ctx: *mut Ctx, walk: u32) -> Result<Vec<DeclaredSlot>, Refusal> {
                     .ok_or_else(shape)?,
                 shape: ttype.shape.clone(),
                 tag: ttype.tag.clone(),
+                axes: axes_of(&ttype.axes),
             })
         })
         .collect()
@@ -907,17 +957,33 @@ fn prior_reads(ctx: *mut Ctx, walk: u32) -> Result<Vec<String>, Refusal> {
 
 /// The walk's arguments, access class and finish, read back as the writers' typed walk.
 fn typed_walk(ctx: *mut Ctx, walk: u32) -> Result<Walk, Refusal> {
-    let slots = leaf_slots(ctx, walk)?
-        .into_iter()
+    let leaves = leaf_slots(ctx, walk)?;
+    let mut slots: Vec<Slot> = leaves
+        .iter()
         .enumerate()
         .map(|(index, slot)| Slot {
             role: slot.role,
-            name: slot.name,
+            name: slot.name.clone(),
             dtype: slot.dtype,
-            shape: slot.shape,
+            shape: slot.shape.clone(),
             index: index as i64,
+            axes: (!slot.axes.is_empty()).then(|| slot.axes.iter().map(axis_of).collect()),
         })
         .collect();
+    // each runtime axis of a plane reaches the entry as one more argument, which the runtime fills from the bound array
+    for plane in &leaves {
+        for axis in plane.axes.iter().filter(|a| a.extent.is_none()) {
+            let label = axis.label.clone().unwrap_or_default();
+            slots.push(Slot {
+                role: Role::Extent,
+                name: extent_name(&plane.name, &label),
+                dtype: Dtype::I64,
+                shape: vec![],
+                index: slots.len() as i64,
+                axes: None,
+            });
+        }
+    }
     let read = walk_of(ctx, walk)?;
     let access: Access = *ACCESSES
         .iter()
@@ -1424,6 +1490,7 @@ mod tests {
             dtype,
             shape: vec![2],
             tag: None,
+            axes: vec![],
         }
     }
 
@@ -1489,12 +1556,7 @@ mod tests {
     /// The answer for the host to the kernel with two dispatch groups over one sink (an IR dump recorded from the front end), with a
     /// vector and a matrix input declared beside the slots its body binds.
     fn lowered_two_groups() -> KernelAnswer {
-        lowered_two_groups_with(vec![])
-    }
-
-    /// As [`lowered_two_groups`], the caller stating `sink_axes` for the sink planes.
-    fn lowered_two_groups_with(sink_axes: Vec<request::SinkAxes>) -> KernelAnswer {
-        lowered_two_groups_as(|request| request.sink_axes = sink_axes).unwrap()
+        lowered_two_groups_as(|_| {}).unwrap()
     }
 
     /// The answer to the two-group kernel's request after `edit` has changed it.
@@ -1541,12 +1603,12 @@ mod tests {
             sinks: vec![roots[10]],
             declared: vec![
                 DeclaredSlot {
-                    role: Role::VecIn,
+                    role: Role::PlaneIn,
                     shape: vec![3],
                     ..slot("v", Dtype::F64)
                 },
                 DeclaredSlot {
-                    role: Role::MatIn,
+                    role: Role::PlaneIn,
                     shape: vec![2, 2],
                     ..slot("m", Dtype::F64)
                 },
@@ -1579,7 +1641,7 @@ mod tests {
                     &[],
                     None,
                     &[],
-                    "(('kind', 'vocab_read'), ('role', 'per_sample'), ('name', 'x'), ('quantity', None), ('wire_index', 0), ('sorted', False))",
+                    "(('kind', 'vocab_read'), ('role', 'plane_in'), ('name', 'x'), ('quantity', None), ('wire_index', 0), ('sorted', False))",
                 )
                 .unwrap();
             let sum = c
@@ -1682,39 +1744,16 @@ mod tests {
             (slot.role, slot.shape.len(), slot.mirror.as_str())
         };
         // rank 0: a per-sample read is a scalar handle, a mutable output without rank too
-        assert_eq!(mirror_of("x"), (SlotRole::PerSample, 0, "ScalarHandle"));
+        assert_eq!(mirror_of("x"), (SlotRole::PlaneIn, 0, "ScalarHandle"));
         assert_eq!(mirror_of("y"), (SlotRole::Mutable, 0, "ScalarHandle"));
-        // ranked: a vector and a matrix input, two roles, are each read through a mirror
-        assert_eq!(mirror_of("v"), (SlotRole::VecIn, 1, "GRefMirror"));
-        assert_eq!(mirror_of("m"), (SlotRole::MatIn, 2, "GRefMirror"));
+        // ranked: a vector and a matrix input, one role, are each read through a mirror
+        assert_eq!(mirror_of("v"), (SlotRole::PlaneIn, 1, "GRefMirror"));
+        assert_eq!(mirror_of("m"), (SlotRole::PlaneIn, 2, "GRefMirror"));
         // the answer's JSON states it on every slot
         let json = answer.to_json();
         let count = slots.len();
         assert_eq!(json.matches("\"mirror\":").count(), count);
         assert_eq!(KernelAnswer::from_json(&json).unwrap(), answer);
-    }
-
-    /// A sink plane the caller states with a payload wider than the walk's slot keeps the mirror of the slot the entry binds (the
-    /// writers decide by the walk's rank), where the record's shape is the payload: the kernel lowers as it did before the mirror was
-    /// stated.
-    #[test]
-    fn a_sink_payload_wider_than_its_slot_does_not_change_the_mirror() {
-        let wide = request::SinkAxes {
-            name: "y".into(),
-            payload: vec![4],
-            axes: vec![],
-        };
-        let answer = lowered_two_groups_with(vec![wide]);
-        let slot = answer
-            .units
-            .iter()
-            .flat_map(|u| &u.meta.body.slots)
-            .find(|s| s.name == "y")
-            .expect("slot y");
-        assert_eq!(
-            (slot.shape.clone(), slot.mirror.as_str()),
-            (vec![4], "ScalarHandle")
-        );
     }
 
     #[test]

@@ -258,7 +258,7 @@ pub(super) fn source_unit(
             .iter()
             .map(|a| a.extent.unwrap_or(-1))
             .collect(),
-        plane_axes: meta_fill::plane_axes(request, &slots),
+        plane_axes: meta_fill::plane_axes(&typed, &slots),
         ..Launch::default()
     };
     if active::reads_set(request) {
@@ -517,6 +517,9 @@ fn read_slots(ctx: *mut Ctx, reads: &[u32]) -> Result<Vec<DeclaredSlot>, Refusal
                     .ok_or_else(missing)?,
                 shape: node.shape.clone(),
                 tag: node.tag.clone(),
+                axes: super::axes_of(&raptor_ir::value::text_val(
+                    &context.field(leaf, "axes").map_err(wing)?,
+                )),
             })
         })
         .collect()
@@ -590,7 +593,7 @@ mod tests {
                 &[],
                 None,
                 &[],
-                "(('kind', 'vocab_read'), ('role', 'per_sample'), ('name', 'x'), ('quantity', None), ('wire_index', 0), ('sorted', False))",
+                "(('kind', 'vocab_read'), ('role', 'plane_in'), ('name', 'x'), ('quantity', None), ('wire_index', 0), ('sorted', False))",
             )
             .unwrap();
         let out = context

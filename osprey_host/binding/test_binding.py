@@ -14,11 +14,11 @@ import tempfile
 import _osprey as o
 
 LEAF = (
-    "(('kind', 'vocab_read'), ('role', 'vec_in'), ('name', '%s'), ('quantity', None), "
+    "(('kind', 'vocab_read'), ('role', 'plane_in'), ('name', '%s'), ('quantity', None), "
     "('wire_index', 0), ('sorted', False))"
 )
 ADD = "(('kind', 'add'), ('literal', None))"
-WANT = "e5528739b51eb34fa87421825d26571b381966750395a5e74f9b131dd037afff"
+WANT = "5822d803d90146cc81ffa03b8c357ee07e1b1faba2e520342aac9851898ed233"
 done = []
 not_run = []
 
@@ -242,7 +242,7 @@ table = c.make(
     [4],
     None,
     [],
-    LEAF.replace("vocab_read", "table_read").replace("vec_in", "lookup") % "t",
+    LEAF.replace("vocab_read", "table_read").replace("plane_in", "lookup") % "t",
 )
 cell = c.make("RoleConst", "i32", [], None, [], "(('literal', 0), ('label', 'param_cell'))")
 other = c.make("RoleConst", "i32", [], None, [], "(('literal', 0), ('label', 'other'))")
@@ -269,10 +269,10 @@ assert c.index_form(halved, idx, True) == ("form", "2/1", "1/1", "1", "-")
 assert c.index_form(halved, idx, False) == ("none",)
 assert c.index_form(ints(7), None, True) == ("form", "0/1", "7/1", "0", "-")
 done.append("index_form")
-assert c.quantity_check("pos", "auto", "(('vec_in', 'x'), ('mat_in', 'm'))") is None
+assert c.quantity_check("pos", "auto", "(('plane_in', 'x'), ('plane_in', 'm'))") is None
 e = raises(
     ValueError,
-    lambda: c.quantity_check("pos", "auto", "(('vec_in', 'x'), ('vec_in', 'x'))"),
+    lambda: c.quantity_check("pos", "auto", "(('plane_in', 'x'), ('plane_in', 'x'))"),
     "a duplicate wire",
 )
 assert str(e) == "Quantity 'pos': duplicate wire name 'x'", str(e)
@@ -506,7 +506,7 @@ assert c.slotwise([wide, vec3]) == (wide, vec3) and c.slotwise([]) == ()
 done.append("slotwise: component, sum and add per slot, unchanged roots, no roots")
 
 # ---- the log lowering of ordered accumulates ----
-PER_SAMPLE = LEAF.replace("vec_in", "per_sample")
+PER_SAMPLE = LEAF
 sample_x = c.make("Leaf", "f64", [], None, [], PER_SAMPLE % "lx")
 sample_k = c.make("Leaf", "i64", [], None, [], PER_SAMPLE % "lk")
 cell_a = c.make("Leaf", "i64", [], None, [], PER_SAMPLE % "ca")
@@ -605,7 +605,7 @@ done.append("walk_mix_slots: an automatic group names its mix slot, every other 
 # the other reads of a walk, with the values the previous walk and wing gave for the same kernels
 # (recorded in the library's walk.json): the selector reads of a group, the access class, the
 # companion pairs of the summing sample sums, and the slot names a group owns
-assert c.walk_selector_reads(walked, 0) == (("per_sample", "sel"),)
+assert c.walk_selector_reads(walked, 0) == (("plane_in", "sel"),)
 raises(
     ValueError,
     lambda: c.walk_selector_reads(walked, 3),
@@ -906,9 +906,12 @@ RW_ELEMENT = {"none": 0, "proxy": 1, "input": 2, "parts": 3, "splat": 4, "elemen
 assert c.wide_element_kind(wide_in[0]) == RW_ELEMENT["input"]
 assert c.wide_element_kind(wide_sum) == RW_ELEMENT["elementwise"]
 assert c.wide_element_kind(resident) == RW_ELEMENT["proxy"]
-reads = [c.make("At", "f64", [], None, [wide_in[0], ints(k)], "()") for k in (2, 4, 6)]
-run3 = c.make("Op", "f64", [3], None, reads, "(('kind', 'vec'), ('literal', None))")
-assert c.wide_gather(run3) == (wide_in[0], None, 2, 2, False)  # indices 2, 4, 6
+# a run of reads is a gather; its last fact says whether the reads clamp their index,
+# which is the default edge rule of a read
+for edge, clamps in (("(('edge', 'unchecked'),)", False), ("()", True)):
+    reads = [c.make("At", "f64", [], None, [wide_in[0], ints(k)], edge) for k in (2, 4, 6)]
+    run3 = c.make("Op", "f64", [3], None, reads, "(('kind', 'vec'), ('literal', None))")
+    assert c.wide_gather(run3) == (wide_in[0], None, 2, 2, clamps)  # indices 2, 4, 6
 assert c.wide_gather(wide_sum) is None
 done.append(
     "wide_place, wide_is_resident, wide_is_scratch, wide_is_tiled, wide_is_prior, wide_record, "
@@ -923,8 +926,8 @@ assert c.loop_boundary([body_next], [], []) == (body_next,)
 done.append("loop_boundary: the invariant product is the boundary, nothing is own then the root is")
 
 # ---- the matrices a walk reads only through a gather ----
-mat_in = c.make("Leaf", "f64", [2, 3], None, [], LEAF.replace("vec_in", "mat_in") % "gm")
-row = c.make("At", "f64", [3], None, [mat_in, ints(1)], "()")
+matrix = c.make("Leaf", "f64", [2, 3], None, [], LEAF % "gm")
+row = c.make("At", "f64", [3], None, [matrix, ints(1)], "()")
 gather_sink = c.make("Assign", "f64", [3], None, [c.make_op("neg", [row], "")], "(('name', 'gy'),)")
 assert c.walk_gather_mats(c.cells_walk([gather_sink], "()", None)) == ("gm",)
 assert c.walk_gather_mats(c.cells_walk([plain], "()", None)) == ()
@@ -934,11 +937,11 @@ done.append("walk_gather_mats: a matrix read only through a gather is named")
 # ---- the quantities a walk reaches: (namespace, wires, slots) rows in the walk's order ----
 def wire_leaf(slug, wires, at):
     """A read leaf of wire `at` of the quantity `slug`, carrying the whole declaration."""
-    wire = "Wire(name='%s', role='vec_in', shape=(), dtype='f64', tag=None)"
+    wire = "Wire(name='%s', role='plane_in', shape=(), dtype='f64', tag=None)"
     declared = ", ".join(wire % w for w in wires)
     quantity = "Quantity(slug='%s', pack='auto', wires=(%s,))" % (slug, declared)
     fields = (
-        "(('kind', 'vocab_read'), ('role', 'vec_in'), ('name', '%s__%s'), ('quantity', %s), "
+        "(('kind', 'vocab_read'), ('role', 'plane_in'), ('name', '%s__%s'), ('quantity', %s), "
         "('wire_index', %d), ('sorted', False))" % (slug, wires[at], quantity, at)
     )
     return c.make("Leaf", "f64", [], None, [], fields)
@@ -951,7 +954,7 @@ quantity_sink = c.make(
     "Assign", "f64", [], None, [quantity_sum], "(('name', 'qy'), ('role', 'mutable'))"
 )
 quantity_walk = c.cells_walk([quantity_sink], "()", None)
-# Slots are ordered by role (mutable first, then vec_in); inside a role the wires of the reached
+# Slots are ordered by role (mutable first, then plane_in); inside a role the wires of the reached
 # quantities come first, in the order reached and then declared: qy 0, pos__x 1, pos__v 2, acc__w 3.
 assert c.walk_quantity_wires(quantity_walk) == (("pos", ("pos__x", "pos__v")), ("acc", ("acc__w",)))
 assert c.walk_quantity_slots(quantity_walk) == (("pos", (1, 2)), ("acc", (3,)))

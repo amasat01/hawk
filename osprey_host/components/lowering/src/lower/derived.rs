@@ -100,7 +100,6 @@ impl DerivedKernel {
             settings: Settings::read(&Json::Obj(vec![]))?,
             steps: None,
             lane_space: vec![],
-            sink_axes: vec![],
             shared: vec![],
             broadcast: vec![],
             table_payloads: vec![],

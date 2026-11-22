@@ -15,7 +15,7 @@ import sys
 import tempfile
 
 LEAF = (
-    "(('kind', 'vocab_read'), ('role', 'per_sample'), ('name', '%s'), ('quantity', None), "
+    "(('kind', 'vocab_read'), ('role', 'plane_in'), ('name', '%s'), ('quantity', None), "
     "('wire_index', 0), ('sorted', False))"
 )
 ADD = "(('kind', 'add'), ('literal', None))"

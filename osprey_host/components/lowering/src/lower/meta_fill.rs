@@ -48,17 +48,16 @@ const AUTO_STEPS: i64 = -1;
 fn role(role: Role) -> m::SlotRole {
     match role {
         Role::Mutable => m::SlotRole::Mutable,
-        Role::PerSample => m::SlotRole::PerSample,
-        Role::VecIn => m::SlotRole::VecIn,
+        Role::PlaneIn => m::SlotRole::PlaneIn,
         Role::Lookup => m::SlotRole::Lookup,
         Role::WideOut => m::SlotRole::WideOut,
         Role::Uniform => m::SlotRole::Uniform,
-        Role::MatIn => m::SlotRole::MatIn,
         Role::AccumOut => m::SlotRole::AccumOut,
         Role::Terminated => m::SlotRole::Terminated,
         Role::WideIn => m::SlotRole::WideIn,
         Role::Nsamples => m::SlotRole::Nsamples,
         Role::Out => m::SlotRole::Out,
+        Role::Extent => m::SlotRole::Extent,
     }
 }
 
@@ -120,14 +119,25 @@ pub(super) fn slots(
         .enumerate()
         .map(|(at, s)| {
             let planar = s.role == Role::Lookup && params.contains(&s.name);
-            let shape = payload_of(request, s);
-            // the door types GATHER on a rank-2 MAT_IN and on a rank-0 LOOKUP
-            let compact_matrix = s.role == Role::MatIn && s.shape.len() == 2;
-            // a table has lane axes to vary along only when it is neither shared nor a parameter plane, and the caller sizes a
-            // broadcast table by stating its payload; the door types a gathered LOOKUP of rank 0 (a table of scalars) only, so a
-            // table with components stays the caller's own table
+            let shape = s.shape.clone();
+            // the door types GATHER on a rank-2 per-sample plane and on a rank-0 LOOKUP
+            let compact_matrix = s.role == Role::PlaneIn && s.shape.len() == 2;
+            // a table is a broadcast table when it states axes and every one of them is a lane axis of the request (its label is
+            // one of the lane space's): the caller then sizes it by its payload and it varies along those lane axes only. A table
+            // with an axis of its own, or with none stated (one run-time axis of its own), is read at computed indices and stays
+            // the caller's. The door types a gathered LOOKUP of rank 0 (a table of scalars) only, so a table with components
+            // stays the caller's own table; a shared or parameter plane is never gathered.
             let scalar_table = s.role == Role::Lookup
                 && !planar
+                && s.axes.as_ref().is_some_and(|axes| {
+                    !axes.is_empty()
+                        && axes.iter().all(|axis| {
+                            request
+                                .lane_space
+                                .iter()
+                                .any(|lane| lane.label.as_deref() == Some(axis.label.as_str()))
+                        })
+                })
                 && !shared.contains(&s.name)
                 && payload_of_table(request, &s.name).is_some_and(|payload| payload.is_empty());
             let gather = gather_mask(
@@ -176,15 +186,6 @@ fn is_written(role: Role, name: &str, finish_mask: Option<&str>) -> bool {
         Role::Mutable | Role::Out | Role::WideOut | Role::AccumOut => true,
         _ => false,
     }
-}
-
-/// The shape the record states for a slot: the payload of a sink plane with named axes, else the slot's own.
-fn payload_of(request: &KernelRequest, slot: &aether_writers::contract::types::Slot) -> Vec<i64> {
-    request
-        .sink_axes
-        .iter()
-        .find(|sink| sink.name == slot.name)
-        .map_or_else(|| slot.shape.clone(), |sink| sink.payload.clone())
 }
 
 /// The prefix of the name of the tangent of a plane.
@@ -238,7 +239,7 @@ fn payload_of_table(request: &KernelRequest, name: &str) -> Option<Vec<i64>> {
 }
 
 /// The keep mask of a gathered slot, one flag per lane axis, and none for a slot that is not gathered. A compact matrix (a rank-2
-/// MAT_IN) is gathered when the request states a broadcast pattern for it, and also when the walk reads it only through a gather
+/// per-sample plane) is gathered when the request states a broadcast pattern for it, and also when the walk reads it only through a gather
 /// with no pattern stated: that is the caller's full per-lane matrix, which varies along every axis. A table (a LOOKUP that is
 /// neither shared nor a parameter plane) of scalars is gathered only by a stated pattern and a stated empty payload: with either
 /// missing, or with components, it is read as one table for every lane. A gathered slot never states less.
@@ -293,19 +294,33 @@ fn later_stage(parts: &Parts) -> bool {
     matches!(parts.request.body, Body::Plain(_)) && parts.pending.member.name != parts.request.name
 }
 
-/// The declared axes of the sink planes the unit binds, each at its slot.
-pub(super) fn plane_axes(request: &KernelRequest, slots: &[m::Slot]) -> Vec<m::PlaneAxes> {
-    request
-        .sink_axes
-        .iter()
-        .filter_map(|sink| {
-            Some(m::PlaneAxes {
-                slot: slot_at(slots, &sink.name)?,
-                labels: sink.axes.iter().map(|a| a.label.clone()).collect(),
-                extents: sink.axes.iter().map(|a| a.extent.unwrap_or(-1)).collect(),
-            })
-        })
-        .collect()
+/// The declared axes of the planes the unit binds, each at its slot, as the plane states them. A runtime axis names the slot that
+/// carries its extent.
+pub(super) fn plane_axes(typed: &Walk, slots: &[m::Slot]) -> Vec<m::PlaneAxes> {
+    let mut found: Vec<m::PlaneAxes> = vec![];
+    for plane in typed.slots.iter().filter(|s| s.axes.is_some()) {
+        let axes = plane.axes.as_deref().unwrap_or_default();
+        let Some(slot) = slot_at(slots, &plane.name) else {
+            continue;
+        };
+        found.push(m::PlaneAxes {
+            slot,
+            labels: axes.iter().map(|a| Some(a.label.clone())).collect(),
+            extents: axes.iter().map(|a| a.extent.unwrap_or(-1)).collect(),
+            extent_slots: axes
+                .iter()
+                .map(|a| match a.extent {
+                    Some(_) => -1,
+                    None => slot_at(
+                        slots,
+                        &aether_writers::unit::extent_name(&plane.name, &a.label),
+                    )
+                    .map_or(-1, |at| at as i64),
+                })
+                .collect(),
+        });
+    }
+    found
 }
 
 /// The device threads of one block: the tile the warp step fixed (its lanes, one warp each, or the warps of a single lane), else
@@ -358,7 +373,7 @@ fn launch(parts: &Parts, slots: &[m::Slot]) -> m::Launch {
         plane_axes: if later_stage(parts) {
             vec![]
         } else {
-            plane_axes(parts.request, slots)
+            plane_axes(parts.typed, slots)
         },
         ..m::Launch::default()
     };
@@ -947,6 +962,7 @@ fn state_keyed_outputs(units: &mut [UnitAnswer], listing: usize, block: &StageBl
                         .iter()
                         .map(|(_, e)| e.unwrap_or(-1))
                         .collect(),
+                    extent_slots: vec![-1; keys.keyed.axes.len()],
                 });
             }
         }
@@ -1113,7 +1129,7 @@ mod tests {
             Some("terminated")
         ));
         assert!(is_written(Role::Mutable, "y", None));
-        assert!(!is_written(Role::PerSample, "x", None));
+        assert!(!is_written(Role::PlaneIn, "x", None));
     }
 
     #[test]

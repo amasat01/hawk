@@ -269,6 +269,7 @@ fn full_tree() -> (LibraryMeta, UnitMeta) {
                 slot: 0,
                 labels: vec![Some("k".into())],
                 extents: vec![-1],
+                extent_slots: vec![-1],
             }],
             host_box: Some(ThreadBox {
                 axis: 0,

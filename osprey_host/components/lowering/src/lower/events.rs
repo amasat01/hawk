@@ -101,7 +101,7 @@ pub fn smooth(ctx: &Ctx, node: u32, memo: &mut HashMap<u32, Option<bool>>) -> Op
     };
     let out = if is("Leaf") {
         Some(real)
-    } else if ["Const", "SampleIndex", "PlaneExtent", "LoopIndex"]
+    } else if ["Const", "SampleIndex", "AxisExtent", "LoopIndex"]
         .iter()
         .any(|c| is(c))
         || !real

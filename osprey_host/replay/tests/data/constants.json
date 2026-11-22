@@ -31,10 +31,8 @@
  ],
  "KEYED_AUTO": "keyed_auto",
  "LEAF_ROLES": [
-  "vec_in",
-  "mat_in",
+  "plane_in",
   "wide_in",
-  "per_sample",
   "lookup",
   "terminated",
   "uniform",
@@ -49,9 +47,7 @@
  "NAMESPACE_SEP": "__",
  "PARAM_CELL": "param_cell",
  "PER_SAMPLE_ROLES": [
-  "per_sample",
-  "vec_in",
-  "mat_in",
+  "plane_in",
   "terminated",
   "mutable",
   "out"

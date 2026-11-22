@@ -33,6 +33,8 @@ pub struct DeclaredSlot {
     pub shape: Vec<i64>,
     /// The type's tag, when it has one.
     pub tag: Option<String>,
+    /// The axes of a plane the slot declares, in storage order (empty for a plane declared without axes).
+    pub axes: Vec<LaneAxis>,
 }
 
 /// One kernel body: the nodes it writes and how its walk is taken over them.
@@ -143,19 +145,6 @@ pub struct LaneAxis {
     pub extent: Option<i64>,
 }
 
-/// The axes the caller declares for a sink plane, with the plane's payload.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SinkAxes {
-    /// The plane's name.
-    pub name: String,
-    /// The per-sample component of the plane: its extents, empty for a scalar plane. Every entry states it (a missing member is
-    /// refused, never read as a scalar). The plane is bound with the payload first and the named axes after it, and the slot's
-    /// rank and shape in the unit's record are the payload.
-    pub payload: Vec<i64>,
-    /// The plane's axes.
-    pub axes: Vec<LaneAxis>,
-}
-
 /// How many steps one launch of a finishing kernel takes, as the caller declares it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Steps {
@@ -201,8 +190,6 @@ pub struct KernelRequest {
     pub steps: Option<Steps>,
     /// The kernel's lane axes.
     pub lane_space: Vec<LaneAxis>,
-    /// The axes the caller declares for the kernel's sink planes.
-    pub sink_axes: Vec<SinkAxes>,
     /// The parameter planes the caller declares shared: one value for every lane.
     pub shared: Vec<String>,
     /// The kernel's broadcast pattern: for a matrix plane or a table the kernel reads at lane indices, whether it varies along each lane
@@ -495,14 +482,12 @@ pub const DTYPES: [Dtype; 7] = [
     Dtype::Bool,
 ];
 /// The slot roles.
-pub const ROLES: [Role; 12] = [
+pub const ROLES: [Role; 10] = [
     Role::Mutable,
-    Role::PerSample,
-    Role::VecIn,
+    Role::PlaneIn,
     Role::Lookup,
     Role::WideOut,
     Role::Uniform,
-    Role::MatIn,
     Role::AccumOut,
     Role::Terminated,
     Role::WideIn,
@@ -646,6 +631,7 @@ impl DeclaredSlot {
             dtype,
             shape: vec![],
             tag: None,
+            axes: vec![],
         }
     }
 
@@ -658,8 +644,19 @@ impl DeclaredSlot {
             dtype: member_of(&DTYPES, keys.req("dtype")?, "dtype")?,
             shape: list_of(keys.req("shape")?, "shape", |n| int_of(n, "shape"))?,
             tag: keys.opt("tag").map(|t| text_of(t, "tag")).transpose()?,
+            axes: keys
+                .opt("axes")
+                .map(|a| list_of(a, "axes", LaneAxis::read))
+                .transpose()?
+                .unwrap_or_default(),
         };
         keys.done()?;
+        if let Some(unlabelled) = slot.axes.iter().position(|a| a.label.is_none()) {
+            return Err(bad(format!(
+                "slot {:?}: axis {unlabelled} has no label; a plane axis is named",
+                slot.name
+            )));
+        }
         Ok(slot)
     }
     /// Writes the declared slot.
@@ -672,6 +669,12 @@ impl DeclaredSlot {
         ];
         if let Some(tag) = &self.tag {
             o.push(("tag".into(), Json::Str(tag.clone())))
+        }
+        if !self.axes.is_empty() {
+            o.push((
+                "axes".into(),
+                Json::Arr(self.axes.iter().map(LaneAxis::write).collect()),
+            ))
         }
         Json::Obj(o)
     }
@@ -717,37 +720,6 @@ impl LaneAxis {
             o.push(("extent".into(), Json::Num(extent.to_string())))
         }
         Json::Obj(o)
-    }
-}
-
-impl SinkAxes {
-    /// Reads the axes and the payload of a sink plane of the kernel `kernel`.
-    fn read(json: &Json, kernel: &str) -> Result<SinkAxes, Refusal> {
-        let mut keys = Keys::of(json, "sink_axes")?;
-        let name = text_of(keys.req("name")?, "name")?;
-        let Some(payload) = keys.opt("payload") else {
-            return Err(bad(format!(
-                "kernel {kernel:?}: the sink {name:?} states no payload (an empty list for a scalar plane)"
-            )));
-        };
-        let found = SinkAxes {
-            name,
-            payload: list_of(payload, "payload", |n| int_of(n, "payload"))?,
-            axes: list_of(keys.req("axes")?, "axes", LaneAxis::read)?,
-        };
-        keys.done()?;
-        Ok(found)
-    }
-    /// Writes the axes of a sink plane.
-    fn write(&self) -> Json {
-        Json::Obj(vec![
-            ("name".into(), Json::Str(self.name.clone())),
-            ("payload".into(), ints(&self.payload)),
-            (
-                "axes".into(),
-                Json::Arr(self.axes.iter().map(LaneAxis::write).collect()),
-            ),
-        ])
     }
 }
 
@@ -838,10 +810,6 @@ pub(super) fn read_part(keys: &mut Keys, into: &mut KernelRequest) -> Result<(),
     }
     if let Some(l) = keys.opt("lane_space") {
         into.lane_space = list_of(l, "lane_space", LaneAxis::read)?;
-    }
-    if let Some(l) = keys.opt("sink_axes") {
-        let kernel = into.name.clone();
-        into.sink_axes = list_of(l, "sink_axes", |j| SinkAxes::read(j, &kernel))?;
     }
     if let Some(l) = keys.opt("shared") {
         into.shared = list_of(l, "shared", |n| text_of(n, "shared"))?;
@@ -1195,7 +1163,6 @@ impl KernelRequest {
                 .transpose()?,
             steps: None,
             lane_space: vec![],
-            sink_axes: vec![],
             shared: vec![],
             broadcast: vec![],
             table_payloads: vec![],
@@ -1267,10 +1234,6 @@ impl KernelRequest {
         if !self.lane_space.is_empty() {
             let axes = self.lane_space.iter().map(LaneAxis::write).collect();
             o.push(("lane_space".into(), Json::Arr(axes)))
-        }
-        if !self.sink_axes.is_empty() {
-            let sinks = self.sink_axes.iter().map(SinkAxes::write).collect();
-            o.push(("sink_axes".into(), Json::Arr(sinks)))
         }
         if !self.shared.is_empty() {
             o.push(("shared".into(), texts(&self.shared)))
@@ -1545,6 +1508,16 @@ mod tests {
                     dtype: Dtype::F64,
                     shape: vec![2],
                     tag: None,
+                    axes: vec![
+                        LaneAxis {
+                            label: Some("i".into()),
+                            extent: None,
+                        },
+                        LaneAxis {
+                            label: Some("k".into()),
+                            extent: Some(3),
+                        },
+                    ],
                 }],
                 force: None,
                 exempt: vec![],
@@ -1557,7 +1530,6 @@ mod tests {
             image_format: None,
             steps: None,
             lane_space: vec![],
-            sink_axes: vec![],
             shared: vec![],
             broadcast: vec![],
             table_payloads: vec![],
@@ -1738,8 +1710,8 @@ mod tests {
             c.make("Leaf", "f64", shape, None, &[], &fields).unwrap()
         };
         let (a, b) = (
-            leaf(c, "mat_in", "A", &[40, 40]),
-            leaf(c, "vec_in", "b", &[40]),
+            leaf(c, "plane_in", "A", &[40, 40]),
+            leaf(c, "plane_in", "b", &[40]),
         );
         let index = c
             .make(
@@ -2029,28 +2001,6 @@ mod tests {
         assert_eq!(
             KernelRequest::from_json(&version),
             Err(unknown("request version 2"))
-        );
-    }
-
-    #[test]
-    fn a_sink_with_axes_states_its_payload_and_a_request_without_it_is_refused_by_name() {
-        let mut stated = request();
-        stated.sink_axes = vec![SinkAxes {
-            name: "acc".into(),
-            payload: vec![3],
-            axes: vec![LaneAxis {
-                label: Some("bin".into()),
-                extent: Some(9),
-            }],
-        }];
-        let text = stated.to_json();
-        assert_eq!(KernelRequest::from_json(&text).unwrap(), stated);
-        let why = KernelRequest::from_json(&text.replace("\"payload\":[3],", "")).unwrap_err();
-        assert_eq!(why.kind, aether_writers::refuse::RefusalKind::BadRequest);
-        assert!(
-            why.reason.contains("\"k\"") && why.reason.contains("\"acc\""),
-            "{}",
-            why.reason
         );
     }
 }

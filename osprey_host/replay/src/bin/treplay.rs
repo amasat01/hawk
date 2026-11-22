@@ -1,4 +1,4 @@
-//! treplay <texts.jsonl> [--target host] [--limit n] [--only <substring of unit name or test id>] [--show k] [--ladder]
+//! treplay <texts.jsonl> [--migrate] [--target host] [--limit n] [--only <substring of unit name or test id>] [--show k] [--ladder]
 //! Replays the recorded render calls: each unit's nodes are made in a fresh context through the C door, the walk is rebuilt and
 //! compared with the recorded one, and the unit's text is rendered by the writer crate and compared with the recorded text.
 #![warn(missing_docs)]
@@ -11,10 +11,12 @@ use aether_writers::{cuda_render, entry_body, host_render, RxCtx};
 use osprey_lowering::facts;
 use raptor_ir::door::rx_ctx_new;
 use raptor_ir::record::Ctx;
+use raptor_support::corpus::replay_ctx;
 use raptor_support::corpus::{
     declare, err, make_nodes, manifests, tagged_str, val, walk_options, with_analysis_nodes, Vals,
     WalkOpts,
 };
+use raptor_support::migrate::{self, Changed};
 use raptor_support::safe::rx_ctx_free;
 use raptor_support::safe::{rx_canonical, rx_digest, rx_walk_field};
 extern crate raptor_wings; // links the wing analyses the writers call
@@ -473,7 +475,7 @@ struct Tally {
     ran: usize,
     /// Walks loaded into the context.
     loaded: usize,
-    /// Walks whose digest equals the recorded one.
+    /// Walks whose digest equals the recorded one, which the context computes with the plane-shape fields removed from every key.
     digest_eq: usize,
     /// Walks whose argument spec equals the recorded one.
     spec_eq: usize,
@@ -704,7 +706,8 @@ fn unit(rec: &J, render: bool, show: usize, t: &mut Tally) -> String {
     let inp_all = with_analysis_nodes(rec.get("inputs").unwrap(), rec);
     let inp = &inp_all;
     let name = rec.get("unit").and_then(J::str).unwrap_or("?").to_string();
-    let c = rx_ctx_new();
+    // the recorded digests are of keys that had no plane-shape fields
+    let c = replay_ctx(true);
     unsafe { raptor_wings::declare::rw_declare_kinds(c) };
     let mut line = format!(
         "{name:<14} nodes {:>4}",
@@ -828,7 +831,9 @@ fn unit(rec: &J, render: bool, show: usize, t: &mut Tally) -> String {
                 .to_string_lossy()
                 .into_owned();
             let want = |f: &str| rw.get(f);
-            let dg_ok = want("digest").and_then(tagged_str) == Some(dg.as_str());
+            let recorded_dg = want("digest").and_then(tagged_str);
+            let same_walk = recorded_dg == Some(dg.as_str());
+            let dg_ok = same_walk;
             let spec_ok =
                 want("arg_spec").is_some_and(|a| val(a, &h) == walk_field(c, w, "arg_spec"));
             // the door's access is the class text; the recorded Access also holds `op`
@@ -1010,9 +1015,85 @@ fn unit(rec: &J, render: bool, show: usize, t: &mut Tally) -> String {
     done
 }
 
+/// What bringing the read records to the current IR form did: the nodes changed, the records they were in, and the records the
+/// migration could not express exactly (these are not replayed), by reason.
+#[derive(Default)]
+struct Migrations {
+    /// Nodes changed, by rule.
+    nodes: Changed,
+    /// Records that held at least one old-form node.
+    records: usize,
+    /// Records left out, with the reason.
+    refused: HashMap<String, usize>,
+}
+
+/// What reading one recorded line gave.
+enum Read {
+    /// The record, in the current IR form.
+    Record(J),
+    /// The json reader refused the line.
+    Unparsed,
+    /// The migration could not express the record exactly (counted by reason in the migrations).
+    NotExpressible,
+}
+
+impl Migrations {
+    /// Reads one recorded line into a record in the current form.
+    fn read(&mut self, line: &str) -> Read {
+        let Ok(mut rec) = json::parse_without(line, &["analyses"]) else {
+            return Read::Unparsed;
+        };
+        match migrate::migrate(&mut rec) {
+            Ok(changed) => {
+                self.records += usize::from(!changed.is_none());
+                self.nodes.add(changed);
+                Read::Record(rec)
+            }
+            Err(reason) => {
+                *self.refused.entry(reason).or_default() += 1;
+                Read::NotExpressible
+            }
+        }
+    }
+
+    /// The report lines of the migration.
+    fn print(&self) {
+        println!(
+            "migrated to the current IR form: {} records ({} extents, {} reads, {} stores); not expressible {}",
+            self.records,
+            self.nodes.extents,
+            self.nodes.reads,
+            self.nodes.stores,
+            self.refused.values().sum::<usize>()
+        );
+        for (reason, n) in &self.refused {
+            println!("not expressible: {reason}: {n}");
+        }
+    }
+}
+
+/// Brings the records of the small in-tree data file at `path` to the current IR form, in place, and says how many changed.
+fn migrate_in_place(path: &str) {
+    match migrate::migrate_file(std::path::Path::new(path)) {
+        Ok(report) => {
+            println!("records {}, migrated {}", report.records, report.changed);
+            for (line, reason) in &report.refused {
+                println!("not expressible: line {line}: {reason}");
+            }
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     let path = a.get(1).expect("usage: treplay <texts.jsonl> [--target host] [--limit n] [--only s] [--show k] [--ladder] [--text-from-recorded-body]");
+    if a.iter().any(|x| x == "--migrate") {
+        return migrate_in_place(path);
+    }
     if a.iter().any(|x| x == "--text-from-recorded-body") {
         return text_from_recorded_body(path, &a);
     }
@@ -1025,6 +1106,7 @@ fn main() {
     let lines: usize = arg("--lines").and_then(|x| x.parse().ok()).unwrap_or(15);
     let (only, ladder) = (arg("--only"), a.iter().any(|x| x == "--ladder"));
     let mut t = Tally::default();
+    let mut migrations = Migrations::default();
     if let Some(f) = arg("--accepted") {
         t.accepted = read_accepted(f)
     }
@@ -1040,9 +1122,13 @@ fn main() {
         if !l.contains(&needle) {
             continue;
         }
-        let Ok(rec) = json::parse_without(&l, &["analyses"]) else {
-            t.unparsed += 1;
-            continue;
+        let rec = match migrations.read(&l) {
+            Read::Record(rec) => rec,
+            Read::Unparsed => {
+                t.unparsed += 1;
+                continue;
+            }
+            Read::NotExpressible => continue,
         };
         if rec.get("target").and_then(J::str) != Some(target) {
             continue;
@@ -1088,6 +1174,7 @@ fn main() {
     }
     let u = t.ran;
     println!("lines the json reader refused {}", t.unparsed);
+    migrations.print();
     println!(
         "units {} (excluded {}, oracle-raised {})",
         t.units, t.excluded, t.raised
@@ -1180,6 +1267,7 @@ fn text_from_recorded_body(path: &str, a: &[String]) {
     let (mut units, mut identical, mut shown, mut unparsed) = (0usize, 0usize, 0usize, 0usize);
     let mut feats: HashMap<String, usize> = HashMap::new();
     let mut typed = Typed::default();
+    let mut migrations = Migrations::default();
     let mut names: HashMap<String, Vec<String>> = HashMap::new();
     let start = Instant::now();
     for l in std::io::BufReader::new(std::fs::File::open(path).expect("open")).lines() {
@@ -1190,9 +1278,13 @@ fn text_from_recorded_body(path: &str, a: &[String]) {
         if !l.contains(&needle) {
             continue;
         }
-        let Ok(rec) = json::parse_without(&l, &["analyses"]) else {
-            unparsed += 1;
-            continue;
+        let rec = match migrations.read(&l) {
+            Read::Record(rec) => rec,
+            Read::Unparsed => {
+                unparsed += 1;
+                continue;
+            }
+            Read::NotExpressible => continue,
         };
         if rec.get("target").and_then(J::str) != Some(target)
             || !matches!(rec.get("error"), None | Some(J::Null))
@@ -1460,6 +1552,7 @@ fn text_from_recorded_body(path: &str, a: &[String]) {
         typed.print()
     }
     println!("text by feature (lines the json reader refused: {unparsed})");
+    migrations.print();
     top(&feats, lines);
     print_names(&names, arg("--names").as_ref().copied());
     println!("timing: total {:.2} s", start.elapsed().as_secs_f64());

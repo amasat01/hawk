@@ -457,6 +457,10 @@ fn launch(out: &mut Out, unit: &UnitMeta) -> String {
             ("reserved0", "0".into()),
             ("labels", labels),
             ("extents", extents),
+            (
+                "extent_slots",
+                out.numbers("int32_t", &format!("pa{at}_extent_slots"), &a.extent_slots),
+            ),
         ];
         axes.push(out.record("eg_unit_plane_axes", &format!("pa{at}"), &members));
     }

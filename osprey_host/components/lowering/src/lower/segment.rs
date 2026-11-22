@@ -146,7 +146,7 @@ fn branches(
         // SAFETY: the caller's context is not read elsewhere while the units are made.
         let made = branch_sinks(unsafe { &mut *ctx }, &member.sinks, &split, branch, !fixed);
         let segment = Segment {
-            offsets_binding: binding_name("lookup", &offsets)?,
+            offsets_binding: binding_name("lookup", 0, &offsets)?,
             j: branch as i64,
         };
         let name = ours.branches[branch].clone();
@@ -277,8 +277,8 @@ mod tests {
     fn dump(class: &str, moving: bool) -> String {
         let mut lines = vec![
             "raptor.ir.dump/1".to_string(),
-            "n|Leaf|i32|()|None|()|(('kind', 'vocab_read'), ('role', 'per_sample'), ('name', 'k'), ('quantity', None), ('wire_index', 0), ('sorted', False))".into(),
-            "n|Leaf|f64|()|None|()|(('kind', 'vocab_read'), ('role', 'per_sample'), ('name', 'x'), ('quantity', None), ('wire_index', 0), ('sorted', False))".into(),
+            "n|Leaf|i32|()|None|()|(('kind', 'vocab_read'), ('role', 'plane_in'), ('name', 'k'), ('quantity', None), ('wire_index', 0), ('sorted', False))".into(),
+            "n|Leaf|f64|()|None|()|(('kind', 'vocab_read'), ('role', 'plane_in'), ('name', 'x'), ('quantity', None), ('wire_index', 0), ('sorted', False))".into(),
             "n|Op|f64|()|None|(#1, #1)|(('kind', 'add'), ('literal', None))".into(),
             "n|Op|f64|()|None|(#1, #1)|(('kind', 'mul'), ('literal', None))".into(),
             format!("n|{class}|f64|()|None|(#0, #2, #3)|()"),

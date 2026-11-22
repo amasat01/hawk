@@ -13,11 +13,9 @@ pub(super) const MAP_PLANE: &str = "active_map";
 pub(super) const COUNT_PLANE: &str = "active_count";
 
 /// The roles a walk's leaves are re-declared with: a written output and a row sum's companion are not leaves.
-const LEAF_ROLES: [Role; 9] = [
-    Role::VecIn,
-    Role::MatIn,
+const LEAF_ROLES: [Role; 7] = [
+    Role::PlaneIn,
     Role::WideIn,
-    Role::PerSample,
     Role::Lookup,
     Role::Terminated,
     Role::Uniform,
@@ -155,9 +153,9 @@ fn with_map(ctx: *mut Ctx, request: &KernelRequest, mut unit: Pending) -> Result
         map_binding: if prefix {
             None
         } else {
-            Some(binding_name("lookup", MAP_PLANE)?)
+            Some(binding_name("lookup", 0, MAP_PLANE)?)
         },
-        count_binding: binding_name("lookup", COUNT_PLANE)?,
+        count_binding: binding_name("lookup", 0, COUNT_PLANE)?,
         group: request.group,
         map_bits: if prefix { MapBits::B32 } else { bits },
         lane_set: lane_set.is_some() && (prefix || bits == MapBits::B32),

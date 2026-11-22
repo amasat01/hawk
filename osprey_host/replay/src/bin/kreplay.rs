@@ -23,12 +23,13 @@ use osprey_lowering::facts;
 use osprey_lowering::facts::FusionRow;
 use osprey_lowering::lower::request::{
     Body, DeclaredSlot, IndexSet, KernelAnswer, KernelRequest, LaneAxis, Member, RequestKind,
-    Settings, SinkAxes, Steps, UnitAnswer, WideForm, ACCESSES, DTYPES, FOLD_FORMS, LINALG_FORMS,
-    ROLES, SCALARS, WIDE_FORMS,
+    Settings, Steps, UnitAnswer, WideForm, ACCESSES, DTYPES, FOLD_FORMS, LINALG_FORMS, ROLES,
+    SCALARS, WIDE_FORMS,
 };
 use osprey_lowering::lower::unit_meta as meta;
 use osprey_lowering::Backend;
 use raptor_support::corpus::{declare, make_nodes, manifests, Vals};
+use raptor_support::migrate;
 use rcore::json::{self, J};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{BufRead, BufReader};
@@ -248,6 +249,7 @@ fn declared_of(slot: &J) -> Result<DeclaredSlot, String> {
             .filter_map(|n| num(Some(n)))
             .collect(),
         tag: text(ttype.get("tag")).map(String::from),
+        axes: vec![],
     })
 }
 
@@ -1180,7 +1182,6 @@ fn request_for(
             facts.iter().any(|(target, _)| *target == Target::Device),
         ),
         lane_space: lane_space_of(kernel),
-        sink_axes: sink_axes_of(kernel),
         shared: shared_of(kernel),
         broadcast: broadcast_of(kernel),
         table_payloads: vec![],
@@ -1407,29 +1408,6 @@ fn declared_planes<'a>(kernel: &'a J, key: &str) -> impl Iterator<Item = (String
             let name = text(pair.arr().first())?.to_string();
             Some((name, pair.arr().get(1)?.get("v")?))
         })
-}
-
-/// The axes each declared sink plane (an accumulator) states in its `dims`.
-fn sink_axes_of(kernel: &J) -> Vec<SinkAxes> {
-    // a derivative's planes are all sinks; a declared plane is one when it is an accumulator
-    let own = declared_planes(kernel, "planes")
-        .filter(|(_, plane)| text(plane.get("form")) == Some("accum"));
-    own.chain(declared_planes(kernel, "derived_planes"))
-        .filter_map(|(name, plane)| {
-            let axes = tuple_axes(plane.get("dims"));
-            let payload = plane.get("ttype").map(rec).map_or(vec![], |t| {
-                items(t.get("shape"))
-                    .iter()
-                    .filter_map(|n| num(Some(n)))
-                    .collect()
-            });
-            (!axes.is_empty()).then_some(SinkAxes {
-                name,
-                payload,
-                axes,
-            })
-        })
-        .collect()
 }
 
 /// The planes the kernel record declares shared: those with a non-empty `shared` shape.
@@ -1676,6 +1654,10 @@ fn replay(kpath: &Path, tpath: &Path, show: usize, tallies: &mut [Tally; 2]) {
     let mut machines = HashMap::new();
     for line in BufReader::new(std::fs::File::open(kpath).unwrap()).lines() {
         let mut call = json::parse(&line.unwrap()).unwrap();
+        if let Err(reason) = migrate::migrate(&mut call) {
+            println!("not expressible in the current IR form: {reason}");
+            continue;
+        }
         name_as_built(&mut call);
         recorded_broadcast(&mut call, &expected);
         tallies[0].calls += 1;

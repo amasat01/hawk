@@ -184,7 +184,8 @@ fn of_slot(
             let (found, primal) = primal_slot(name, at, of)?;
             match what {
                 TimeStep => {
-                    let fits = matches!(primal.role, SlotRole::Uniform | SlotRole::PerSample);
+                    let fits = primal.role == SlotRole::Uniform
+                        || (primal.role == SlotRole::PlaneIn && primal.shape.is_empty());
                     if !(fits && primal.dtype == WireDtype::Real) {
                         return Err(refuse(name, format!("the time step {} is of a uniform or per-sample real slot of the primal", link.slot)));
                     }

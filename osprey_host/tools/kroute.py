@@ -149,7 +149,7 @@ def _ref(j):
 
 
 def _camel(name):
-    """`per_sample` as `PerSample`: the name the request spells a member by."""
+    """`per_sample` as `PlaneIn`: the name the request spells a member by."""
     return "".join(part.capitalize() for part in name.split("_"))
 
 
@@ -245,7 +245,7 @@ def _member(name, record):
 
 
 # The members below mirror the replay tool's converters (src/bin/kreplay.rs `steps_of`, `fusion_of`,
-# `lane_space_of`, `sink_axes_of`, `shared_of`, `broadcast_of`, `recorded_image_format`): the replay
+# `lane_space_of`, `shared_of`, `broadcast_of`, `recorded_image_format`): the replay
 # is in Rust and this plugin in Python, so each is written twice.
 _AUTO_STEPS_CAP = 64
 
@@ -359,27 +359,12 @@ def _fusion_cards(call, device):
     return {name: json.dumps(document)}
 
 
-def _payload(plane):
-    """The per-sample component of a recorded plane: its declared extents, empty for a scalar."""
-    ttype = _rec(plane.get("ttype") or {})
-    return [n for n in map(_num, _items(ttype.get("shape"))) if n is not None]
-
-
 def _part_members(kernel, call):
     """The per-kernel members of a request besides its body, from the kernel record."""
     out = _steps_members(kernel, call)
     lanes = kernel.get("lane_space")
     out["lane_space"] = _axes(lanes) if lanes is not None else [{}]
     planes = _declared_planes(kernel, "planes")
-    sinks = [(n, p) for n, p in planes if _text(p.get("form")) == "accum"]
-    sinks += _declared_planes(kernel, "derived_planes")
-    axes = [
-        {"name": n, "payload": _payload(p), "axes": _axes(p.get("dims"))}
-        for n, p in sinks
-        if _axes(p.get("dims"))
-    ]
-    if axes:
-        out["sink_axes"] = axes
     shared = [n for n, p in planes if p.get("shared") and _seq(p["shared"])]
     if shared:
         out["shared"] = shared

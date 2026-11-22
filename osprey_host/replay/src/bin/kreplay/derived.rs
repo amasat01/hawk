@@ -65,7 +65,7 @@ fn slot<'a>(unit: &'a meta::UnitMeta, name: &str) -> Option<(usize, &'a meta::Sl
 /// Whether the primal slot a gradient is taken of holds one value per sample: its gradient is then a per-sample plane, not a reduced one.
 fn per_sample(primal: &meta::UnitMeta, of: Option<&str>) -> bool {
     of.and_then(|n| slot(primal, n))
-        .is_some_and(|(_, s)| s.role == meta::SlotRole::PerSample)
+        .is_some_and(|(_, s)| s.role == meta::SlotRole::PlaneIn)
 }
 
 /// The text with its self-check block cut out and its runs of blank lines folded.
@@ -995,7 +995,7 @@ mod tests {
 
     /// The links a refine unit's slot names give, as (slot, what, form, of, reduced) words.
     fn links(role: DerivedRole, own: &[(String, SlotRole, WireDtype)]) -> Vec<String> {
-        use SlotRole::{Mutable, PerSample, Uniform};
+        use SlotRole::{Mutable, PlaneIn, Uniform};
         let real = WireDtype::Real;
         let named = |n: &str, role| (n.to_string(), role, real);
         let mut primal = unit(&[
@@ -1009,7 +1009,7 @@ mod tests {
         for s in primal.body.slots.iter_mut().take(3) {
             s.flags |= meta::SLOT_PRIOR;
         }
-        let _ = PerSample;
+        let _ = PlaneIn;
         let names = RefineNames {
             time: "t",
             step: "dt",
@@ -1104,7 +1104,7 @@ mod tests {
 
     #[test]
     fn the_refine_units_of_the_event_oscillator_get_the_loaded_records_links() {
-        use SlotRole::{Mutable, PerSample, Uniform};
+        use SlotRole::{Mutable, PlaneIn, Uniform};
         let (real, int) = (WireDtype::Real, WireDtype::Int64);
         let slots = |names: &[&str], role, dtype| -> Vec<(String, SlotRole, WireDtype)> {
             names.iter().map(|n| (n.to_string(), role, dtype)).collect()
@@ -1129,10 +1129,10 @@ mod tests {
                 Mutable,
                 real,
             ),
-            slots(&["applied_steps"], PerSample, int),
+            slots(&["applied_steps"], PlaneIn, int),
             slots(
                 &["dot_dt_tau", "dt", "dt_tau", "t_0", "v", "x"],
-                PerSample,
+                PlaneIn,
                 real,
             ),
             slots(&["a", "w"], Uniform, real),
@@ -1161,7 +1161,7 @@ mod tests {
         );
         let guard = own(vec![
             slots(&["bar_a", "bar_t", "bar_x"], Mutable, real),
-            slots(&["bar_event_g0", "t"], PerSample, real),
+            slots(&["bar_event_g0", "t"], PlaneIn, real),
             slots(&["a"], Uniform, real),
         ]);
         assert_eq!(
@@ -1189,7 +1189,7 @@ mod tests {
                 Mutable,
                 real,
             ),
-            slots(&["applied_steps"], PerSample, int),
+            slots(&["applied_steps"], PlaneIn, int),
             slots(
                 &[
                     "bar_event_g0",
@@ -1202,7 +1202,7 @@ mod tests {
                     "v",
                     "x",
                 ],
-                PerSample,
+                PlaneIn,
                 real,
             ),
             slots(&["a", "w"], Uniform, real),

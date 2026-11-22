@@ -5,6 +5,7 @@
 use raptor_ir::door::{rx_ctx_free, rx_ctx_new};
 use raptor_ir::record::Ctx;
 use raptor_support::corpus::{declare, make_nodes, manifests, text_out, Vals};
+use raptor_support::migrate::migrate;
 use raptor_support::safe::rx_dump;
 use rcore::json;
 use std::fs;
@@ -19,7 +20,11 @@ fn the_param_cell_read_equals_the_old_function_in_both_forms() {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/param_cells.json");
     let cases = json::parse(&fs::read_to_string(path).unwrap()).unwrap();
     assert_eq!(cases.arr().len(), 4);
-    for case in cases.arr() {
+    for recorded in cases.arr() {
+        // the oracle records the old node, whose read states no edge rule: migrated, it states the `unchecked` the core builds
+        let mut case = recorded.clone();
+        migrate(&mut case).unwrap();
+        let case = &case;
         let shape: Vec<i64> = case
             .get("shape")
             .unwrap()

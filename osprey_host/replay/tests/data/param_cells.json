@@ -173,7 +173,7 @@
       "s": "vocab_read"
      },
      "role": {
-      "s": "per_sample"
+      "s": "plane_in"
      },
      "name": {
       "s": "param_cell"
@@ -417,7 +417,7 @@
       "s": "vocab_read"
      },
      "role": {
-      "s": "per_sample"
+      "s": "plane_in"
      },
      "name": {
       "s": "param_cell"

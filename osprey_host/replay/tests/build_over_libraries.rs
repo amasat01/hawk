@@ -588,12 +588,13 @@ fn a_table_of_scalars_with_a_stated_pattern_and_payload_is_a_gathered_lookup_and
     assert_eq!(held.gather, Some(vec![true, false]));
     assert_ne!(held.flags & SLOT_GATHER, 0);
     assert!(held.shape.is_empty());
-    // a row with no payload, a table the caller declares shared, a table of three components and a table with no pattern: none gathered
+    // a row with no payload, a table the caller declares shared, a table of three components, a table with no pattern and a table with an axis of its own: none gathered
     for (held, shared) in [
         (slot_of("bcast_two", "x", false, true), false),
         (slot_of("bcast_two", "x", true, false), true),
         (slot_of("vec_two", "v", false, false), false),
         (slot_of("shared_two", "table", false, false), false),
+        (slot_of("own_axis_two", "t", false, false), false),
     ] {
         assert_eq!(held.gather, None, "{}", held.name);
         assert_eq!(held.flags & SLOT_GATHER, 0, "{}", held.name);

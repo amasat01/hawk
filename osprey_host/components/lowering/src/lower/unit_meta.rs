@@ -191,17 +191,16 @@ closed! {
     /// What a slot holds.
     pub enum SlotRole {
         /** A plane read and written in place. */ Mutable = 0 => "EG_ROLE_MUTABLE",
-        /** One value per sample. */ PerSample = 1 => "EG_ROLE_PER_SAMPLE",
-        /** A vector read in one piece. */ VecIn = 2 => "EG_ROLE_VEC_IN",
+        /** A plane read per sample, whatever the rank of its value: the slot's shape says it. */ PlaneIn = 1 => "EG_ROLE_PLANE_IN",
         /** A table indexed at run time. */ Lookup = 3 => "EG_ROLE_LOOKUP",
         /** Several values per sample out. */ WideOut = 4 => "EG_ROLE_WIDE_OUT",
         /** One value for all samples. */ Uniform = 5 => "EG_ROLE_UNIFORM",
-        /** A matrix read in one piece. */ MatIn = 6 => "EG_ROLE_MAT_IN",
         /** Accumulated over samples. */ AccumOut = 7 => "EG_ROLE_ACCUM_OUT",
         /** The mask that marks a sample finished. */ Terminated = 8 => "EG_ROLE_TERMINATED",
         /** Several values per sample in. */ WideIn = 9 => "EG_ROLE_WIDE_IN",
         /** The sample count. */ Nsamples = 10 => "EG_ROLE_NSAMPLES",
         /** A plain output plane. */ Out = 11 => "EG_ROLE_OUT",
+        /** The extent of one runtime axis of a plane, passed by value. */ Extent = 12 => "EG_ROLE_EXTENT",
     }
 }
 closed! {
@@ -514,6 +513,8 @@ record! {
         pub labels: Vec<Option<String>>,
         /// One extent per axis, -1 for a runtime one.
         pub extents: Vec<i64>,
+        /// One slot per axis: the slot that carries a runtime axis's extent, -1 for a static axis.
+        pub extent_slots: Vec<i64>,
     }
 }
 record! {
