@@ -39,6 +39,8 @@ pub struct DeclaredSlot {
     pub zeroed: bool,
     /// The plane this slot counts the appends into, when it is the one-element count of an appended plane.
     pub counts: Option<String>,
+    /// The plane this slot ranks, when it is the plane of winner lanes of a minimum or maximum taken in lane order.
+    pub winner_of: Option<String>,
 }
 
 /// One kernel body: the nodes it writes and how its walk is taken over them.
@@ -637,6 +639,7 @@ impl DeclaredSlot {
             axes: vec![],
             zeroed: false,
             counts: None,
+            winner_of: None,
         }
     }
 
@@ -662,6 +665,10 @@ impl DeclaredSlot {
             counts: keys
                 .opt("counts")
                 .map(|c| text_of(c, "counts"))
+                .transpose()?,
+            winner_of: keys
+                .opt("winner_of")
+                .map(|c| text_of(c, "winner_of"))
                 .transpose()?,
         };
         keys.done()?;
@@ -695,6 +702,9 @@ impl DeclaredSlot {
         }
         if let Some(counts) = &self.counts {
             o.push(("counts".into(), Json::Str(counts.clone())))
+        }
+        if let Some(ranked) = &self.winner_of {
+            o.push(("winner_of".into(), Json::Str(ranked.clone())))
         }
         Json::Obj(o)
     }
@@ -1530,6 +1540,7 @@ mod tests {
                     tag: None,
                     zeroed: false,
                     counts: None,
+                    winner_of: None,
                     axes: vec![
                         LaneAxis {
                             label: Some("i".into()),

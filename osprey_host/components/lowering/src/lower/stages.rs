@@ -94,6 +94,8 @@ pub(super) fn stage_facts(request: &KernelRequest, card: &BuildCard) -> StageFac
         },
         in_place: !request.kind.active_set && request.kind.lanes.is_none(),
         scatter: (card.scatter_max_chunks, card.scatter_threads),
+        // the planes that rank others are a kernel's declaration; `one_unit` states them for the kernel it splits
+        winners: vec![],
     }
 }
 
@@ -108,7 +110,13 @@ fn one_unit(
     if unit.warp.is_some() {
         return Ok(vec![unit]);
     }
-    let facts = stage_facts(request, card);
+    let mut facts = stage_facts(request, card);
+    facts.winners = unit
+        .member
+        .declared
+        .iter()
+        .filter_map(|slot| Some((slot.name.clone(), slot.winner_of.clone()?)))
+        .collect();
     // SAFETY: `ctx` is the live context the caller holds; nothing else reads it while the stages are made.
     let found = stages(unsafe { &mut *ctx }, &unit.member.sinks, &facts).map_err(wing)?;
     match found {
@@ -522,6 +530,7 @@ fn read_slots(ctx: *mut Ctx, reads: &[u32]) -> Result<Vec<DeclaredSlot>, Refusal
                 )),
                 zeroed: false,
                 counts: None,
+                winner_of: None,
             })
         })
         .collect()

@@ -48,20 +48,20 @@ Every file with its line count (this file excluded):
     353  osprey_host/components/lowering/src/lower/chain.rs
     776  osprey_host/components/lowering/src/lower/derived.rs
     199  osprey_host/components/lowering/src/lower/events.rs
-     76  osprey_host/components/lowering/src/lower/fused.rs
+     83  osprey_host/components/lowering/src/lower/fused.rs
     154  osprey_host/components/lowering/src/lower/image.rs
     335  osprey_host/components/lowering/src/lower/links.rs
     178  osprey_host/components/lowering/src/lower/merge.rs
     879  osprey_host/components/lowering/src/lower/meta_c.rs
-   1409  osprey_host/components/lowering/src/lower/meta_fill.rs
-   1841  osprey_host/components/lowering/src/lower/mod.rs
+   1424  osprey_host/components/lowering/src/lower/meta_fill.rs
+   1852  osprey_host/components/lowering/src/lower/mod.rs
      89  osprey_host/components/lowering/src/lower/peer.rs
     121  osprey_host/components/lowering/src/lower/placed.rs
-   2028  osprey_host/components/lowering/src/lower/request.rs
+   2039  osprey_host/components/lowering/src/lower/request.rs
     377  osprey_host/components/lowering/src/lower/segment.rs
     116  osprey_host/components/lowering/src/lower/stage_block.rs
-    677  osprey_host/components/lowering/src/lower/stages.rs
-    951  osprey_host/components/lowering/src/lower/unit_meta.rs
+    686  osprey_host/components/lowering/src/lower/stages.rs
+    963  osprey_host/components/lowering/src/lower/unit_meta.rs
     247  osprey_host/components/lowering/src/lower/warp.rs
     153  osprey_host/components/lowering/src/testing.rs
    1032  osprey_host/components/lowering/src/tool.rs
@@ -144,7 +144,7 @@ Every file with its line count (this file excluded):
      16  osprey_host/osprey_cuda/osprey.json
     192  osprey_host/osprey_cuda/src/lib.rs
      32  osprey_host/replay/Cargo.toml
-   3568  osprey_host/replay/src/bin/kreplay.rs
+   3569  osprey_host/replay/src/bin/kreplay.rs
    1235  osprey_host/replay/src/bin/kreplay/derived.rs
    1321  osprey_host/replay/src/bin/kreplay/meta.rs
    1559  osprey_host/replay/src/bin/treplay.rs
@@ -184,7 +184,7 @@ Every file with its line count (this file excluded):
      87  osprey_host/replay/tests/link_rules.rs
      55  osprey_host/replay/tests/live_environment.rs
     189  osprey_host/replay/tests/loop_rules.rs
-    646  osprey_host/replay/tests/meta_c.rs
+    647  osprey_host/replay/tests/meta_c.rs
     632  osprey_host/replay/tests/own_cards.rs
      54  osprey_host/replay/tests/param_cell.rs
      41  osprey_host/replay/tests/quantity.rs

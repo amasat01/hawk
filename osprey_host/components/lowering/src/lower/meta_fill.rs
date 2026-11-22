@@ -726,6 +726,20 @@ pub(super) fn unit(parts: &Parts) -> Result<(m::UnitMeta, Option<m::Contraction>
             })
         })
         .collect::<Result<Vec<_>, Refusal>>()?;
+    let winners = super::walk_of(parts.ctx, parts.walk)?
+        .winners
+        .iter()
+        .map(|(winner, of)| {
+            let at = |plane: &str| {
+                slot_at(&slots, plane)
+                    .ok_or_else(|| fault(format!("a winner plane over the plane {plane}")))
+            };
+            Ok(m::Ranked {
+                slot: at(winner)?,
+                of_slot: at(of)?,
+            })
+        })
+        .collect::<Result<Vec<_>, Refusal>>()?;
     // SAFETY: `ctx` is the live context the caller holds; it is only read here.
     let made =
         raptor_wings::cells::walk_companions(unsafe { &*parts.ctx }, parts.walk).map_err(wing)?;
@@ -756,6 +770,7 @@ pub(super) fn unit(parts: &Parts) -> Result<(m::UnitMeta, Option<m::Contraction>
             cells,
             companions,
             counts,
+            winners,
             dispatches,
             slots,
             ..m::Body::default()

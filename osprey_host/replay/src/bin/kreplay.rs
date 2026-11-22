@@ -261,6 +261,7 @@ fn declared_of(slot: &J) -> Result<DeclaredSlot, String> {
         axes: vec![],
         zeroed,
         counts: None,
+        winner_of: None,
     })
 }
 

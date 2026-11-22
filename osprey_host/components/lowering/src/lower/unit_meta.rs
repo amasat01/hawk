@@ -380,6 +380,16 @@ record! {
     }
 }
 record! {
+    /// A plane of winner lanes: for each element of another plane, the lane whose value a minimum or maximum taken in lane order
+    /// kept, as an unsigned lane number, all ones for none. Stated in the answer's JSON only, like `Counted`.
+    pub struct Ranked {
+        /// The slot of the plane of lanes.
+        pub slot: usize,
+        /// The slot of the plane it ranks.
+        pub of_slot: usize,
+    }
+}
+record! {
     /// A reduction over samples kept in rows and folded into the cell between launches.
     pub struct Cell {
         /// The fold.
@@ -508,6 +518,8 @@ record! {
         pub companions: Vec<Companion>,
         /// The counts of appended planes.
         pub counts: Vec<Counted>,
+        /// The planes of winner lanes.
+        pub winners: Vec<Ranked>,
         /// The cells.
         pub cells: Vec<Cell>,
         /// The keyed planes.

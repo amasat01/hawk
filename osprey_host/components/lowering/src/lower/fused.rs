@@ -11,7 +11,10 @@ use raptor_ir::record::Ctx;
 /// The slots the lane's own walk binds, as slots the fused walk declares.
 fn bound_slots(ctx: *mut Ctx, lane: &Member) -> Result<Vec<DeclaredSlot>, Refusal> {
     let (walk, _) = canonical(ctx, lane)?;
-    let counts = walk_of(ctx, walk)?.counts.clone();
+    let (counts, winners) = {
+        let read = walk_of(ctx, walk)?;
+        (read.counts.clone(), read.winners.clone())
+    };
     Ok(typed_walk(ctx, walk)?
         .slots
         .into_iter()
@@ -27,6 +30,10 @@ fn bound_slots(ctx: *mut Ctx, lane: &Member) -> Result<Vec<DeclaredSlot>, Refusa
             counts: counts
                 .iter()
                 .find(|(count, _)| *count == slot.name)
+                .map(|(_, of)| of.clone()),
+            winner_of: winners
+                .iter()
+                .find(|(winner, _)| *winner == slot.name)
                 .map(|(_, of)| of.clone()),
             axes: slot
                 .axes
