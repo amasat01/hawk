@@ -180,6 +180,16 @@ def add_vec(key: Index, v: Vector[3], acc: Mutable[Vector[3], "bin":9]):
 
 
 @kernel
+def add_grid(row: Index, col: Index, x: Scalar, acc: Mutable[Scalar, "row":4, "col":5]):  # noqa: F821 axis labels
+    hawk.scatter(acc, contract="ordered")[row, col] += x
+
+
+@kernel
+def add_vec_grid(row: Index, col: Index, v: Vector[3], acc: Mutable[Vector[3], "row":4, "col":5]):  # noqa: F821 axis labels
+    hawk.scatter(acc, contract="ordered")[row, col] += v
+
+
+@kernel
 def add_loop(key: Index, x: Scalar, acc: Mutable[Scalar]):
     for a in range(3):
         hawk.scatter(acc, contract="ordered")[key + a] += x * a
@@ -195,6 +205,7 @@ def add_two(key: Index, key2: Index, x: Scalar, acc: Mutable[Scalar]):
 def more(tmp_path_factory, cache_dir):
     root = tmp_path_factory.mktemp("scatter_ordered_more")
     kernels = {"add_term": add_term, "add_masked": add_masked, "add_vec": add_vec,
+               "add_grid": add_grid, "add_vec_grid": add_vec_grid,
                "add_loop": add_loop, "add_two": add_two, "_add_set": hawk.kernel(_add_set, kind=SET)}
     return {n: build_bundle([k], root / n, targets=("cuda", "host"), cache_dir=cache_dir,
                             host_profile="native") for n, k in kernels.items()}
@@ -278,6 +289,30 @@ def test_a_vector_payload_adds_each_component_into_its_own_plane_of_cells(more, 
     for e in range(3):
         np.add.at(want[e], key, v[e])
     np.testing.assert_allclose(got.reshape(3, 9), want, rtol=1e-12, atol=1e-12 * np.abs(want).max())
+
+
+@pytest.mark.parametrize("target", TARGETS)
+def test_a_scatter_at_several_key_axes_adds_into_the_cell_the_indices_name(more, target):
+    """Reference: ``np.add.at`` with the row and column index arrays, per component for a vector."""
+    n = 4000
+    rng = np.random.default_rng(23)
+    row = rng.integers(0, 4, n).astype(np.int32)
+    col = rng.integers(0, 5, n).astype(np.int32)
+    x = rng.normal(size=n)
+    planes = {"row": row, "col": col, "x": x, "acc": np.zeros((4, 5))}
+    got = _bits([_exec(more["add_grid"], "add_grid", target, planes) for _ in range(3)])
+    want = np.zeros((4, 5))
+    np.add.at(want, (row, col), x)
+    np.testing.assert_allclose(got.reshape(4, 5), want, rtol=1e-12, atol=1e-12 * np.abs(want).max())
+
+    v = rng.normal(size=(3, n))
+    planes = {"row": row, "col": col, "v": v, "acc": np.zeros((3, 4, 5))}
+    got = _bits([_exec(more["add_vec_grid"], "add_vec_grid", target, planes) for _ in range(3)])
+    want = np.zeros((3, 4, 5))
+    for e in range(3):
+        np.add.at(want[e], (row, col), v[e])
+    np.testing.assert_allclose(got.reshape(3, 4, 5), want, rtol=1e-12,
+                               atol=1e-12 * np.abs(want).max())
 
 
 @pytest.mark.parametrize("target", TARGETS)
