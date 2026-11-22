@@ -66,6 +66,7 @@ Declaring the shape of your lanes brings a few more words; the [glossary](glossa
   hawk binds your array as it is, without copying it, and compiles the kernel to read it along only the axes
   it varies along. The gradient of such an input comes back in its own shape. Planes a kernel writes, and the
   `terminated` mask, keep the exact lane shape.
+- **`table.sample(x, y, ...)`** reads a `Table` at real coordinates in index units, one per axis (one to three): `filter="linear"` (the default) weighs the corners of the cell the point is in, `"nearest"` reads the element at `floor(x + 0.5)`; `edge="clamp"` (the default), `"wrap"` or `"zero"` is what a read past an axis gives. A whole coordinate is exactly the stored element.
 - A **bare label** (`Grid["channel", ...]`, `Mutable["node"]`, `Table["elem", "c":3]`) is an extent given when
   you run, and only the first axis may be bare. Give it as `node=N` or by passing a plane of that length; one
   build serves every size. A label that a `Grid` axis shares takes the lane extent.

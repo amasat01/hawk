@@ -814,6 +814,12 @@ def expand_stores(sinks: Sequence[Any]) -> tuple:
     return tuple(sinks[0].ctx.blocks_expand_stores(sinks))
 
 
+@_as_hawk_error
+def expand_sample(node: Any) -> Any:
+    """Return the node that takes the place of a ``Sample``: the reads and weights of its interpolation."""
+    return node.ctx.sample_expand(node)
+
+
 def dispatch_strategies() -> tuple:
     """Return the strategies a dispatch can be pinned to: ``switch``, then one per wing kind."""
     return new_context().dispatch_strategies()

@@ -62,6 +62,7 @@ Releases after 0.6.5 are on [GitHub](https://github.com/amasat01/hawk/releases):
 - `Kernel.body_digest`: a read-only property, the digest of the traced body alone (no name, kind or guard).
 - `hawk.runtime.check_scatter_status` and `hawk.diff.CELL_PLANE`.
 - `hawk.diff.step_function(kernel)`: one step of a time-stepping kernel as a pure map, named `<kernel>_step`, which `jvp` and `vjp` differentiate.
+- `table.sample(x)`, `table.sample(x, y)`, `table.sample(x, y, z)`: a read of a `Table` at real coordinates in index units, one per axis (`filter="linear"` or `"nearest"`, `edge="clamp"`, `"wrap"` or `"zero"`). A whole coordinate is exactly the stored element; the derivative of a linear sample is the weighted accumulate into the table and the slope between neighbours in each coordinate, and a nearest sample has no derivative in its coordinates.
 
 ### Removed
 

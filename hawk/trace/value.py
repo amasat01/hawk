@@ -798,6 +798,24 @@ class TableRef:
                              edge="unchecked" if in_range else "clamp")
         return Value(widened(read) if self.widen else read)
 
+    def sample(self, *coordinates: Any, filter: str = "linear", edge: str = "clamp") -> Value:
+        """The table read at real coordinates in index units, one per axis (one to three): a whole number is exactly
+        the stored element. ``filter`` is ``"linear"`` (the weighted corners of the cell the point is in) or
+        ``"nearest"`` (the element at ``floor(x + 0.5)``, a half rounding up); ``edge`` is what a read past an axis
+        gives: ``"clamp"`` (the edge element), ``"wrap"`` or ``"zero"``. The derivative with respect to the table is
+        the weighted accumulate, with respect to a coordinate the slope between neighbours (``"nearest"`` has none).
+
+        Example: ``h = grid.sample(x, y)`` interpolates the 2-D table ``grid`` linearly at ``(x, y)``."""
+        element = _ir.type_of(self.leaf)
+        reals = []
+        for x in coordinates:
+            node = node_of(x)
+            reals.append(_ir.make("cast", (node,), element.dtype)
+                         if _ir.type_of(node).dtype in ("i32", "i64") else node)
+        read = _ir.make_node("Sample", element, [self.leaf, *reals], filter=filter, edge=edge, hardware=False)
+        written = _ir.expand_sample(read)
+        return Value(widened(written) if self.widen else written)
+
     def __getitem__(self, i: Any) -> Value:
         """``t[i]``: the read of a plane with one axis; ``t[e, a]``: one
         index per declared axis, in declared order, the same as ``t.at(e=…, a=…)``."""
