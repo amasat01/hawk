@@ -89,7 +89,7 @@ def _step(node, get, live) -> tuple:
             return True, True
         return any(get(b) for b in ops[1:]), False
     if _ir.is_a(node, "at"):
-        return get(ops[0]), get(ops[1])
+        return get(ops[0]), any([get(o) for o in ops[1:]])
     tainted = [get(o) for o in ops]
     if not any(tainted):
         return False, False
@@ -249,11 +249,11 @@ def _zero(context):
     return _ir.const(context, 0.0, _F64)
 
 
-def _keyed_index(sink):
-    """Return the key a keyed scatter commits at, or ``None``."""
-    if _ir.is_a(sink, "accum_write", "wide_write") and len(sink.operands) > 1:
-        return sink.operands[1]
-    return None
+def _keyed_indices(sink):
+    """Return the indices a keyed scatter commits at, one per axis; empty for a commit at the lane's own cell."""
+    if _ir.is_a(sink, "accum_write", "wide_write"):
+        return tuple(sink.operands[1:])
+    return ()
 
 
 @dataclass(frozen=True)
@@ -611,10 +611,12 @@ class AltPath:
             bar = seed(sink)
             value = sink.operands[0]
             alt_value = self.amap.get(value, value)
-            index = _keyed_index(sink)
-            alt_index = None if index is None else self.amap.get(index, index)
-            if index is not None and alt_index != index:
-                there = _ir.make_node("At", _ir.type_of(bar), [bar.operands[0], alt_index])
+            indices = _keyed_indices(sink)
+            alt_indices = tuple(self.amap.get(i, i) for i in indices)
+            if indices and alt_indices != indices:
+                there = _ir.make_node(
+                    "At", _ir.type_of(bar), [bar.operands[0], *alt_indices], edge=sink.field_text("edge")
+                )
                 term = _ir.make(
                     "sub",
                     (_ir.make("mul", (there, alt_value)), _ir.make("mul", (bar, value))),
@@ -684,14 +686,14 @@ class AltPath:
             value = tangent(sink_value)
             plain = value if value is not None else _ir.zero_like(self.ctx, _ir.type_of(sink))
             alt_value = self.amap.get(sink_value, sink_value)
-            index = _keyed_index(sink)
-            alt_index = None if index is None else self.amap.get(index, index)
-            moved = index is not None and alt_index != index
+            indices = _keyed_indices(sink)
+            alt_indices = tuple(self.amap.get(i, i) for i in indices)
+            moved = bool(indices) and alt_indices != indices
             if gain is None or (alt_value == sink_value and not moved):
                 out.append(derived(sink, plain))
             elif moved:
                 out.append(derived(sink, plain))
-                out.append(derived(sink, events(_ir.make("mul", (gain, alt_value))), alt_index))
+                out.append(derived(sink, events(_ir.make("mul", (gain, alt_value))), alt_indices))
                 out.append(
                     derived(sink, events(_ir.make("neg", (_ir.make("mul", (gain, sink_value)),))))
                 )

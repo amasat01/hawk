@@ -104,7 +104,7 @@ def _v(t: _ir.TensorType, name: str = "a"):
     boolean leaf HAWK's vocabulary has; everything else binds by rank."""
     if t.dtype == "bool":
         return hawk.Value(_ir.leaf(CTX, "terminated", "terminated", name, t))
-    role = {0: "per_sample", 1: "vec_in", 2: "mat_in"}[len(t.shape)]
+    role = {0: "plane_in", 1: "plane_in", 2: "plane_in"}[len(t.shape)]
     return hawk.Value(_ir.leaf(CTX, "vocab_read", role, name, t))
 
 
@@ -331,7 +331,7 @@ def _planes(rng) -> dict:
 
 
 def _env(planes: dict, i: int) -> dict:
-    """Sample ``i`` in the interpreter's shapes (a ``mat_in`` binds FLAT, (R*C, n))."""
+    """Sample ``i`` in the interpreter's shapes (a ``plane_in`` binds FLAT, (R*C, n))."""
     return {"A": planes["A"][:, i].reshape(3, 3), "x": planes["x"][:, i],
             "k": planes["k"], "bar_y": planes["bar_y"][:, i],
             "bar_W": planes["bar_W"][:, i].reshape(3, 3)}

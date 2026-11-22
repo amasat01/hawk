@@ -7,8 +7,7 @@ Every slot-naming block below is a projection of
 :attr:`hawk.ir.walk.Walk.arg_spec` and :attr:`~hawk.ir.walk.Walk.slot_types`
 — nothing re-enumerates the walk's leaves. The set is: the shared base
 (``format``, ``schema_version``, ``pattern``, ``aether_abi``,
-``scalar_type``, ``kernel``, ``params``/``params_schema``, ``per_sample``,
-``vector_inputs``, ``terminated_readonly``, ``host_entry``, ``derivative``)
+``scalar_type``, ``kernel``, ``params``/``params_schema``, ``terminated_readonly``, ``host_entry``, ``derivative``)
 plus the pattern-specific blocks every consumer actually iterates —
 ``arg_spec`` (the load-bearing key both C++ registries and
 ``eagle.plan._pack_args`` walk), ``buffers``, and the ``mutables`` dtype
@@ -23,8 +22,7 @@ key order is contractual.
 check a bound plane's shape against what the body was compiled for, nor to
 tell an integer-valued handle from a Real one.
 
-``vec_widths`` is the schema's per-name vector width (``arg_widths`` restricted to
-the vector inputs), so a host can allocate ``(W, N)`` buffers.
+``slot_shapes`` states the value shape of every slot, so a host can allocate the buffer of a plane from it.
 
 ``arg_widths`` stays INT-ONLY and NEVER ``None`` — a load-bearing
 constraint. ``eagle.plan._declared_widths`` reads a plugin's
@@ -78,8 +76,10 @@ from ..targets import ENTRY_KINDS
 PARAMS_SCHEMA = 2
 
 #: A writable slot's declared dtype, by rank: the context
-#: :func:`eagle.roles.classify_arg` resolves a ``mutable`` role's ABI shape by.
+#: :func:`eagle.roles.classify_arg` resolves a ``mutable`` role's ABI shape by. A value of rank three or more is a
+#: ``tensor``, and states its shape.
 MUTABLE_DTYPES = {0: "scalar", 1: "vector", 2: "matrix"}
+TENSOR_DTYPE = "tensor"
 
 
 def _names(walk, role) -> list:
@@ -91,7 +91,7 @@ def _mutable_dtype(ttype) -> str:
         return "int"
     if ttype.dtype in _ir.INT_PLANE_DTYPES:
         return ttype.dtype
-    return MUTABLE_DTYPES[len(ttype.shape)]
+    return MUTABLE_DTYPES.get(len(ttype.shape), TENSOR_DTYPE)
 
 
 def _mutables(walk) -> list:
@@ -102,7 +102,7 @@ def _mutables(walk) -> list:
         t = walk.slot_types[(role, name)]
         entry = {"name": name, "dtype": _mutable_dtype(t),
                  "width": _width(t), "default": None}
-        if len(t.shape) == 2:
+        if len(t.shape) >= 2:
             entry["shape"] = list(t.shape)
         if name in walk.prior_reads:
             # The body reads this plane's launch-start value through
@@ -159,22 +159,21 @@ def _index_planes(walk) -> list:
     return [name for role, name in walk.arg_spec if walk.slot_types[(role, name)].tag == "index"]
 
 
+def _groups(planes, form: str) -> dict:
+    """``{parameter: {field: plane name}}`` of every declared plane that expands one ``Record`` (``form="record"``) or
+    one ``Rows`` (``form="rows"``) parameter, the planes the body never reads included."""
+    out: dict = {}
+    for name, plane in planes.items():
+        group = getattr(plane, "group", ())
+        if group and group[2] == form:
+            out.setdefault(group[0], {})[group[1]] = name
+    return out
+
+
 def _plane_meta(walk, planes) -> dict:
     """``{name: {key: value}}`` of the opaque notes (``Annotated[T, Meta(...)]``) on bound planes."""
     return {name: dict(planes[name].meta) for _role, name in walk.arg_spec
             if getattr(planes.get(name), "meta", ())}
-
-
-def _plane_axes(walk, planes) -> dict:
-    """``{name: {payload, axes}}`` for each bound sink declared with named axes:
-    it is bound ``(*payload, *axes)``."""
-    out = {}
-    for role, name in walk.arg_spec:
-        dims = getattr(planes.get(name), "dims", ())
-        if dims and role in _SINK_ROLES:
-            out[name] = {"payload": list(planes[name].ttype.shape),
-                         "axes": [{"label": label, "extent": size} for label, size, _s in dims]}
-    return out
 
 
 def _width(ttype) -> int:
@@ -195,8 +194,7 @@ def _params(walk) -> list:
 #: fact of the compiled body — the flat product of the slot's shape, 1 for
 #: a rank-0 plane. The trailing (sample-count) axis is never declared
 #: here, since it's a runtime quantity by construction.
-_SAMPLE_SHAPED_ROLES = ("per_sample", "vec_in", "mat_in", "terminated", "mutable",
-                        "out")
+_SAMPLE_SHAPED_ROLES = ("plane_in", "terminated", "mutable", "out")
 
 #: Roles bound to a plane whose own LENGTH is a runtime quantity nothing
 #: in the walk knows. Omitted from ``arg_widths`` (never a guessed number,
@@ -389,7 +387,7 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str, steps: int | st
     ``{OSPREY name: the figures its build gave}`` and ``stated`` the machine record each OSPREY stated, both written as given
     for a reader of the artifact; nothing in hawk acts on them."""
     planes = planes or {}
-    sorted_in, axes = _sorted_inputs(walk, planes), _plane_axes(walk, planes)
+    sorted_in = _sorted_inputs(walk, planes)
     index_in = _index_planes(walk)
     bound = {n for _role, n in walk.arg_spec} | set(walk.companions or ()) | set(walk.cells or ())
     unused = [n for n, decl in planes.items()
@@ -412,14 +410,8 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str, steps: int | st
         "kernel": name,
         "params": _params(walk),
         "params_schema": PARAMS_SCHEMA,
-        "per_sample": _names(walk, "per_sample"),
-        "vector_inputs": _names(walk, "vec_in"),
-        "matrix_inputs": _names(walk, "mat_in"),
-        "mat_shapes": {n: list(walk.slot_types[("mat_in", n)].shape)
-                       for n in _names(walk, "mat_in")},
         "mutables": _mutables(walk),
-        "arg_widths": (widths := _arg_widths(walk)),
-        "vec_widths": {n: widths[n] for n in _names(walk, "vec_in")},
+        "arg_widths": _arg_widths(walk),
         "arg_shapes": _arg_shapes(walk),
         "arg_dtypes": _arg_dtypes(walk, scalar_type),
         "slot_shapes": _slot_shapes(walk),
@@ -437,7 +429,7 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str, steps: int | st
         **({"param_planes": list(walk.param_planes)} if walk.param_planes else {}),
         # the reserved planes of the kernel's own, by name: the runtime binds them and the caller never passes them
         **({"steps_plane": _ir.FUSED_STEPS_PLANE} if ("lookup", _ir.FUSED_STEPS_PLANE) in walk.arg_spec else {}),
-        **({"cell_plane": _ir.CELL_PLANE} if ("per_sample", _ir.CELL_PLANE) in walk.arg_spec else {}),
+        **({"cell_plane": _ir.CELL_PLANE} if ("plane_in", _ir.CELL_PLANE) in walk.arg_spec else {}),
         # every reduction over samples, with its op: the rows it writes (one
         # per 32 samples) are the runtime's scratch, finished into the cell
         **({"cells": walk.cells} if walk.cells else {}),
@@ -470,8 +462,11 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str, steps: int | st
         "launch": _launch(lane_space, group, box, block, index_set, measured, wide),
         **({"sorted_inputs": sorted_in} if sorted_in else {}),
         **({"index_planes": index_in} if index_in else {}),
-        **({"plane_axes": axes} if axes else {}),
         **({"plane_meta": notes} if (notes := _plane_meta(walk, planes)) else {}),
+        # a group of planes the author declared as one ``Record`` parameter: a name for them, never storage
+        **({"records": grouped} if (grouped := _groups(planes, "record")) else {}),
+        # the offsets plane and the values plane of a ``Rows`` parameter
+        **({"rows": related} if (related := _groups(planes, "rows")) else {}),
         # one value shared by every lane (``Param[Vector[W]]``, ``Param[Matrix[R,C]]``,
         # ``Param[Table[...]]``): its natural shape, bound flat and row-major
         **({"param_shapes": shared} if shared else {}),
@@ -643,15 +638,26 @@ def _counted(finish: dict | None, key: str) -> int | None:
     return None if value is None or value < 0 else int(value)
 
 
-def _stated_plane_axes(body: dict, launch: dict) -> dict:
-    """``{name: {payload, axes}}`` of the planes the library states named axes for in the unit's launch record, in the form
-    :func:`_plane_axes` gives a declared sink: the unit that lists the stages states the kept axes of the wide output of a stage that
-    runs one block per key, so such an output is made in the shape the library states and never derived here."""
+def _stated_plane_axes(body: dict, launch: dict, planes: dict) -> dict:
+    """``{name: {payload, axes}}`` of the output planes the library states axes for in the unit's launch record: the plane's
+    value components come first as labelled axes (one per dimension of the declared payload), then the named ones. A plane
+    whose stated axes are all payload is not listed, since any compact array of its elements binds; a plane no declaration
+    covers (a derivative's) is listed whole, its axes taken as stated. The unit that lists the stages states the axes of the outputs a later stage writes."""
     slots = body["slots"]
-    return {slots[axes["slot"]]["name"]: {"payload": list(slots[axes["slot"]]["shape"]),
-                                          "axes": [{"label": label, "extent": None if extent < 0 else extent}
-                                                   for label, extent in zip(axes["labels"], axes["extents"])]}
-            for axes in launch["plane_axes"]}
+    out = {}
+    for stated in launch["plane_axes"]:
+        slot = slots[stated["slot"]]
+        if _snake(slot["role"]) not in _SINK_ROLES:
+            continue
+        axes = [{"label": label, "extent": None if extent < 0 else extent}
+                for label, extent in zip(stated["labels"], stated["extents"])]
+        declared = planes.get(slot["name"])
+        components = len(declared.ttype.shape) if declared is not None else 0
+        if len(axes) == components:
+            continue
+        out[slot["name"]] = {"payload": [axis["extent"] for axis in axes[:components]] + list(slot["shape"]),
+                             "axes": axes[components:]}
+    return out
 
 
 def sidecar_of_unit(kernel, unit: dict, *, lead_device: bool, fmt: str, scalar_type: str, exec_targets, family: list, steps=None,
@@ -662,9 +668,7 @@ def sidecar_of_unit(kernel, unit: dict, *, lead_device: bool, fmt: str, scalar_t
     kernel, and the branch units of a segmented one, are among them)."""
     meta = unit["meta"]
     body, launch = meta["body"], meta["launch"]
-    from ..trace.kernel import derived_axes
-
-    planes = getattr(kernel, "planes", None) or derived_axes(kernel.walk, getattr(kernel.sinks, "source", None), kernel.gradients, kernel.tangents)
+    planes = getattr(kernel, "planes", None) or {}
     # the unit that lists the stages this unit is one of: the kernel's entry-less source unit or its first stage; each branch
     # unit of a segmented split lists itself alone, so a family may hold several lists
     source = next((u for u in family if any(st["unit"]["name"] == meta["name"] for st in u["meta"]["stages"])), None)
@@ -674,6 +678,10 @@ def sidecar_of_unit(kernel, unit: dict, *, lead_device: bool, fmt: str, scalar_t
     if (at and stages[at]["team"] is not None) or segmented:
         planes = {}                 # a team stage after the first, and a unit of a segmented split, declare none of the kernel's planes
     walk = _unit_walk(unit, planes, kernel, family)
+    if source is not None and source is not unit and at == 0:
+        # the first stage's sidecar is the kernel's: it states the gradients of the outputs a later stage writes
+        listed = {slot["name"] for slot in source["meta"]["body"]["slots"]}
+        walk.gradient_of = {**walk.gradient_of, **{g: x for g, x in kernel.gradients.items() if g in listed}}
     names = [s["name"] for s in body["slots"]]
     labels, extents = launch["lane_labels"], launch["lane_extents"]
     lane_space = tuple(zip(labels, [None if e < 0 else e for e in extents])) or ((None, None),)
@@ -690,14 +698,14 @@ def sidecar_of_unit(kernel, unit: dict, *, lead_device: bool, fmt: str, scalar_t
         block=block, index_set=index_set, planes=planes, broadcast=getattr(kernel, "broadcast", None),
         step_ops=_counted(finish, "step_ops"), wide={p["name"]: {"layout": "warp_tiled"} for p in body["team_planes"] if p["wide"] == "WarpTiled"} or None, fp64_ops_ir=_counted(finish, "fp64_ops_ir"),
         entry_counts_finished=bool(finish and finish["flags"] & _FINISH_ENTRY_COUNTS), measured=measured, tool=tool, stated=stated)
-    stated = _stated_plane_axes(body, launch)
+    stated = _stated_plane_axes(body, launch, planes)
     if source is not None and source is not unit and at == 0:
         # the unit that lists the stages states the axes of the kernel's outputs, which a later stage writes: the kernel's
         # sidecar is its first stage's, so there the statement is read from the listing unit as well (a later stage
         # declares none of the kernel's planes)
-        stated = {**_stated_plane_axes(source["meta"]["body"], source["meta"]["launch"]), **stated}
-    if stated:      # the axes a declared sink states win; the library's statement covers the planes nobody declared
-        out["plane_axes"] = {**stated, **out.get("plane_axes", {})}
+        stated = {**_stated_plane_axes(source["meta"]["body"], source["meta"]["launch"], planes), **stated}
+    if stated:
+        out["plane_axes"] = stated
     # the records of the lowering answer the runtime reads, kept as given: the steps table and the dispatch costs; the
     # contractions the family's units are, each with the route word the library chose (``contractions`` below)
     for key, member in (("steps_reverse_table", "steps_reverse"), ("dispatch_costs", "dispatch_costs")):

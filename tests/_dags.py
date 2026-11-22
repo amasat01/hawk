@@ -28,7 +28,7 @@ def _accumulate(name, value, lane, ttype):
 def state_quantity() -> _ir.Quantity:
     """The second worked example: ``sc__state__pos`` / ``sc__state__vel``."""
     return _ir.Quantity(
-        slug="sc", name="state", wires=[Wire("pos", "vec_in", (3,)), Wire("vel", "vec_in", (3,))]
+        slug="sc", name="state", wires=[Wire("pos", "plane_in", (3,)), Wire("vel", "plane_in", (3,))]
     )
 
 
@@ -38,7 +38,7 @@ def orientation_quantity() -> _ir.Quantity:
     return _ir.Quantity(
         slug="earth",
         name="orientation",
-        wires=[Wire("q", "vec_in", (4,), tag="quaternion"), Wire("w", "per_sample", ())],
+        wires=[Wire("q", "plane_in", (4,), tag="quaternion"), Wire("w", "plane_in", ())],
     )
 
 

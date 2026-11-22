@@ -131,7 +131,7 @@ V3 = _ir.TensorType((3,), "f64")
 M22 = _ir.TensorType((2, 2), "f64")
 M33 = _ir.TensorType((3, 3), "f64")
 
-_ROLE = {0: "per_sample", 1: "vec_in", 2: "mat_in"}
+_ROLE = {0: "plane_in", 1: "plane_in", 2: "plane_in"}
 
 #: The four operand shapes a rank-collapsing op's rank>=1 operand can take.
 FORMS = ("leaf", "unary_of_leaf", "binary_uniform_leaf", "binary_leaf_leaf")
@@ -222,19 +222,19 @@ def _collapse(kind: str, operand, tag: str) -> tuple:
     if kind == "component":
         return mk("component", (operand,), 1), ()
     if kind == "dot":
-        other = _leaf("vocab_read", "vec_in", f"{tag}_c", V3)
+        other = _leaf("vocab_read", "plane_in", f"{tag}_c", V3)
         return mk("dot", (operand, other)), (other,)
     if kind in ("lstsq", "lstsq_gram_solve"):         # the matrix J is under test; the right-hand side is a vector leaf
-        other = _leaf("vocab_read", "vec_in", f"{tag}_c", V3)
+        other = _leaf("vocab_read", "plane_in", f"{tag}_c", V3)
         return mk(kind, (operand, other)), (other,)
     if kind == "lstsq_info":
         return mk("cast", (mk("lstsq_info", (operand,)),), "f64"), ()      # the harness compares floating outputs
     # mv: the operand under test is the MATRIX on the rank-2 arm and the VECTOR
     # on the rank-1 arm, so both of a rank-changing binary's sides are covered.
     if len(_ir.type_of(operand).shape) == 2:
-        other = _leaf("vocab_read", "vec_in", f"{tag}_c", V3)
+        other = _leaf("vocab_read", "plane_in", f"{tag}_c", V3)
         return mk("mv", (operand, other)), (other,)
-    other = _leaf("vocab_read", "mat_in", f"{tag}_c", M33)
+    other = _leaf("vocab_read", "plane_in", f"{tag}_c", M33)
     return mk("mv", (other, operand)), (other,)
 
 
@@ -273,11 +273,11 @@ def _vjp_group() -> tuple:
     through ``hawk.diff.vjp`` rather than by hand so the row observes the rule
     table's own output."""
     k = _leaf("uniform", "uniform", "vjpk_k", S)
-    m = _leaf("vocab_read", "mat_in", "vjpk_m", M22)
+    m = _leaf("vocab_read", "plane_in", "vjpk_m", M22)
     primal = (_assign("vjpk_W", mk("mul", (k, m)), M22),)
     return vjp(primal), (
         {"id": "vjp/scalar_times_rank2", "out": "bar_vjpk_k", "echo": None,
-         "leaves": (k, m, _leaf("vocab_read", "mat_in", "bar_vjpk_W", M22))},
+         "leaves": (k, m, _leaf("vocab_read", "plane_in", "bar_vjpk_W", M22))},
         {"id": "vjp/scalar_times_rank2/matrix_adjoint", "out": "bar_vjpk_m",
          "echo": None, "leaves": ()},
     )
@@ -449,8 +449,8 @@ def test_the_corpus_enumerates_both_fanouts_and_all_four_forms():
 def _wide_kernel(width: int, *, whole_use: bool = False) -> tuple:
     """A per-sample parameter row read element-wise under branches (a spline block's shape)."""
 
-    p = _leaf("vocab_read", "vec_in", "p", _ir.TensorType((width,), "f64"))
-    x = _leaf("vocab_read", "per_sample", "x", S)
+    p = _leaf("vocab_read", "plane_in", "p", _ir.TensorType((width,), "f64"))
+    x = _leaf("vocab_read", "plane_in", "x", S)
 
     def c(k):
         return mk("component", (p,), k)

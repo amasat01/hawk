@@ -26,10 +26,10 @@ from hawk.diff import vjp
 from hawk.math import norm
 
 STATE = Quantity(slug="sc", name="state",
-                 wires=[_ir.Wire("pos", "vec_in", (3,)), _ir.Wire("vel", "vec_in", (3,))])
+                 wires=[_ir.Wire("pos", "plane_in", (3,)), _ir.Wire("vel", "plane_in", (3,))])
 FIELD = Quantity(slug="earth", name="orientation",
-                 wires=[_ir.Wire("q", "vec_in", (4,), tag="quaternion"),
-                        _ir.Wire("w", "per_sample", ())])
+                 wires=[_ir.Wire("q", "plane_in", (4,), tag="quaternion"),
+                        _ir.Wire("w", "plane_in", ())])
 
 
 @kernel
@@ -67,7 +67,7 @@ def test_the_unread_wire_is_bound_and_unused():
     read = _names_read(reads_one_wire.sinks)
     assert "sc__state__pos" in read
     assert "sc__state__vel" not in read, "the body reads only one wire"
-    assert ("vec_in", "sc__state__vel") in _ir.slot_of(reads_one_wire.walk), (
+    assert ("plane_in", "sc__state__vel") in _ir.slot_of(reads_one_wire.walk), (
         "a reached-but-UNREAD wire is bound and unused -- dropping it "
         "breaks every VJP"
     )
@@ -93,6 +93,6 @@ def test_the_span_survives_the_derived_ir():
 
 def test_a_wire_name_outside_a_quantity_is_refused():
     ttype = STATE.expand()[0].ttype
-    stray = _ir.leaf(_ir.new_context(), "vocab_read", "vec_in", "sc__state__pos", ttype)
+    stray = _ir.leaf(_ir.new_context(), "vocab_read", "plane_in", "sc__state__pos", ttype)
     with pytest.raises(HawkError, match="no owning quantity"):
         _ir.canonical((_ir.make_node("Assign", ttype, [stray], name="out"),))

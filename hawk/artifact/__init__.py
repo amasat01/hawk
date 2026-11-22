@@ -70,6 +70,8 @@ def plan_view(sidecar: dict) -> dict:
         "scalar_type": sidecar.get("scalar_type", "float64"),
         "arg_widths": dict(sidecar.get("arg_widths", {})),
         "arg_shapes": dict(sidecar.get("arg_shapes", {})),
+        # the value shape of every slot, which tells a scalar, a vector and a matrix input apart
+        "slot_shapes": {name: tuple(shape) for name, shape in sidecar.get("slot_shapes", {}).items()},
         "arg_dtypes": dict(sidecar.get("arg_dtypes", {})),
         # The v2 ``params`` block verbatim: eagle.plan boxes an "int"
         # uniform as ``long long``.
@@ -79,9 +81,6 @@ def plan_view(sidecar: dict) -> dict:
                                   if m.get("dtype") == "vector"),
         "mat_mutables": frozenset(m["name"] for m in mutables
                                   if m.get("dtype") == "matrix"),
-        # a matrix output's (rows, cols): the head a one-sample result takes
-        "mat_shapes": {m["name"]: tuple(int(e) for e in m["shape"])
-                       for m in mutables if m.get("shape")},
         "kernel": sidecar["kernel"],
         # the launch shape and compaction group (``launch.lane_space``), as written
         "lane_space": sidecar.get("launch", {}).get("lane_space"),

@@ -12,7 +12,7 @@ def test_a_missing_threshold_is_refused_by_name_where_it_is_read():
 
 
 def test_the_static_and_rolled_forms_read_no_threshold():
-    v = _ir.leaf(_ir.new_context(), "vocab_read", "per_sample", "v", ((8,), "f64", None))
+    v = _ir.leaf(_ir.new_context(), "vocab_read", "plane_in", "v", ((8,), "f64", None))
     node = _ir.make("dot", (v, v))
     assert _ir.fold_rolled(node, None, "rolled") and not _ir.fold_rolled(node, None, "static")
     with pytest.raises(HawkError, match="fold threshold"):

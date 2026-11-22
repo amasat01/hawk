@@ -12,7 +12,7 @@ neither of those is a refusal.
 
 WHAT MAKES THE ANSWER DIAGNOSTIC. ``_deployable.two_wire`` reads ONE declared
 quantity, whose declaration mints two wires of DIFFERENT ABI shapes — a
-``vec_in`` quaternion (the 40-byte ``GRefMirror``) and a ``per_sample`` scalar
+``plane_in`` quaternion (the 40-byte ``GRefMirror``) and a ``plane_in`` scalar
 (the 32-byte ``ScalarHandle``) — and writes each wire's value to its own output
 plane under a different exact scaling. The two constants are exact in binary
 floating point, so the comparison is bit-for-bit: an aliased mirror cannot hide
@@ -35,11 +35,11 @@ slots are distinct, it does not prove the row reads VALUES.
 the PRECEDING slot's mirror — literally "the second wire reads the first wire's
 mirror", in bounds and without a crash, which is the shape::
 
-    AssertionError: the per_sample wire earth__orientation__w did not round-trip:
+    AssertionError: the plane_in wire earth__orientation__w did not round-trip:
     max |delta| = 6.0 (bit-identical required). A wire reading another wire's
     mirror is the defect; 4.65e-310-scale garbage is a pointer read as a
     double
-    AssertionError: the per_sample wire is not read
+    AssertionError: the plane_in wire is not read
 
 Four of the seven rows went red together, including ``eagle agrees about both
 wires``; the three that stayed green are the two structural ones (which read the
@@ -60,7 +60,7 @@ from conftest import sidecar_of
 
 N = 48
 QUANTITY = "earth__orientation"
-WIRES = (("vec_in", f"{QUANTITY}__q"), ("per_sample", f"{QUANTITY}__w"))
+WIRES = (("plane_in", f"{QUANTITY}__q"), ("plane_in", f"{QUANTITY}__w"))
 
 
 @pytest.fixture(scope="module")
@@ -86,13 +86,13 @@ def test_both_wires_values_round_trip_through_the_host_path(kernel):
     want_q, want_w = D.ref_two_wire(q, w)
 
     assert got_w.tobytes() == want_w.tobytes(), (
-        f"the per_sample wire {WIRES[1][1]} did not round-trip: max |delta| = "
+        f"the plane_in wire {WIRES[1][1]} did not round-trip: max |delta| = "
         f"{float(np.max(np.abs(got_w - want_w)))} (bit-identical required). A wire "
         "reading another wire's mirror is the F56 defect; 4.65e-310-scale garbage "
         "is a pointer read as a double"
     )
     assert got_q.tobytes() == want_q.tobytes(), (
-        f"the vec_in wire {WIRES[0][1]} did not round-trip: max |delta| = "
+        f"the plane_in wire {WIRES[0][1]} did not round-trip: max |delta| = "
         f"{float(np.max(np.abs(got_q - want_q)))}"
     )
 
@@ -120,9 +120,9 @@ def test_the_wires_are_not_interchangeable(kernel):
     base_q, base_w = O.run_kernel(kernel, N, **{WIRES[0][1]: q, WIRES[1][1]: w})
     moved_q, moved_w = O.run_kernel(kernel, N,
                                     **{WIRES[0][1]: q, WIRES[1][1]: w + 1.0})
-    assert moved_w.tobytes() != base_w.tobytes(), "the per_sample wire is not read"
+    assert moved_w.tobytes() != base_w.tobytes(), "the plane_in wire is not read"
     assert moved_q.tobytes() == base_q.tobytes(), (
-        "changing the per_sample wire moved the QUATERNION output: the two wires "
+        "changing the plane_in wire moved the QUATERNION output: the two wires "
         "are not independent, which is the F56 defect seen from the other side"
     )
 

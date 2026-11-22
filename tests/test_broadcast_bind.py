@@ -114,7 +114,7 @@ def test_scalar_binds_as_uniform(run_cache):
 def test_a_zero_dimensional_array_binds_as_a_one_cell_table_in_its_own_memory(run_cache):
     cell = np.array(0.5)
     run, planes = _routed(affine, x=cell, a=A)
-    assert run.planes["x"].form == "table" and run.planes["x"].dims == ()
+    assert run.planes["x"].form == "table" and run.planes["x"].axes == ()
     assert planes["x"].shape == (1,) and np.shares_memory(planes["x"], cell)
     np.testing.assert_array_equal(affine(cell, a=A), np.full(LANE, 2.0))
 
@@ -146,9 +146,9 @@ def test_size1_middle_axis_broadcasts(run_cache, rng):
     x = rng.random((A, 1, NC))
     np.testing.assert_array_equal(affine(x, a=A), 2.0 * _full(x) + 1.0)
     run, _planes = _routed(affine, x=x, a=A)
-    assert run.planes["x"].form == "table" and run.planes["x"].dims == ()   # the runtime axis is kept
+    assert run.planes["x"].form == "table" and run.planes["x"].axes == ()   # the runtime axis is kept
     named, _planes = _routed(affine, x=rng.random((1, NB, NC)), a=A)
-    assert [d[0] for d in named.planes["x"].dims] == ["b", "c"]
+    assert [d[0] for d in named.planes["x"].axes] == ["b", "c"]
 
 
 # 3. fewer axes align to the right
@@ -166,7 +166,7 @@ def test_column_view_keeps_runtime_axis(run_cache, rng):
     x = col[:, None, None]
     np.testing.assert_array_equal(affine(x, a=A), 2.0 * _full(x) + 1.0)
     run, _planes = _routed(affine, x=x, a=A)
-    assert run.planes["x"].form == "table" and run.planes["x"].dims == ()
+    assert run.planes["x"].form == "table" and run.planes["x"].axes == ()
 
 
 # 5. every axis of size 1 is a one-cell table, a number a uniform
@@ -445,9 +445,9 @@ def test_vjp_called_directly_with_a_broadcast_vector(run_cache, rng, shape):
 def test_a_compensated_scatter_stays_compensated_under_a_terminated_mask():
     ctx = _ir.new_context()
     mask = _ir.leaf(ctx, "terminated", "terminated", "terminated", ((), "bool", None))
-    value = _ir.leaf(ctx, "vocab_read", "per_sample", "v", ((), "f64", None))
-    index = _ir.leaf(ctx, "vocab_read", "per_sample", "k", ((), "i32", None))
-    scatter = _ir.accum_write("acc", value, index=index, contract="compensated")
+    value = _ir.leaf(ctx, "vocab_read", "plane_in", "v", ((), "f64", None))
+    index = _ir.leaf(ctx, "vocab_read", "plane_in", "k", ((), "i32", None))
+    scatter = _ir.accum_write("acc", value, indices=(index,), contract="compensated")
     masked = _masked_sink(scatter, mask)
     assert masked.field_text("contract") == "compensated"
     plain = _ir.make_node("Assign", ((), "f64", None), (value,), name="y")

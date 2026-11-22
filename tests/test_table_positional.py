@@ -60,8 +60,8 @@ def test_a_flat_table_refuses_a_bracket_of_two():
         "@hawk.kernel\n"
         "def k(lane: Grid['i'], t: Table[Scalar]) -> Scalar:\n"
         "    return t[lane.i, 1]\n")
-    with pytest.raises(HawkError, match=r"one index per declared axis \(none: this plane is "
-                                        r"flat, read t\[i\]\), got 2"):
+    with pytest.raises(HawkError, match=r"one index per declared axis \(none: this plane "
+                                        r"has one axis, read t\[i\]\), got 2"):
         _exec(src)
 
 

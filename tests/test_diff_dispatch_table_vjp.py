@@ -38,11 +38,11 @@ def _table_dispatch_primal():
     AND ``tab.at(idx)`` as an OPERAND of its own arithmetic (``x1 *
     tab[idx]``)."""
     context = _ir.new_context()
-    k = _leaf(context, "k", I32, "per_sample")
-    x0 = _leaf(context, "x0", S, "per_sample")
-    x1 = _leaf(context, "x1", S, "per_sample")
+    k = _leaf(context, "k", I32, "plane_in")
+    x0 = _leaf(context, "x0", S, "plane_in")
+    x1 = _leaf(context, "x1", S, "plane_in")
     tab = _ir.leaf(context, "table_read", "lookup", "tab", S)
-    idx = _leaf(context, "idx", I32, "per_sample")
+    idx = _leaf(context, "idx", I32, "plane_in")
     branch0 = _ir.make("mul", (x0, x0))
     branch1 = _ir.make("mul", (x1, _gather(tab, idx)))
     d = _ir.make_node("Dispatch", S, [k, branch0, branch1])
@@ -100,9 +100,9 @@ def test_table_read_vjp_outside_dispatch_is_exact_control():
     dispatch, is exact (ratio 1.0) -- isolates the defect to dispatch's own
     reverse rule, not ``At``'s ordinary (non-local-pass) scatter rule."""
     context = _ir.new_context()
-    x1 = _leaf(context, "x1", S, "per_sample")
+    x1 = _leaf(context, "x1", S, "plane_in")
     tab = _ir.leaf(context, "table_read", "lookup", "tab", S)
-    idx = _leaf(context, "idx", I32, "per_sample")
+    idx = _leaf(context, "idx", I32, "plane_in")
     y = _ir.make("mul", (x1, _gather(tab, idx)))
     sinks = (_assign("out", y),)
     derived = vjp(sinks)

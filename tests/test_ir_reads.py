@@ -21,8 +21,8 @@ SCALAR = ((), "f64", None)
 def graph():
     """``(context, a, b, s, t)`` with ``s = a + b`` and ``t = s * s``: one shared sub-expression."""
     context = _ir.new_context()
-    a = _ir.leaf(context, "vocab_read", "per_sample", "a", SCALAR)
-    b = _ir.leaf(context, "vocab_read", "per_sample", "b", SCALAR)
+    a = _ir.leaf(context, "vocab_read", "plane_in", "a", SCALAR)
+    b = _ir.leaf(context, "vocab_read", "plane_in", "b", SCALAR)
     s = _ir.make("add", [a, b])
     return context, a, b, s, _ir.make("mul", [s, s])
 
@@ -68,7 +68,7 @@ def test_adopt_copies_a_foreign_root_with_its_graph_and_keeps_a_root_that_is_alr
 ):
     _context, _a, _b, _s, t = graph
     home = _ir.new_context()
-    own = _ir.leaf(home, "vocab_read", "per_sample", "own", SCALAR)
+    own = _ir.leaf(home, "vocab_read", "plane_in", "own", SCALAR)
     copy, kept = _ir.adopt(home, [t, own])
     assert copy.ctx is home and kept == own
     assert len(_ir.post_order([copy])) == 4
@@ -118,7 +118,7 @@ def test_a_library_refusal_reaches_the_caller_as_a_hawk_error_with_the_library_t
 ):
     context, *_ = graph
     factor = _ir.leaf(
-        context, "vocab_read", "vec_in", "l", ((2, 2), "f64", "lu_factor")
+        context, "vocab_read", "plane_in", "l", ((2, 2), "f64", "lu_factor")
     )
     with pytest.raises(HawkError) as refused:
         _ir.as_matrix(factor)

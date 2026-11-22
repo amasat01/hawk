@@ -108,7 +108,7 @@ _TTYPE = {
     "gen3": M33,
     **{k: (S if k == "sr" else V3) for k in _RAY_POINTS},
 }
-_ROLE = {0: "per_sample", 1: "vec_in", 2: "mat_in"}
+_ROLE = {0: "plane_in", 1: "plane_in", 2: "plane_in"}
 
 
 def _leaf(name: str, code: str):

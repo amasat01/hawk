@@ -30,12 +30,12 @@ OWN re-owning of the previous code generator's ``vec_widths`` bind rule
 (its ``declare_block`` helper, and eagle v1's
 ``PureKernel._vec_widths``), asked of the v2 sidecar's new ``arg_widths``/
 ``arg_dtypes`` fields instead. It exists BESIDE ``eagle.plan.Plan.bind``'s own
-``_check_plane`` (already strengthened for FLOAT-typed vec_in/
-mat_in planes purely by making ``arg_widths`` complete — no eagle edit was
+``_check_plane`` (already strengthened for FLOAT-typed plane_in/
+plane_in planes purely by making ``arg_widths`` complete — no eagle edit was
 needed for that half) rather than instead of it, because ``_check_plane``
 explicitly exempts every integer- or bool-dtyped array from its dtype check
 ("an integer or bool array is passed at its own dtype"): a ``lookup``/
-``per_sample`` plane bound at the wrong INTEGER width has no eagle-side gate
+``plane_in`` plane bound at the wrong INTEGER width has no eagle-side gate
 at all, on either era's sidecar. Since the v2 sidecar now knows every such
 slot's wire dtype, a HAWK consumer can close that gap on its own side.
 """

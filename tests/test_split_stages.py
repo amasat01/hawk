@@ -138,6 +138,7 @@ def _eagle_stages(bundle, name, mode, **inputs):
     """The stages run one by one through eagle's plan, each cell finished by
     eagle's ``ordered`` tree and bound to the next stage as a one-cell plane."""
     eexec = pytest.importorskip("eagle.exec")
+    from eagle.sidecar import internal_roles
     from eagle import plan as eplan
 
     import _deploy as L
@@ -152,7 +153,7 @@ def _eagle_stages(bundle, name, mode, **inputs):
         if not sidecar["cells"]:
             sidecar.pop("cells")
         plugin = L.host_plugin(bundle.directory, record["kernel"], sidecar)
-        plugin._meta = sidecar
+        plugin._meta = internal_roles(sidecar, name=record["kernel"])
         names = {n for _, n in sidecar["arg_spec"]}
         args = {k: v for k, v in inputs.items() if k in names}
         args.update({c: cells[c] for c in record["cells_in"]})

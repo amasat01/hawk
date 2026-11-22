@@ -11,10 +11,9 @@ namespaced and all-or-nothing. Nothing here builds IR; it resolves an
 annotation to the ``(form, ttype)`` pair :mod:`hawk.trace.kernel` binds.
 
 NAMED AXES: ``Table["row":rows, "col":cols]`` and
-``Staged[Vector[W], count]`` declare a plane's axis LAYOUT as a fact, not a
-convention, with each stride minted as a ``RoleConst``
-naming its axis, rather than a hand-written index that re-derives the
-producer's layout uncheckably. Layout is ROW-MAJOR, last axis innermost.
+``Staged[Vector[W], count]`` declare a plane's ordered axis list as a fact of the plane: a read or a
+store takes one index per axis, and no stride is ever written down. Storage is row-major, last axis
+innermost.
 """
 
 from __future__ import annotations
@@ -101,16 +100,126 @@ class Matrix:
         return PayloadType((int(r), int(c)), "f64")
 
 
+class RecordView:
+    """What a kernel body sees for a ``Record`` parameter: ``rec.pos`` is the plane ``<parameter>_pos``."""
+
+    __slots__ = ("_name", "_fields")
+
+    def __init__(self, name: str, fields: dict) -> None:
+        """Group the traced planes of the record parameter ``name`` by field."""
+        object.__setattr__(self, "_name", name)
+        object.__setattr__(self, "_fields", fields)
+
+    def __getattr__(self, field: str) -> object:
+        """The traced plane of ``field``; an unknown field is refused naming the record's fields."""
+        try:
+            return self._fields[field]
+        except KeyError:
+            raise HawkError(
+                f"record {self._name!r} has no field {field!r}; its fields are {sorted(self._fields)}"
+            ) from None
+
+    def __setattr__(self, field: str, value: object) -> None:
+        """Refuse an assignment: a record is a name for planes, and a field is one plane."""
+        raise HawkError(f"record {self._name!r}: fields are read, not assigned (`{self._name}.{field} = ...`)")
+
+
+class Record:
+    """``Record(pos=Vector[3], mass=Scalar)`` — a NAME for a group of per-sample planes of one extent.
+
+    A kernel parameter annotated with a record expands to one plane per field, named
+    ``<parameter>_<field>``, and the body reads ``rec.pos``. The record has no storage and no node of
+    its own: the kernel equals the same kernel written with the separate planes. A call binds one array
+    per expanded name, or the parameter's own name given a mapping or an object with exactly the fields
+    the kernel reads.
+    The sidecar lists the grouping under ``records`` for a tool that shows it.
+    """
+
+    __slots__ = ("fields",)
+
+    def __init__(self, **fields: _ir.TensorType) -> None:
+        """Declare the fields, each a payload type (``Scalar``, ``Vector[W]``, ``Index``, ...)."""
+        if not fields:
+            raise HawkError("Record(...) needs at least one field, e.g. Record(pos=Vector[3], mass=Scalar)")
+        for field, ttype in fields.items():
+            if field.startswith("_") or keyword.iskeyword(field):
+                raise HawkError(f"Record(...): {field!r} cannot be a field name; it starts with an underscore or is reserved")
+            if not isinstance(ttype, _ir.TensorType):
+                raise HawkError(f"Record(...): field {field!r} takes a payload type (Scalar, Vector[W], ...), got {ttype!r}")
+        self.fields = tuple(fields.items())
+
+    def __call__(self, *args: object, **kwargs: object) -> object:
+        """Refuse a call: a declaration is only annotated (``typing.Annotated`` wants a callable before Python 3.11)."""
+        raise HawkError("a Record DECLARATION is annotated, not called")
+
+    def planes(self, parameter: str) -> dict:
+        """The planes the parameter ``parameter`` expands to: ``{<parameter>_<field>: Plane}``, in field order."""
+        return {
+            f"{parameter}_{field}": Plane("in", ttype, group=(parameter, field, "record"))
+            for field, ttype in self.fields
+        }
+
+
+class Rows:
+    """``Rows(Index, Scalar)`` — ragged rows: an offsets plane related to a values plane.
+
+    A kernel parameter annotated with it expands to two planes of runtime length, ``<parameter>_offsets`` and
+    ``<parameter>_values``. ``offsets`` holds one start per row plus the end (CSR style), so row ``i`` is
+    ``values[offsets[i]:offsets[i + 1]]``. In the body ``row = rows[i]`` gives ``row.length`` and the loop
+    ``for x in row.bounded(64):``, which visits at most 64 entries of the row: a longer row is TRUNCATED at the
+    bound, an empty row visits none. The relation is listed in the sidecar under ``rows``. A call binds the
+    two planes by their names, or the parameter's own name given a mapping or an object with ``offsets`` and
+    ``values``.
+    """
+
+    __slots__ = ("offsets", "values")
+
+    def __init__(self, offsets: _ir.TensorType, values: _ir.TensorType) -> None:
+        """Declare the offsets (``Index``, 32-bit starts) and the payload type of the values."""
+        if offsets != Index:
+            raise HawkError(f"Rows(offsets, values): the offsets are 32-bit starts, Index, got {offsets!r}")
+        if not isinstance(values, _ir.TensorType) or values.shape:
+            raise HawkError(f"Rows(offsets, values): the values are a rank-0 payload (Scalar, Index, ...), got {values!r}")
+        self.offsets, self.values = offsets, values
+
+    def __call__(self, *args: object, **kwargs: object) -> object:
+        """Refuse a call: a declaration is only annotated (``typing.Annotated`` wants a callable before Python 3.11)."""
+        raise HawkError("a Rows DECLARATION is annotated, not called")
+
+    def planes(self, parameter: str) -> dict:
+        """The planes the parameter ``parameter`` expands to: ``{<parameter>_offsets: Plane, <parameter>_values: Plane}``."""
+        return {
+            f"{parameter}_{field}": Plane("table", ttype, group=(parameter, field, "rows"))
+            for field, ttype in (("offsets", self.offsets), ("values", self.values))
+        }
+
+
+class Tensor:
+    """``Tensor[A, B, C, ...]`` — a payload of any rank with static extents, e.g. ``Tensor[3, 3, 3]``.
+
+    Rank 1 and 2 are ``Vector[W]`` and ``Matrix[R, C]``. A value of rank 3 or more is built and
+    computed in the body (elementwise operations, ``t[a, b, c]``, ``t[a, b, c] = e``) or shared by all
+    lanes as ``Param[Tensor[...]]``; as a per-lane plane it is declared as a ``Table`` with named axes.
+    """
+
+    def __class_getitem__(cls, extents: object) -> PayloadType:
+        items = _items(extents)
+        if not items or not all(isinstance(e, int) and not isinstance(e, bool) and e > 0 for e in items):
+            raise HawkError(f"Tensor[...] takes one positive static extent per axis, got {extents!r}")
+        return PayloadType(tuple(items), "f64")
+
+
 @dataclass(frozen=True)
 class Plane:
     """A resolved declaration: its ``form`` plus the payload type it
-    carries. ``dims`` is the declared axis layout (empty for a positional
+    carries. ``axes`` is the declared axis list ``((label, extent), ...)``, an extent of ``None``
+    being known at run time (empty for a positional
     plane); ``staged`` marks the one role whose adjoint FAN-IN is a
     derivable number."""
 
     form: str
     ttype: _ir.TensorType
-    dims: tuple = ()
+    axes: tuple = ()
     staged: bool = False
     #: ``Grid[...]``: ``((label, extent|None), ...)``, the launch shape.
     grid: tuple = ()
@@ -122,6 +231,9 @@ class Plane:
     shared: tuple = ()
     #: ``Annotated[T, Meta(...)]``: opaque ``(key, value)`` pairs the sidecar carries for a reader.
     meta: tuple = ()
+    #: ``(parameter, field, form)`` of a plane that is one field of a :class:`Record` parameter (form ``"record"``) or
+    #: one of the two planes of a :class:`Rows` parameter (form ``"rows"``), else empty.
+    group: tuple = ()
 
     def __call__(self, *args: object, **kwargs: object) -> object:
         """Never called: a declaration is only annotated. Defined so that ``typing.Annotated``
@@ -156,9 +268,9 @@ class Mutable:
     def __class_getitem__(cls, key: object) -> Plane:
         items = _items(key)
         if isinstance(items[0], (slice, str)):
-            return Plane("mutable", Scalar, dims=_axes("Mutable", items))
-        dims = _axes("Mutable", items[1:]) if items[1:] else ()
-        return Plane("mutable", _payload("Mutable", items[0]), dims=dims)
+            return Plane("mutable", Scalar, axes=_axes("Mutable", items))
+        axes = _axes("Mutable", items[1:]) if items[1:] else ()
+        return Plane("mutable", _payload("Mutable", items[0]), axes=axes)
 
 
 class Table:
@@ -166,14 +278,16 @@ class Table:
 
     ``Table[Scalar]`` is the POSITIONAL plane, read at a flat index;
     ``Table["row":rows, "col":cols]`` is the NAMED-AXIS plane, read
-    ``t.at(row=…, col=…)`` against declaration-minted strides. A bare first
-    label (``Table["elem", "c":3]``) is a runtime extent, as in ``Grid``: no
-    stride depends on it."""
+    ``t.at(row=…, col=…)``, one index per axis; ``Table[Vector[3], "row":rows]``
+    holds a value of that type at each position, bound ``(*payload, *axes)``. A bare first
+    label (``Table["elem", "c":3]``) is a runtime extent, as in ``Grid``."""
 
     def __class_getitem__(cls, key: object) -> Plane:
-        if isinstance(key, _ir.TensorType):
-            return Plane("table", _payload("Table", key))
-        return Plane("table", Scalar, dims=_axes("Table", key))
+        items = _items(key)
+        if isinstance(items[0], (slice, str)):
+            return Plane("table", Scalar, axes=_axes("Table", items))
+        axes = _axes("Table", items[1:]) if items[1:] else ()
+        return Plane("table", _payload("Table", items[0]), axes=axes)
 
 
 class Grid:
@@ -227,10 +341,6 @@ class Sorted:
         return Plane("in", t, sorted=True)
 
 
-#: The stride of a ``Staged[..., m.n_samples]`` plane axis: the launch's sample count, read at run time.
-N_SAMPLES = "n_samples"
-
-
 class Staged:
     """``Staged[Vector[W], count]`` — a buffer one launch PRODUCES and the
     next CONSUMES, declared as the producer wrote it.
@@ -256,25 +366,24 @@ class Staged:
             raise HawkError(
                 f"Staged[...]: the element type must be a Vector[W], got {elem!r}")
         from .value import n_samples
-        if count is n_samples:      # the count is the launch count: the plane stride is read at run time
-            return Plane("table", Scalar, staged=True, dims=(("plane", elem.shape[0], N_SAMPLES), ("sample", None, 1)))
+        if count is n_samples:      # the count is the launch count: the sample axis has a run-time extent
+            return Plane("table", Scalar, staged=True, axes=(("plane", elem.shape[0]), ("sample", None)))
         return Plane("table", Scalar, staged=True,
-                     dims=_axes("Staged", (slice("plane", elem.shape[0]),
+                     axes=_axes("Staged", (slice("plane", elem.shape[0]),
                                            slice("sample", count))))
 
 
 class Wide:
-    """``Wide[W]`` — a per-sample WIDE plane of RUNTIME extent, stride ``W``.
+    """``Wide[W]`` — a per-sample WIDE plane of RUNTIME extent and ``W`` components.
 
-    Only the per-edge STRIDE is declared (the caller binds the runtime
-    length); a read is ``buf.at(edge=e, component=c)``, folding to
-    ``e * W + c``. Binds the ``wide_in`` role, same 32-byte
+    The edge axis has a run-time extent (the caller binds it); a read is
+    ``buf.at(edge=e, component=c)``. Binds the ``wide_in`` role, same 32-byte
     ``ScalarHandle`` a ``lookup`` plane rides."""
 
     def __class_getitem__(cls, w: int) -> Plane:
         width = _extent("Wide", w)
         return Plane("wide", Scalar,
-                     dims=(("edge", None, width), ("component", width, 1)))
+                     axes=(("edge", None), ("component", width)))
 
 
 class WideOut:
@@ -320,27 +429,29 @@ class _ParamPlane(Plane):
 
 
 def _shared_value(t: _ir.TensorType) -> Plane:
-    """The shared declaration of a vector or matrix payload: its cells, row-major."""
-    if t.dtype != "f64" or t.tag is not None or len(t.shape) not in (1, 2):
+    """The shared declaration of a vector, matrix or higher-rank payload: its cells, row-major."""
+    if t.dtype != "f64" or t.tag is not None:
         raise HawkError(
-            f"Param[{spell(t)}]: a shared vector or matrix is a float Vector[W] or "
-            "Matrix[R,C] (rank 1 or 2); an integer or tagged value is passed as "
+            f"Param[{spell(t)}]: a shared value is a float Vector[W], Matrix[R,C] or Tensor[...]; "
+            "an integer or tagged value is passed as "
             "separate Scalar/Int32 Params, or as a Table of its cells")
-    dims = (("component", t.shape[0], 1),) if len(t.shape) == 1 \
-        else _axes("Param", (slice("row", t.shape[0]), slice("col", t.shape[1])))
-    return Plane("table", t, dims=dims, shared=tuple(t.shape))
+    labels = {1: ("component",), 2: ("row", "col")}.get(len(t.shape)) \
+        or tuple(f"axis{k}" for k in range(len(t.shape)))
+    axes = (("component", t.shape[0]),) if len(t.shape) == 1 \
+        else _axes("Param", tuple(slice(label, extent) for label, extent in zip(labels, t.shape)))
+    return Plane("table", t, axes=axes, shared=tuple(t.shape))
 
 
 def _shared_table(plane: Plane) -> Plane:
     """A ``Table`` as one shared value: named axes, every extent static (the
     caller's array is checked against them)."""
-    if plane.ttype != Scalar or plane.staged or not plane.dims \
-            or any(size is None for _label, size, _stride in plane.dims):
+    if plane.ttype != Scalar or plane.staged or not plane.axes \
+            or any(extent is None for _label, extent in plane.axes):
         raise HawkError(
             'Param[Table[...]] takes named axes with static extents, '
             'Param[Table["row":R, "col":C]]; a plain Table is already one plane '
             "shared by all lanes, with a runtime length")
-    return replace(plane, shared=tuple(size for _label, size, _stride in plane.dims))
+    return replace(plane, shared=tuple(extent for _label, extent in plane.axes))
 
 
 #: ``Param`` — one broadcast by-value scalar (the ``uniform``).
@@ -373,13 +484,12 @@ def _label_refusal(label: str) -> str:
 
 
 def _axes(what: str, key: object) -> tuple:
-    """``key`` as a ROW-MAJOR axis layout ``((label, size, stride), …)``.
+    """``key`` as an ordered axis list ``((label, extent), …)``.
 
     Spelled ``Table["row":rows, "col":cols]`` via Python's slice syntax.
-    The last declared axis is innermost (stride 1), so the axis the lane
-    varies fastest over goes LAST. A ``Mutable``/``Table`` may leave its FIRST
-    axis bare (``(label, None)``, a runtime extent): every stride is the
-    product of the axes after it, so none depends on that extent."""
+    The last declared axis is innermost, so the axis the lane varies fastest
+    over goes LAST. A ``Mutable``/``Table`` may leave its FIRST axis bare
+    (``(label, None)``, a runtime extent)."""
     items = _items(key)
     axes = []
     for pos, item in enumerate(items):
@@ -402,14 +512,9 @@ def _axes(what: str, key: object) -> tuple:
     if len(set(labels)) != len(labels):
         raise HawkError(
             f"{what}[...]: duplicate axis label(s) in {labels} — an axis label "
-            "names the stride constant the reads fold against, so two axes may "
+            "names the axis a read or a store addresses, so two axes may "
             "not share one")
-    out, stride = [], 1
-    for label, size in reversed(axes):
-        out.append((label, size, stride))
-        if size is not None:
-            stride *= size
-    return tuple(reversed(out))
+    return tuple(axes)
 
 
 def _payload(what: str, t: object) -> _ir.TensorType:
@@ -422,7 +527,7 @@ def _payload(what: str, t: object) -> _ir.TensorType:
 
 
 def spell(t: _ir.TensorType) -> str:
-    """``t`` as an author writes it: ``Scalar``, ``Vector[3]``, ``Matrix[2, 3]``."""
+    """``t`` as an author writes it: ``Scalar``, ``Vector[3]``, ``Matrix[2, 3]``, ``Tensor[2, 3, 4]``."""
     for name, named in (("Scalar", Scalar), ("Index", Index), ("Index[int64]", _INDEX64), ("Int32", Int32),
                         ("UInt32", UInt32), ("Quat", Quat)):
         if t == named:
@@ -431,6 +536,8 @@ def spell(t: _ir.TensorType) -> str:
         return f"Vector[{t.shape[0]}]"
     if t.dtype == "f64" and len(t.shape) == 2:
         return f"Matrix[{t.shape[0]}, {t.shape[1]}]"
+    if t.dtype == "f64" and len(t.shape) > 2 and t.tag is None:
+        return f"Tensor[{', '.join(map(str, t.shape))}]"
     return repr(t)
 
 
@@ -473,8 +580,6 @@ def resolve(param: str, annotation: object) -> Plane | _ir.Quantity:
     )
 
 
-#: How an input plane's RANK picks its role.
-_IN_ROLE = {0: "per_sample", 1: "vec_in", 2: "mat_in"}
 _FORM_ROLE = {"uniform": "uniform", "table": "lookup", "mutable": "mutable",
               "terminated": "terminated", "wide": "wide_in",
               "wide_out": "wide_out"}
@@ -483,5 +588,5 @@ _FORM_ROLE = {"uniform": "uniform", "table": "lookup", "mutable": "mutable",
 def role_of(plane: Plane) -> str:
     """The role a resolved declaration binds its slot under."""
     if plane.form == "in":
-        return _IN_ROLE[len(plane.ttype.shape)]
+        return "plane_in"
     return _FORM_ROLE[plane.form]

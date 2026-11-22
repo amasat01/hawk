@@ -154,7 +154,7 @@ def test_the_sidecar_records_the_natural_shapes_additively(tmp_path):
     assert sidecar_of(bundle, rotate.name)["param_shapes"] == {"A": [2, 2]}
     assert sidecar_of(bundle, dot_whole.name)["param_shapes"] == {"w": [6]}
     assert sidecar_of(bundle, grid_table.name)["param_shapes"] == {"T": [3, 4]}
-    assert sidecar_of(bundle, rotate.name)["arg_spec"] == [["mutable", "y"], ["vec_in", "x"],
+    assert sidecar_of(bundle, rotate.name)["arg_spec"] == [["mutable", "y"], ["plane_in", "x"],
                                                            ["lookup", "A"]]
 
 
@@ -184,11 +184,10 @@ def test_a_scalar_param_is_unchanged():
 def test_unsupported_shared_types_are_refused_with_the_fix():
     from hawk import _ir
 
-    with pytest.raises(HawkError, match=r"rank 1 or 2.*separate Scalar/Int32 Params"):
-        Param[_ir.TensorType((2, 2, 2), "f64")]
-    with pytest.raises(HawkError, match=r"rank 1 or 2.*separate Scalar/Int32 Params"):
+    assert Param[_ir.TensorType((2, 2, 2), "f64")].shared == (2, 2, 2)     # a float value of any rank is shared
+    with pytest.raises(HawkError, match=r"float Vector.*Tensor.*separate Scalar/Int32 Params"):
         Param[_ir.TensorType((3,), "int32")]                       # an integer vector
-    with pytest.raises(HawkError, match=r"rank 1 or 2"):
+    with pytest.raises(HawkError, match=r"float Vector.*Tensor"):
         Param[hawk.Quat]
     with pytest.raises(HawkError, match=r"static extents.*already one plane shared"):
         Param[Table[Scalar]]

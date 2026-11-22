@@ -32,9 +32,9 @@ role                            the caller passes                           the 
 ==============================  ==========================================  ==================================
 per-sample plane, scalar        ``(N,)``                                    ``(N,)`` as passed
 per-sample plane, width ``w``   ``(w, N)``, or ``(N, w)`` whose transpose   ``(*P, N)``: ``(w, N)``; a matrix
-(``per_sample``, ``mutable``,   is contiguous; ``layout=`` / markers        payload ``(R, C)`` gets
-``out``, ``vec_in``,            settle ``N == w``                           ``(R, C, N)``; ``(N, w)`` as its
-``mat_in``, ``terminated``)                                                 transpose view, no copy
+(``plane_in``, ``mutable``,     is contiguous; ``layout=`` / markers        payload ``(R, C)`` gets
+``out``,                         settle ``N == w``                           ``(R, C, N)``; ``(N, w)`` as its
+``terminated``)                                                              transpose view, no copy
 one sample                      the head alone: ``()``, ``(w,)``            ``(*P, 1)``, a batch of one
 a matrix read at lane indices   ``(R*C, m)`` compact                        ``(R, C, m)``
 (``gather_mats``)
@@ -296,7 +296,7 @@ class LoadedKernel:
             n_samples = lane_n
         if n_samples is None:
             compact = sidecar.get("gather_mats") or {}
-            n_samples = _n_from([(r, n) for r, n in spec if not (r == "mat_in" and n in compact)], plain,
+            n_samples = _n_from([(r, n) for r, n in spec if n not in compact], plain,
                                 sidecar.get("arg_shapes", {}), choice)
             _lane_bind.check_total(sidecar, n_samples)
         if outputs:
@@ -398,7 +398,7 @@ class LoadedKernel:
         index_inputs = tuple(
             name
             for role, name in self.bind_spec
-            if role in ("per_sample", "lookup", "wide_in") and sidecar.get("arg_dtypes", {}).get(name) == "int64"
+            if role in ("plane_in", "lookup", "wide_in") and sidecar.get("arg_dtypes", {}).get(name) == "int64"
         )
         if keep:
             refuse_index_width(index_inputs, sidecar.get("index_planes") or (), arrays, sidecar.get("kernel", ""))
@@ -736,7 +736,7 @@ class BoundPlan:
     @property
     def names(self) -> tuple:
         """The names of the kernel's planes and values, in the order the kernel declares them."""
-        return tuple(name for _role, name in self._kernel.arg_spec)
+        return tuple(name for role, name in self._kernel.arg_spec if role != "extent")
 
     @property
     def n(self) -> int:
@@ -838,7 +838,7 @@ def _load_unit(door, path: Path, sidecar: dict, deps=()):
 
 
 #: The declarations of a split kernel's stages that are dicts keyed by plane name, lists of records named by plane, and lists of names.
-_DICT_DECLARATIONS = ("arg_dtypes", "arg_shapes", "arg_widths", "slot_shapes", "mat_shapes", "vec_widths", "param_shapes",
+_DICT_DECLARATIONS = ("arg_dtypes", "arg_shapes", "arg_widths", "slot_shapes", "param_shapes",
                       "plane_axes", "gather_mats", "adjoint_like", "companions")
 _RECORD_DECLARATIONS = ("mutables", "params")
 _NAME_DECLARATIONS = ("index_planes", "sorted_inputs", "unused_planes")
@@ -866,8 +866,8 @@ def _door_made_names(sidecar: dict) -> set:
     """The names of the slots the library makes and the caller need not bind: the finished
     counter, a dispatch group's branch counters, the compensation companions, the scratch planes between the
     stages, the compensation of a cell's rows and, in a split kernel, the cells themselves (the library keeps the
-    ones the caller does not read)."""
-    names = {_ir.FINISHED_PLANE}
+    ones the caller does not read) and the extent of each runtime axis, which the runtime fills from the shape of the bound plane."""
+    names = {_ir.FINISHED_PLANE} | {name for role, name in sidecar["arg_spec"] if role == "extent"}
     names |= {entry["mix"] for entry in sidecar.get("dispatch", ()) if entry.get("mix") is not None}
     for entry in sidecar.get("dispatch", ()):
         if entry["strategy"] == "segmented":

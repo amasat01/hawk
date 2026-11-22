@@ -7,7 +7,7 @@ Kept out of ``_kernels.py`` on purpose — that corpus is emitter sweep and
 its rows count it. These are the kernels rows /////////
  BUILD, COMPILE and RUN, and between them they cover every role shape eagle's
 packer resolves: a ``Vector[3]`` output plane (the 40-byte GRef mirror), a
-``vec_in``, a ``mat_in``, a ``float32`` arm, TWO output planes, a ``lookup``
+``plane_in``, a ``plane_in``, a ``float32`` arm, TWO output planes, a ``lookup``
 gather (``cross_sample_read``), a mapreduce partial, a scatter
 (``cross_sample_write``), the compensated-accum kind and the mask-free
 guard kind, plus a vocabulary sweep over the aether spellings the rank>=1
@@ -44,7 +44,7 @@ from hawk import _ir
 
 ORIENTATION = Quantity(
     slug="earth", name="orientation",
-    wires=[_ir.Wire("q", "vec_in", (4,), tag="quaternion"), _ir.Wire("w", "per_sample", ())]
+    wires=[_ir.Wire("q", "plane_in", (4,), tag="quaternion"), _ir.Wire("w", "plane_in", ())]
 )
 
 
@@ -155,7 +155,7 @@ def spin(orientation: ORIENTATION, v: Vector[3], out: Mutable[Vector[3]]):
 def two_wire(orientation: ORIENTATION, out_q: Mutable[Quat],
              out_w: Mutable[Scalar]):
     """The fixture (the row). ONE quantity read mints TWO wires —
-    a ``vec_in`` quaternion and a ``per_sample`` scalar — and this body writes
+    a ``plane_in`` quaternion and a ``plane_in`` scalar — and this body writes
     each wire's VALUE to its own output plane, scaled by a different exact
     constant. That is what makes the row POSITIVE rather than a refusal: if the
     second wire read the first mirror's bytes, ``out_w`` would carry a
@@ -289,7 +289,7 @@ def cases(n: int) -> list:
         ("vec3", "vec3_scale", {"x": x3, "a": 2.0}, ref_vec3_scale(x3, 2.0)),
         ("vec3_f32", "vec3_scale", {"x": x3.astype(np.float32), "a": 2.0},
          ref_vec3_scale(x3.astype(np.float32), np.float32(2.0))),
-        # a `mat_in` binds as eagle packs it: the FLAT (R*C, n) plane whose
+        # a `plane_in` binds as eagle packs it: the FLAT (R*C, n) plane whose
         # component pitch is the mirror's `compStride_` (eagle.roles' own note --
         # "a matrix GRef is a width-R*C vector GRef").
         ("mat", "mat_apply", {"m": m.reshape(9, n), "v": x3}, ref_mat_apply(m, x3)),

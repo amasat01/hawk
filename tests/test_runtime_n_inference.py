@@ -18,7 +18,7 @@ two output slots, with no error anywhere.
 
 **The exact real shape, reproduced here without a spline layer.** `_deployable.gather`'s own VJP (`hawk.diff.vjp(D.gather, wrt=("table"))`) is the SAME
 transpose-of-a-gather-is-a-scatter shape: its `arg_spec` is
-`[(accum_out, "bar_table"), (per_sample, "bar_y"), (per_sample, "where")]` --
+`[(accum_out, "bar_table"), (plane_in, "bar_y"), (plane_in, "where")]` --
 `bar_table` (the scatter target, sized to the ORIGINAL table's row count) is
 first, and its length has nothing to do with n_samples. This module builds
 that exact kernel once (the `gather_vjp_unit` fixture) and the real
@@ -116,7 +116,7 @@ def test_a_lookup_led_arg_spec_infers_from_the_per_sample_plane_not_the_table():
     Without a role check, the trailing extent of the first bound plane in
     `arg_spec` order would be used instead: the table's own row count, 20,
     not the sample count."""
-    arg_spec = (("lookup", "table"), ("per_sample", "where"), ("mutable", "y"))
+    arg_spec = (("lookup", "table"), ("plane_in", "where"), ("mutable", "y"))
     arrays = {"table": _mem(range(20)), "where": _mem(range(8)),
              "y": _mem([0] * 8)}
     assert R._n_from(arg_spec, arrays) == 8
@@ -131,8 +131,8 @@ def test_an_accum_led_arg_spec_infers_from_the_per_sample_plane_not_the_scatter_
     Without that, the scatter target's own length (5) would be used instead
     of the sample count -- `test_an_accum_led_kernel_is_silently_wrong_
     before_the_fix` below is this exact shape's real-kernel consequence."""
-    arg_spec = (("accum_out", "bar_table"), ("per_sample", "bar_y"),
-               ("per_sample", "where"))
+    arg_spec = (("accum_out", "bar_table"), ("plane_in", "bar_y"),
+               ("plane_in", "where"))
     arrays = {"bar_table": _mem(range(5)), "bar_y": _mem(range(8)),
              "where": _mem(range(8))}
     assert R._n_from(arg_spec, arrays) == 8
@@ -141,7 +141,7 @@ def test_an_accum_led_arg_spec_infers_from_the_per_sample_plane_not_the_scatter_
 def test_disagreeing_per_sample_planes_are_refused_naming_both():
     """Two GENUINE per-sample roles of different lengths is a real mismatch --
     resolved by refusing and naming both, never by silently picking one."""
-    arg_spec = (("per_sample", "bar_y"), ("per_sample", "where"))
+    arg_spec = (("plane_in", "bar_y"), ("plane_in", "where"))
     arrays = {"bar_y": _mem(range(8)), "where": _mem(range(5))}
     with pytest.raises(HawkError,
                        match=r"(?=.*\('bar_y', 8\))(?=.*\('where', 5\))"):

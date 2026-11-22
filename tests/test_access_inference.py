@@ -23,7 +23,7 @@ from _dags import IDX, V3, drag_dag
 from hawk import _ir
 
 CTX = _ir.new_context()
-_X = _ir.leaf(CTX, "vocab_read", "vec_in", "x", V3)
+_X = _ir.leaf(CTX, "vocab_read", "plane_in", "x", V3)
 _TABLE = _ir.leaf(CTX, "table_read", "lookup", "grav", V3)
 _THREE = _ir.const(CTX, 3, IDX)
 
@@ -39,7 +39,7 @@ def test_lookup_at_read_is_cross_sample_read():
 
 
 def test_scattered_accum_write_is_cross_sample_write():
-    walk = _ir.canonical((_ir.accum_write("e", _ir.make("norm", (_X,)), index=_THREE),))
+    walk = _ir.canonical((_ir.accum_write("e", _ir.make("norm", (_X,)), indices=(_THREE,)),))
     assert _ir.access_class(walk) == "cross_sample_write"
 
 
@@ -69,8 +69,8 @@ def test_arg_spec_follows_hawks_canonical_role_order():
     assert _ir.arg_spec(walk) == (
         ("mutable", "acc"),
         ("accum_out", "energy"),
-        ("vec_in", "sc__state__pos"),
-        ("vec_in", "sc__state__vel"),
+        ("plane_in", "sc__state__pos"),
+        ("plane_in", "sc__state__vel"),
         ("lookup", "grav"),
         ("uniform", "rho"),
     ), _ir.arg_spec(walk)

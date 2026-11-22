@@ -199,7 +199,7 @@ def test_a_read_only_array_for_a_writable_role_is_refused(built):
 
 
 def test_a_read_only_array_for_an_input_role_is_accepted(built):
-    """A read-only INPUT (``x``, a ``per_sample`` leaf) binds: the kernel never writes it, so nothing is lost.
+    """A read-only INPUT (``x``, a ``plane_in`` leaf) binds: the kernel never writes it, so nothing is lost.
     The written plane next to it still gets the kernel's result, and ``x`` is left read-only."""
     kernel = _diagnostic(built)
     x = np.arange(N, dtype=float)

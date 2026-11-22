@@ -354,7 +354,7 @@ def _traced_context():
 
 
 def test_class_tests_on_a_vector_are_a_bool_vector():
-    v = hawk.Value(_ir.leaf(CTX, "vocab_read", "vec_in", "v", _ir.TensorType((3,), "f64")))
+    v = hawk.Value(_ir.leaf(CTX, "vocab_read", "plane_in", "v", _ir.TensorType((3,), "f64")))
     assert m.isnan(v).ttype == _ir.TensorType((3,), "bool")
 
 
@@ -607,7 +607,7 @@ def test_every_elementwise_function_has_a_matrix_row():
 
 
 def _leaf(shape: tuple, name: str = "a"):
-    role = {0: "per_sample", 1: "vec_in", 2: "mat_in"}[len(shape)]
+    role = {0: "plane_in", 1: "plane_in", 2: "plane_in"}[len(shape)]
     return hawk.Value(_ir.leaf(CTX, "vocab_read", role, name, _ir.TensorType(shape, "f64")))
 
 

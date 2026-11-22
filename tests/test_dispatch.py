@@ -56,7 +56,7 @@ V3 = TensorType((3,), "f64")
 
 
 def _leaf(name: str, t: TensorType, role: str | None = None) -> Leaf:
-    role = role or {0: "per_sample", 1: "vec_in", 2: "mat_in"}[len(t.shape)]
+    role = role or {0: "plane_in", 1: "plane_in", 2: "plane_in"}[len(t.shape)]
     return Leaf("vocab_read", role, name, t)
 
 
@@ -359,11 +359,11 @@ def test_the_dispatch_sidecar_entries_land_on_the_deployed_artifact(dispatch_bun
     sidecar = sidecar_of(dispatch_bundle, "disp_r0_k5_switch")
     assert sidecar["dispatch"] == [{"name": "dispatch0", "K": 5, "strategy": "switch",
                                     "static_selector": True,
-                                    "selector_reads": [["per_sample", "k"]]}]
+                                    "selector_reads": [["plane_in", "k"]]}]
     sidecar = sidecar_of(dispatch_bundle, "disp_r1_k3_pred")
     assert sidecar["dispatch"] == [{"name": "dispatch0", "K": 3, "strategy": "predicated",
                                     "static_selector": True,
-                                    "selector_reads": [["per_sample", "k"]]}]
+                                    "selector_reads": [["plane_in", "k"]]}]
 
 
 # --------------------------------------------------------------------------- #
@@ -495,7 +495,7 @@ def test_segmented_sidecar_carries_the_group_and_its_offsets_plane(segmented_bun
     members = [f"disp_r0_k5_seg__k{j}" for j in range(5)] + ["disp_r0_k5_seg__cls"]
     assert sidecar["dispatch"] == [{
         "name": "dispatch0", "K": 5, "strategy": "segmented",
-        "static_selector": True, "selector_reads": [["per_sample", "k"]],
+        "static_selector": True, "selector_reads": [["plane_in", "k"]],
         "class": "dispatch0_class", "stale": "dispatch0_stale",
         "offsets": "dispatch0_offsets", "classify": "disp_r0_k5_seg__cls",
         "units": [f"disp_r0_k5_seg__k{j}" for j in range(5)],

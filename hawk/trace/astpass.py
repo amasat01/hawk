@@ -39,7 +39,7 @@ from .lane_axes import current_context
 from .value import (
     Value,
     dispatch_node,
-    index_node,
+    element_indices,
     literal_int,
     node_of,
     own_column_rewrite_advice,
@@ -315,8 +315,15 @@ def set_component(vector: Any, index: Any, value: Any, name: str) -> Any:
             f"hawk.scatter({name})[key] += t. {name!r} is a rank-0 value typed "
             f"{_ir.type_of(node)!r}, so it has no components to write; `v[k] = …` writes "
             "one component of a rank>=1 value (a Vector, a matrix row is not a HAWK form)")
+    keys = index if isinstance(index, tuple) else (index,)
+    shape = _ir.type_of(node).shape
+    for key, extent in zip(keys, shape):
+        if isinstance(key, int) and not isinstance(key, bool) and not 0 <= key < extent:
+            raise HawkError(
+                f"{name!r}[key] = e on a value of shape {tuple(shape)}: index {key} is outside "
+                f"the extent {extent} of its axis")
     return Value(_ir.make("set_component_at",
-                          (node, index_node(index), node_of(value))))
+                          (node, *element_indices(index), node_of(value))))
 
 
 def merge(cond: Any, on_true: Any, on_false: Any, name: str, shared: bool = False) -> Any:
@@ -548,6 +555,7 @@ def transform(fn: ast.FunctionDef, filename: str, sinks: frozenset[str],
             ast.Assign(targets=[ast.Name(RESULT_NAME, ast.Store())],
                        value=last.value), last)
     body = _normalize_returns(body, filename)
+    body = _lower_row_loops(body, filename)
     _validate(body, filename, sinks, in_branch=False)
     body = _lower_break_blocks(body, [0])
     body = _rewrite_view_stores(body)
@@ -592,6 +600,53 @@ def _normalize_returns(stmts: list[ast.stmt], filename: str) -> list[ast.stmt]:
 
 # --------------------------------------------------------------------------
 # (2) default-deny validation
+
+
+class _RowLoops(ast.NodeTransformer):
+    """``for x in row.bounded(K): body`` as the run-time bounded ``range`` loop it states.
+
+    The row is bound to a name first, then ``for k in range(row.length, max=K): x = row.entry(k); body`` runs
+    the existing bounded loop with the count ``min(length, K)``: no loop form of its own."""
+
+    def __init__(self, filename: str) -> None:
+        self.filename = filename
+        self.count = 0
+
+    def visit_For(self, node: ast.For):
+        self.generic_visit(node)
+        call = node.iter
+        if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+                and call.func.attr == "bounded"):
+            return node
+        if len(call.args) != 1 or call.keywords or not isinstance(node.target, ast.Name):
+            raise _err(node, self.filename,
+                       "a row loop is `for x in row.bounded(K):` with ONE compile-time bound K and a single "
+                       "loop name")
+        k, self.count = self.count, self.count + 1
+        row, step = f"__row{k}", f"__row_k{k}"
+
+        def load(name: str) -> ast.expr:
+            return ast.Name(id=name, ctx=ast.Load())
+
+        entry = _assign(node.target.id, ast.Call(
+            func=ast.Attribute(value=load(row), attr="entry", ctx=ast.Load()), args=[load(step)], keywords=[]))
+        bounded = ast.Call(
+            func=load("range"), args=[ast.Attribute(value=load(row), attr="length", ctx=ast.Load())],
+            keywords=[ast.keyword(arg="max", value=call.args[0])])
+        loop = ast.For(target=ast.Name(id=step, ctx=ast.Store()), iter=bounded, body=[entry, *node.body],
+                       orelse=node.orelse, type_comment=None)
+        return [ast.copy_location(ast.fix_missing_locations(s), node)
+                for s in (_assign(row, call.func.value), loop)]
+
+
+def _lower_row_loops(stmts: list[ast.stmt], filename: str) -> list[ast.stmt]:
+    """The statements with every row loop (``for x in row.bounded(K)``) lowered to a bounded ``range`` loop."""
+    lowerer = _RowLoops(filename)
+    out: list[ast.stmt] = []
+    for st in stmts:
+        lowered = lowerer.visit(st)
+        out.extend(lowered if isinstance(lowered, list) else [lowered])
+    return out
 
 
 def _validate(stmts: list[ast.stmt], filename: str, sinks: frozenset[str],

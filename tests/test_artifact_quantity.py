@@ -50,8 +50,8 @@ def test_the_quantitys_wires_are_namespaced_and_contiguous():
     for name in wires:
         assert name.count("__") >= 2, f"{name!r} is not namespaced by the declaration"
     # per role, ONE consecutive declaration-ordered run.
-    q = _ir.slot_of(walk)[("vec_in", "earth__orientation__q")]
-    assert _ir.arg_spec(walk)[q] == ("vec_in", "earth__orientation__q")
+    q = _ir.slot_of(walk)[("plane_in", "earth__orientation__q")]
+    assert _ir.arg_spec(walk)[q] == ("plane_in", "earth__orientation__q")
 
 
 def test_zero_raw_ir_constructions():
@@ -69,5 +69,5 @@ def test_zero_raw_ir_constructions():
 
 def test_the_quantity_artifact_declares_its_wires(built):
     sc = sidecar_of(built["spin"], "spin")
-    assert "earth__orientation__q" in sc["vector_inputs"]
-    assert "earth__orientation__w" in sc["per_sample"]
+    assert sc["slot_shapes"]["earth__orientation__q"] == [4]
+    assert sc["slot_shapes"]["earth__orientation__w"] == []

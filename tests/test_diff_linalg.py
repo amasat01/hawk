@@ -41,7 +41,7 @@ def _t(*shape):
 
 
 def _leaf(name, *shape):
-    role = {0: "per_sample", 1: "vec_in", 2: "mat_in"}[len(shape)]
+    role = {0: "plane_in", 1: "plane_in", 2: "plane_in"}[len(shape)]
     return _ir.leaf(CTX, "vocab_read", role, name, _t(*shape))
 
 

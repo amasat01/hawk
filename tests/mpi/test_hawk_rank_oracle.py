@@ -145,8 +145,8 @@ def _uniforms(sidecar) -> dict:
 
 
 def _input_name(sidecar) -> str:
-    names = [n for r, n in sidecar["arg_spec"] if r == "per_sample"]
-    assert len(names) == 1, f"this unit declares {names} per_sample inputs"
+    names = [n for r, n in sidecar["arg_spec"] if r == "plane_in"]
+    assert len(names) == 1, f"this unit declares {names} plane_in inputs"
     return names[0]
 
 

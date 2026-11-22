@@ -313,7 +313,7 @@ def check_time(kernel: Any, time: str, time_step: str) -> None:
         n for n in nodes if _ir.is_a(n, "leaf") and n.field_text("name") == time_step
     ]
     if not dts or any(
-        d.field_text("role") not in ("uniform", "per_sample")
+        d.field_text("role") not in ("uniform", "plane_in")
         or _ir.type_of(d).shape
         or _ir.type_of(d).dtype not in _FLOAT
         for d in dts
@@ -376,7 +376,7 @@ def refine_plane_names(kernel: Any) -> dict | None:
 
 def _index_time(t: str, h: Any, k: Any) -> Any:
     """``t_0 + k*h``: ONE multiply, ONE add (the index form)."""
-    t0 = _ir.leaf(h.ctx, "vocab_read", "per_sample", t + T0_SUFFIX, _ir.type_of(h))
+    t0 = _ir.leaf(h.ctx, "vocab_read", "plane_in", t + T0_SUFFIX, _ir.type_of(h))
     return _ir.make("add", (t0, _ir.make("mul", (k, h))))
 
 
@@ -402,11 +402,11 @@ def _promoted(step: Any, *, tau: bool = False) -> Any:
         )
     dt_leaves = [n for n in nodes if _ir.is_a(n, "leaf") and n.field_text("name") == dt]
     ttype = _ir.type_of(dt_leaves[0])
-    h = _ir.leaf(context, "vocab_read", "per_sample", dt, ttype)
+    h = _ir.leaf(context, "vocab_read", "plane_in", dt, ttype)
     k = _ir.leaf(context, "prior_read", "mutable", APPLIED_STEPS, _I32)
     if tau:
         step_size = _ir.leaf(
-            context, "vocab_read", "per_sample", dt + TAU_SUFFIX, ttype
+            context, "vocab_read", "plane_in", dt + TAU_SUFFIX, ttype
         )
         t_value = _ir.make("add", (_index_time(t, h, k), step_size))
     else:
@@ -474,7 +474,7 @@ def _d_dt(g: Any, t_value: Any) -> Any:
 
     probe_name = "hawk_event_time"
     probe = _ir.leaf(
-        g.ctx, "vocab_read", "per_sample", probe_name, _ir.type_of(t_value)
+        g.ctx, "vocab_read", "plane_in", probe_name, _ir.type_of(t_value)
     )
     prior = {
         n.field_text("name"): n

@@ -289,7 +289,7 @@ def _reduce(op: str, x: Any, over: Any, where_mask: Any, contract: Any) -> Any:
             "sum", node_of(value), key=node_of(key), count=node_of(count),
             contract=contract, kept=kept_axes,
         )  # fmt: skip
-    return Reduced(reduced, kept_axes)
+    return Reduced(reduced, kept_axes, tuple(node_of(lane[i]) for i in kept))
 
 
 def sum(x: Any, over: Any = None, where: Any = None, contract: str = "auto") -> Any:  # noqa: A001
@@ -328,11 +328,13 @@ class Reduced:
     (``x / hawk.sum(x, over="col")``): the kernel runs in stages, the reduction
     committed by the first."""
 
-    __slots__ = ("node", "kept")
+    __slots__ = ("node", "kept", "coordinates")
 
-    def __init__(self, node: Any, kept: tuple) -> None:
+    def __init__(self, node: Any, kept: tuple, coordinates: tuple = ()) -> None:
         self.node = node
         self.kept = kept
+        #: the lane's coordinate along each kept axis: the indices of the accumulate that stores the sum
+        self.coordinates = coordinates
 
     @property
     def ttype(self) -> Any:
@@ -356,15 +358,6 @@ for _name in ("__add__", "__radd__", "__sub__", "__rsub__", "__mul__", "__rmul__
               "__lt__", "__le__", "__gt__", "__ge__"):
     setattr(Reduced, _name, _read_back(_name))
 del _name
-
-
-def axes_plane(kept: tuple) -> tuple:
-    """A plane's ``dims`` for the kept lane axes ``((label, extent|None), ...)``."""
-    out, stride = [], 1
-    for label, extent in reversed(kept):
-        out.append((label, extent, stride))
-        stride = stride * extent if extent is not None and stride is not None else None
-    return tuple(out[::-1])
 
 
 class _Stored:
@@ -409,24 +402,24 @@ def scatter(sink: Any, contract: str = "auto") -> Any:
         "or hawk.scatter(y)[key] = v as a statement of the kernel body")
 
 
-def _flat_key(ref: Any, key: Any, where: str) -> Any:
-    """``key`` as one flat index into ``ref``: a coordinate per declared axis of
-    a named-axis sink, folded with its strides, or a flat index."""
+def _key_indices(ref: Any, key: Any, where: str) -> list:
+    """``key`` as one index node per axis of the sink: a coordinate per declared axis of
+    a named-axis sink, or the one index of a plane with one axis."""
+    axes = ref.axes or (("", None),)
     if isinstance(key, tuple):
-        labels = [label for label, _size, _stride in ref.dims]
-        if len(key) != len(labels):
+        if len(key) != len(axes):
             raise HawkError(
                 f"{where}: a tuple key gives one coordinate per declared axis "
-                f"{labels or '(none: this sink is flat, give one index)'}, got {len(key)}")
-        flat = None
-        for k, (_label, _size, stride) in zip(key, ref.dims):
-            term = Value(index_node(k)) * stride if stride != 1 else Value(index_node(k))
-            flat = term if flat is None else flat + term
-        return node_of(flat)
+                f"{[label for label, _ in axes] if ref.axes else '(none: this sink has one axis, give one index)'}"
+                f", got {len(key)}")
+        return [index_node(k) for k in key]
     if isinstance(key, slice) or key is Ellipsis:
         raise HawkError(f"{where}: key is an index, an Index plane or a tuple of "
                         "coordinates")
-    return index_node(key)
+    if len(axes) != 1:
+        raise HawkError(f"{where}: {ref.name!r} has the axes {[label for label, _ in axes]}: "
+                        "give one coordinate per axis, a tuple key")
+    return [index_node(key)]
 
 
 def scatter_store(refs: dict, name: str, key: Any, value: Any, op: str, current: Any,
@@ -457,7 +450,7 @@ def scatter_store(refs: dict, name: str, key: Any, value: Any, op: str, current:
         raise HawkError(
             f"{name!r} is written per lane (locked) and by key "
             f"(hawk.scatter({name})[key]): one plane has one extent")
-    by_key(ref, _flat_key(ref, key, where), value, op != "=", contract)
+    by_key(ref, _key_indices(ref, key, where), value, op != "=", contract)
     return current if isinstance(current, _Stored) else _Stored(name)
 
 

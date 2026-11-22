@@ -146,8 +146,8 @@ def _make_factory(w):
 
 def test_a_kernel_factory_resolves_an_unused_extent_from_the_defining_frame():
     k3, k5 = _make_factory(3), _make_factory(5)
-    assert _ir.slot_type(k3.walk, "vec_in", "v").shape == (3,)
-    assert _ir.slot_type(k5.walk, "vec_in", "v").shape == (5,)
+    assert _ir.slot_type(k3.walk, "plane_in", "v").shape == (3,)
+    assert _ir.slot_type(k5.walk, "plane_in", "v").shape == (5,)
     assert k3.arg_spec == k5.arg_spec
 
 
@@ -238,4 +238,4 @@ def test_a_class_form_kind_declares_its_annotated_names_as_vocabulary():
     def scaled(scale, x: Scalar, y: Mutable[Scalar]):
         y = x * scale
 
-    assert ("per_sample", "scale") in scaled.arg_spec
+    assert ("plane_in", "scale") in scaled.arg_spec

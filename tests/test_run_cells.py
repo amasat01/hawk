@@ -74,13 +74,15 @@ def _eagle_cell(bundles, name, n, mode):
     bundle = bundles[name]
     eexec = pytest.importorskip("eagle.exec")
     from eagle import plan as eplan
+    from eagle.sidecar import internal_roles
 
     import _deploy as L
     from conftest import sidecar_of
 
     sidecar = sidecar_of(bundle, name)
     plugin = L.host_plugin(bundle.directory, name, sidecar)
-    plugin._meta = sidecar      # the plan-able view drops ``cells``
+    # the plan-able view drops ``cells``; the package reads roles by its own names
+    plugin._meta = internal_roles(sidecar, name=name)
     got = eplan.plan(plugin, structure=eexec.HostTeam).run(x=_x(n, mode))
     # one output comes back as the plane itself, several as a dict by name
     return got if isinstance(got, dict) else {"t": got}

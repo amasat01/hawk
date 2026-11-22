@@ -275,7 +275,7 @@ def _traced_context():
 
 
 def _leaf(dtype, name="a"):
-    return hawk.Value(_ir.leaf(CTX, "vocab_read", "per_sample", name, _ir.TensorType((), dtype)))
+    return hawk.Value(_ir.leaf(CTX, "vocab_read", "plane_in", name, _ir.TensorType((), dtype)))
 
 
 @pytest.mark.parametrize("spell,match", [
@@ -321,7 +321,7 @@ def test_an_integer_plane_takes_no_adjoint_and_no_tangent():
     fwd_names = _ir.arg_spec(Kernel("scaled_jvp", fwd).walk)
     assert not [nm for _, nm in rev_names if nm in ("bar_n", "bar_c")]
     assert not [nm for _, nm in fwd_names if nm in ("dot_n", "dot_c")]
-    assert ("per_sample", "n") in rev_names       # read as a primal input, never seeded
+    assert ("plane_in", "n") in rev_names       # read as a primal input, never seeded
 
 
 def test_an_integer_plane_in_wrt_is_refused_by_name():

@@ -358,16 +358,18 @@ def leaf(
     quantity: Quantity | None = None,
     wire_index: int = 0,
     sorted: bool = False,
+    axes: Sequence[tuple[str, int | None]] = (),
 ) -> Any:
     """Make a leaf binding the slot ``(role, name)``.
 
-    ``quantity`` is the compound quantity that owns the wire.
+    ``quantity`` is the compound quantity that owns the wire; ``axes`` is the plane's ordered axis
+    list ``(label, extent)``, an extent of ``None`` being known at run time (no axes: one runtime axis).
     """
     shape, dtype, tag = ttype
     owner = "None" if quantity is None else quantity.record
     fields = (
         f"(('kind', {kind!r}), ('role', {role!r}), ('name', {name!r}), ('quantity', {owner}), "
-        f"('wire_index', {wire_index!r}), ('sorted', {sorted!r}), )"
+        f"('wire_index', {wire_index!r}), ('sorted', {sorted!r}), ('axes', {tuple(axes)!r}), )"
     )
     return context.make("Leaf", dtype, list(shape), tag, [], fields)
 
@@ -407,11 +409,14 @@ def loop(
 
 
 @_as_hawk_error
-def accum_write(name: str, value: Any, *, index: Any = None, contract: str = "auto") -> Any:
-    """Make the keyed accumulate of ``value`` into the plane ``name`` (at ``index``, a lane or key)."""
-    refs = [value] + ([] if index is None else [index])
-    at = ", ('index', #1)" if index is not None else ""
-    fields = f"(('name', {name!r}), ('value', #0){at}, ('contract', {contract!r}))"
+def accum_write(
+    name: str, value: Any, *, indices: Sequence[Any] = (), contract: str = "auto", edge: str = "unchecked",
+    axes: Sequence[tuple[str, int | None]] = (),
+) -> Any:
+    """Make the keyed accumulate of ``value`` into the plane ``name`` (at ``indices``, one per axis of ``axes``; none: the lane's cell)."""
+    refs = [value, *indices]
+    at = f", ('indices', ({''.join(f'#{k + 1}, ' for k in range(len(indices)))}))"
+    fields = f"(('name', {name!r}), ('value', #0){at}, ('contract', {contract!r}), ('edge', {edge!r}), ('axes', {tuple(axes)!r}))"
     return value.ctx.new("AccumWrite", fields, refs)
 
 
@@ -547,10 +552,21 @@ def unreduced(sink: Any, operands: Sequence[Any]) -> Any:
     if sink.cls != "AccumWrite":
         return rebuild(sink, operands)
     refs = list(operands)
-    index = ", ('index', #1)" if len(refs) > 1 else ""
-    fields = f"(('name', {sink.field_text('name')!r}), ('value', #0){index}, "
-    fields += f"('contract', {sink.field_text('contract')!r}))"
+    indices = f", ('indices', ({''.join(f'#{k}, ' for k in range(1, len(refs)))}))"
+    fields = f"(('name', {sink.field_text('name')!r}), ('value', #0){indices}, "
+    fields += f"('contract', {sink.field_text('contract')!r}), ('edge', {sink.field_text('edge')!r}), ('axes', {field_pairs(sink, 'axes')!r}))"
     return context.new("AccumWrite", fields, refs)
+
+
+@_as_hawk_error
+def addressed(sink: Any, indices: Sequence[Any], axes: Sequence[tuple]) -> Any:
+    """Return the keyed accumulate ``sink`` over the ``indices`` (one per axis of ``axes``) with its ``reduced`` edge kept."""
+    refs = [sink.operands[0], *indices, sink.field_nodes("reduced")[0]]
+    named = "".join(f"#{k}, " for k in range(1, len(refs) - 1))
+    fields = f"(('name', {sink.field_text('name')!r}), ('value', #0), ('indices', ({named})), "
+    fields += f"('contract', {sink.field_text('contract')!r}), ('reduced', #{len(refs) - 1}), "
+    fields += f"('edge', {sink.field_text('edge')!r}), ('axes', {tuple(axes)!r}))"
+    return sink.ctx.new("AccumWrite", fields, refs)
 
 
 @_as_hawk_error

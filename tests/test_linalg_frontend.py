@@ -294,7 +294,7 @@ def test_a_solve_inside_a_kinds_vocabulary_binds_the_declared_matrix(host):
     rng = np.random.default_rng(12)
     mats = rng.standard_normal((LANES, 3, 3)) + 3.0 * np.eye(3)
     rhs = rng.standard_normal((LANES, 3))
-    assert ("mat_in", "A") in vocab_solve.arg_spec
+    assert ("plane_in", "A") in vocab_solve.arg_spec
     got = _run(host(vocab_solve), {"A": mats, "b": rhs, "damping": np.linspace(0.1, 0.8, LANES)},
                {"y": 3})["y"]
     for lane, damping in enumerate(np.linspace(0.1, 0.8, LANES)):

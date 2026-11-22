@@ -65,6 +65,9 @@ from .decl import Scalar as Scalar
 from .decl import Sorted as Sorted
 from .decl import Staged as Staged
 from .decl import Table as Table
+from .decl import Record as Record
+from .decl import Rows as Rows
+from .decl import Tensor as Tensor
 from .decl import Terminated as Terminated
 from .decl import Vector as Vector
 from .decl import Wide as Wide

@@ -61,7 +61,7 @@ def test_the_hoisted_kernel_gives_the_same_answer():
     th = np.linspace(0.5, 1.5, 4 * W)
     xs = np.linspace(-1.0, 1.0, 4 + T)
     for kind in (0.0, 1.0, 2.0):
-        got = evaluate(shared_row.sinks, {"x": 0.4, "kind": kind, "perm": perm, "th": th,
+        got = evaluate(shared_row.sinks, {"x": 0.4, "kind": kind, "perm": perm, "th": th.reshape(4, W),
                                     "xs": xs, "terminated": False}, lanes=1)["y"]
         s = 0.4 * th[6]
         for t in range(T):

@@ -14,6 +14,7 @@ the IR only through the ``ast`` pass's ``select`` rewrite.
 
 from __future__ import annotations
 
+import itertools
 import math
 from typing import Any
 
@@ -76,6 +77,36 @@ def index_node(x: Any) -> Any:
     if isinstance(x, int):
         return _ir.const(_context(), int(x), _I32)
     return node_of(x)
+
+
+def element_indices(k: Any) -> tuple:
+    """The index operands of ``v[k]`` at run time: one per axis, each a static integer or a traced integer.
+
+    ``k`` is one key or a tuple of keys. A float is refused rather than truncated: an index is an address, and
+    rounding one silently reads the wrong component. The count against the value's axes is checked by the IR."""
+    nodes = []
+    for key in (k if isinstance(k, tuple) else (k,)):
+        if isinstance(key, bool):
+            raise HawkError(
+                f"a traced value is indexed by an integer component, got {key!r} — "
+                "a bool is a mask, not an address")
+        node = key.node if isinstance(key, Value) else key
+        if isinstance(node, int):
+            nodes.append(index_node(node))
+        elif isinstance(node, _ir.Node) and _ir.type_of(node).shape == ()\
+                and _ir.type_of(node).dtype in _INDEX_DTYPES:
+            if _ir.type_of(node).dtype not in ("i32", "i64"):     # an int plane value (hm.int32) indexes as i32
+                node = _ir.make("cast", (node,), "i32")
+            nodes.append(node)
+        else:
+            raise HawkError(
+                f"a traced value is indexed by a STATIC integer component or by a "
+                f"traced INTEGER index, got {key!r}. A lowered `for`'s own index is "
+                "the second form (`v[k]` inside the loop body); a rank-0 "
+                "floating value is neither — an index is an address, and rounding "
+                "one silently reads the wrong component (a cross-sample read of a "
+                "whole plane is a Table's at())")
+    return tuple(nodes)
 
 
 def _operands(args: tuple) -> tuple:
@@ -272,41 +303,25 @@ class Value:
     __hash__ = object.__hash__
 
     def __getitem__(self, k: Any) -> Value:
-        """``v[k]`` — one component of a rank>=1 value.
+        """``v[k]`` — one component of a rank>=1 value; a value of rank two or more takes ``v[i, j, ...]``, one
+        index per axis.
 
-        A STATIC integer is ``component``, checked at trace time; a TRACED
-        integer is ``component_at`` — needed inside a lowered ``for``, where
+        STATIC integers are ``component``, checked at trace time; TRACED integers (mixed with static ones
+        for the other axes) are ``component_at`` — needed inside a lowered ``for``, where
         ``k`` is a symbolic loop index, not a
         Python int (it materialises into an ``Item`` first, since aether's
         EXPRESSION only carries compile-time ``eval<Is...>``). A float is
         refused rather than truncated: rounding would silently read the
         wrong component."""
-        if isinstance(k, bool):
-            raise HawkError(
-                f"a traced value is indexed by an integer component, got {k!r} — "
-                "a bool is a mask, not an address")
-        if isinstance(k, int):
-            return _op("component", self, literal=k)
-        if (isinstance(k, tuple) and len(k) == len(self.ttype.shape) == 2
-                and all(isinstance(x, int) and not isinstance(x, bool) for x in k)):
-            return _op("component", self, literal=k)        # a matrix entry, `m[i, j]`
+        keys = k if isinstance(k, tuple) else (k,)
+        statics = all(isinstance(x, int) and not isinstance(x, bool) for x in keys)
+        if statics and (not isinstance(k, tuple) or len(k) == len(self.ttype.shape) >= 2):
+            return _op("component", self, literal=k)        # a static entry, `v[i]`, `m[i, j]` or `t[a, b, c]`
         if not self.ttype.shape and isinstance(k, Value):
             raise HawkError(
                 "x[key] indexes a component and a rank-0 value has none; another "
                 "lane's input is read with x.at(key)")
-        node = k.node if isinstance(k, Value) else k
-        if isinstance(node, _ir.Node) and _ir.type_of(node).shape == ()\
-                and _ir.type_of(node).dtype in _INDEX_DTYPES:
-            if _ir.type_of(node).dtype not in ("i32", "i64"):     # an int plane value (hm.int32) indexes as i32
-                node = _ir.make("cast", (node,), "i32")
-            return Value(_ir.make("component_at", (self.node, node)))
-        raise HawkError(
-            f"a traced value is indexed by a STATIC integer component or by a "
-            f"traced INTEGER index, got {k!r}. A lowered `for`'s own index is "
-            "the second form (`v[k]` inside the loop body); a rank-0 "
-            "floating value is neither — an index is an address, and rounding "
-            "one silently reads the wrong component (a cross-sample read of a "
-            "whole plane is a Table's at())")
+        return Value(_ir.make("component_at", (self.node, *element_indices(k))))
 
     def __setitem__(self, k: Any, value: Any) -> None:
         """``v[k] = e`` reaches HERE only from a plain-python HELPER whose
@@ -484,16 +499,16 @@ transpose = _unary("transpose")
 
 
 def _entries(shape: tuple) -> list:
-    """Every static index of a rank-1 or rank-2 ``shape``, row-major, as the
-    ``component`` literal reading that entry."""
+    """Every static index of ``shape``, row-major, as the ``component`` literal reading that
+    entry: an integer for a vector, one integer per axis for a value of rank two or more."""
     if len(shape) == 1:
         return list(range(shape[0]))
-    return [(r, c) for r in range(shape[0]) for c in range(shape[1])]
+    return list(itertools.product(*(range(extent) for extent in shape)))
 
 
 def _elementwise(kind: str, *args: Any) -> Value:
     """``kind`` applied component-wise. Rank-0 operands mint the op
-    itself; rank-1 or rank-2 operands are mapped entry by entry (a rank-0
+    itself; operands of any rank are mapped entry by entry (a rank-0
     operand broadcasts) and re-assembled with ``vec``, so the emitter only
     ever spells the rank-0 call. The shapes combine as the arithmetic
     operators' do — equal shapes, or one side rank-0 — and refuse in the
@@ -504,16 +519,12 @@ def _elementwise(kind: str, *args: Any) -> Value:
         shape = _broadcast_shape(kind, shape, _ir.type_of(n).shape)
     if not shape:
         return Value(_ir.make(kind, nodes))
-    if len(shape) > 2:
-        raise HawkError(
-            f"{kind}: applies component-wise to rank-0, rank-1 or rank-2 values, "
-            f"got {[_ir.type_of(n) for n in nodes]}")
     parts = []
     for k in _entries(shape):
         ops = [n if _ir.type_of(n).shape == () else _ir.make("component", (n,), k)
                for n in nodes]
         parts.append(_ir.make(kind, ops))
-    return Value(_ir.make("vec", parts, shape if len(shape) == 2 else None))
+    return Value(_ir.make("vec", parts, shape if len(shape) >= 2 else None))
 
 
 def _broadcast_shape(kind: str, a: tuple, b: tuple) -> tuple:
@@ -546,7 +557,7 @@ def _named(fn, name: str, doc: str):
 #: The kinds aether spells at rank 0 only, mapped entry by entry on a
 #: vector or matrix like the functions below.
 atan2 = _named(_mapped("atan2"), "atan2",
-               "``atan2(a, b)``, component-wise; rank-0, rank-1 or rank-2 operands.")
+               "``atan2(a, b)``, component-wise; operands of any rank.")
 land = _named(_mapped("land"), "land",
               "Logical and of two bool values, component-wise.")
 lor = _named(_mapped("lor"), "lor", "Logical or of two bool values, component-wise.")
@@ -565,7 +576,7 @@ def _lifted(kind: str, doc: str, params: tuple = ("x",)):
     return fn
 
 
-_D = "Component-wise; rank-0, rank-1 or rank-2 operands."
+_D = "Component-wise; operands of any rank."
 _Z = "Zero derivative."
 #: Piecewise-constant (lever 2): the largest integer <= ``x``, as an f64
 #: value. Its VJP/JVP are the explicit ZERO rule: zero almost everywhere.
@@ -754,60 +765,98 @@ def widened(node: Any) -> Any:
 class TableRef:
     """A ``Table``/``Staged``/``Wide`` parameter: read with ``at()``.
 
-    Two read spellings, one form. ``t.at(expr)`` is the positional read of a
-    flat plane; ``t.at(row=…, col=…)`` is the NAMED-AXIS read, folding to
-    ``sum(index_d * stride_d)`` over the DECLARED order, each stride minted
-    as a ``RoleConst`` carrying its axis — recoverable as
-    the declaration's, unlike the flat form."""
+    Two read spellings, one element. ``t.at(expr)`` is the read of a plane with
+    one axis; ``t.at(row=…, col=…)`` names every declared axis. Either way the
+    read is ONE ``At`` over the plane's leaf with one index per declared axis
+    and the ``clamp`` edge rule, so a read outside an axis reads that axis's
+    edge element."""
 
-    __slots__ = ("leaf", "name", "dims", "widen")
+    __slots__ = ("leaf", "name", "axes", "widen")
 
     def __init__(self, name: str, ttype: _ir.TensorType, *, role: str = "lookup",
-                 dims: Any = ()) -> None:
+                 axes: Any = ()) -> None:
         kind = "table_read" if role == "lookup" else "vocab_read"
         #: an ``Index`` payload is stored 32-bit and widened at the read
         self.widen = ttype == INDEX
-        self.leaf = _ir.leaf(_context(), kind, role, name, INDEX32 if self.widen else ttype)
+        self.axes = tuple(axes)
+        self.leaf = _ir.leaf(_context(), kind, role, name, INDEX32 if self.widen else ttype,
+                             axes=self.axes)
         self.name = name
-        self.dims = tuple(dims)
 
     def at(self, *positional: Any, **named: Any) -> Value:
-        """The ``at(expr)``: an absolute-index read of this plane. Every index is CLAMPED to its axis, ``[0,
-        extent)``, per axis (the flat index to the plane's length), so a read outside the plane reads its edge
-        element; a literal index a static extent already bounds is read as it is."""
-        read = _ir.make_node("At", _ir.type_of(self.leaf), [self.leaf, self._index(positional, named)])
+        """The read of this plane: ``at(expr)`` on a plane with one axis or, as a position in storage order, on a plane
+        with several; ``at(<axis>=…, …)`` naming every axis of a plane declared with several. A real-valued index
+        truncates to an integer first."""
+        if len(positional) == 1 and not named and len(self.axes) > 1:
+            indices, in_range = self._unflattened(positional[0]), True
+        else:
+            indices = self._indices(positional, named)
+            # a literal or compile-time loop index inside a static extent needs no edge rule on that axis
+            in_range = all(extent is not None and _inside(index, extent)
+                           for index, (_label, extent) in zip(indices, self._declared_axes()))
+        read = _ir.make_node("At", _ir.type_of(self.leaf), [self.leaf, *indices],
+                             edge="unchecked" if in_range else "clamp")
         return Value(widened(read) if self.widen else read)
 
     def __getitem__(self, i: Any) -> Value:
-        """``t[i]``: the flat read, the same as ``t.at(i)``; ``t[e, a]``: one
+        """``t[i]``: the read of a plane with one axis; ``t[e, a]``: one
         index per declared axis, in declared order, the same as ``t.at(e=…, a=…)``."""
         if not isinstance(i, tuple):
             return self.at(i)
-        labels = [label for label, _size, _stride in self.dims]
+        labels = [label for label, _extent in self.axes]
         if len(i) != len(labels):
             raise HawkError(
                 f"{self.name!r}: t[...] takes one index per declared axis "
-                f"{labels or '(none: this plane is flat, read t[i])'}, got {len(i)}")
+                f"{labels or '(none: this plane has one axis, read t[i])'}, got {len(i)}")
         return self.at(**dict(zip(labels, i)))
 
-    def _index(self, positional: tuple, named: dict) -> Any:
+    def _unflattened(self, flat: Any) -> list:
+        """One index per axis for the one-index read ``t[flat]`` of a plane with several axes: ``flat`` is the position in
+        storage order (last axis fastest), clamped to ``[0, elements - 1]``, then split by floor division and remainder over
+        the trailing extents, which are static by declaration. The first axis may be a runtime one: its extent only enters
+        the clamp, as the plane's own extent of that axis."""
+        trailing = [extent for _label, extent in self.axes[1:]]
+        scalar = _ir.TensorType((), "i32")
+        context = self.leaf.ctx
+        first = (_ir.const(context, self.axes[0][1], scalar) if self.axes[0][1] is not None
+                 else _ir.make_node("AxisExtent", scalar, [self.leaf], axis=0))
+        size = first
+        for extent in trailing:
+            size = _ir.make("mul", (size, _ir.const(context, extent, scalar)))
+        last = _ir.make("sub", (size, _ir.const(context, 1, scalar)))
+        position = _ir.make("max", (_ir.const(context, 0, scalar),
+                                    _ir.make("min", (_integer_index(index_node(flat)), last))))
+        indices, stride = [], 1
+        for extent in reversed(trailing):
+            step = _ir.make("floordiv", (position, _ir.const(context, stride, scalar)))
+            indices.append(_ir.make("mod", (step, _ir.const(context, extent, scalar))))
+            stride *= extent
+        indices.append(_ir.make("floordiv", (position, _ir.const(context, stride, scalar))))
+        return indices[::-1]
+
+    def _declared_axes(self) -> tuple:
+        """The axes a read addresses: the declared ones, else the one run-time axis of a flat plane."""
+        return self.axes or (("", None),)
+
+    def _indices(self, positional: tuple, named: dict) -> list:
+        """The integer index nodes of a read, one per axis in declared order."""
         if named and positional:
             raise HawkError(
                 f"{self.name!r}: at() takes a flat index OR every declared axis by "
                 "name, never both")
         if not named:
-            if len(positional) != 1:
+            if len(positional) != len(self._declared_axes()):
                 raise HawkError(
-                    f"{self.name!r}: at() takes ONE flat index, got "
-                    f"{len(positional)} — a named-axis plane is read "
-                    "at(<axis>=…, …)")
-            return self._clamped(index_node(positional[0]), None)
-        if not self.dims:
+                    f"{self.name!r}: at() takes ONE index, got {len(positional)} — "
+                    + (f"the axes {[label for label, _ in self.axes]} are read "
+                       "at(<axis>=…, …)" if self.axes else "this plane has one axis"))
+            return [_integer_index(index_node(index)) for index in positional]
+        if not self.axes:
             raise HawkError(
                 f"{self.name!r} declares no named axes, so it is read at a flat "
                 f"index: at(expr). Named axes are declared "
                 'Table["row":rows, "col":cols]')
-        declared = [label for label, _size, _stride in self.dims]
+        declared = [label for label, _extent in self.axes]
         missing = [d for d in declared if d not in named]
         unknown = sorted(k for k in named if k not in set(declared))
         if missing or unknown:
@@ -817,37 +866,22 @@ class TableRef:
                 + (f"; missing {missing}" if missing else "")
                 + (f"; unknown {unknown}" if unknown else "")
                 + " — a partial address would silently read the wrong row")
-        flat: Any = None
-        for label, size, stride in self.dims:
-            static = size if isinstance(size, int) and not isinstance(size, bool) else None
-            factor = (n_samples().node if stride == "n_samples" else _ir.make_node(
-                "RoleConst", _I32, context=_context(), literal=stride, label=f"{self.name}_{label}_stride"))
-            term = _ir.make("mul", (self._clamped(index_node(named[label]), static, None if stride == "n_samples" else stride),
-                                 factor))
-            flat = term if flat is None else _ir.make("add", (flat, term))
-        return flat
+        return [_integer_index(index_node(named[label])) for label in declared]
 
-    def _clamped(self, index: Any, extent: int | None, stride: int | None = 1) -> Any:
-        """``index`` held to ``[0, extent)`` in its own integer type by ONE ``clamp_index``: a static extent, else the
-        plane's length over the axis stride read at run time (``stride`` ``None``: an axis over the lanes, held to
-        the lane count). An index provably in range (a literal, or a compile-time loop's range, inside a static
-        extent) is not clamped."""
-        if _ir.type_of(index).dtype not in ("i32", "i64"):
-            index = _ir.make("cast", (index,), "i32")      # a real index truncates, as the read always did, then clamps
-        t = _ir.type_of(index)
-        lo = hi = literal_int(index)
-        if lo is None and _ir.is_a(index, "loop_index") and index.field_kind("bounds"):
-            lo, hi = index.field_ints("bounds")
-        if extent is not None:
-            if lo is not None and lo >= 0 and hi < extent:
-                return index
-            bound = _ir.const(index.ctx, extent, t)
-        elif stride is None:
-            bound = n_samples().node
-        else:
-            length = _ir.make_node("PlaneExtent", t, [self.leaf])
-            bound = length if stride == 1 else _ir.make("floordiv", (length, _ir.const(index.ctx, int(stride), t)))
-        return _ir.make("clamp_index", (index, bound))
+
+def _integer_index(index: Any) -> Any:
+    """``index`` as an integer node: a real-valued index truncates, as every read always did."""
+    if _ir.type_of(index).dtype not in ("i32", "i64"):
+        return _ir.make("cast", (index,), "i32")
+    return index
+
+
+def _inside(index: Any, extent: int) -> bool:
+    """Whether ``index`` is provably in ``[0, extent)``: a literal, or a compile-time loop's range."""
+    lo = hi = literal_int(index)
+    if lo is None and _ir.is_a(index, "loop_index") and index.field_kind("bounds"):
+        lo, hi = index.field_ints("bounds")
+    return lo is not None and lo >= 0 and hi < extent
 
 
 class SharedValue(Value):
@@ -861,8 +895,8 @@ class SharedValue(Value):
 
     __slots__ = ("ref", "shape", "_whole")
 
-    def __init__(self, name: str, shape: tuple, dims: tuple) -> None:  # noqa: D107 - see the class
-        self.ref = TableRef(name, _F64, role="lookup", dims=dims)
+    def __init__(self, name: str, shape: tuple, axes: tuple) -> None:  # noqa: D107 - see the class
+        self.ref = TableRef(name, _F64, role="lookup", axes=axes)
         self.shape = tuple(shape)
         self._whole: Any = None
 
@@ -870,9 +904,10 @@ class SharedValue(Value):
     def node(self) -> Any:
         """The whole value, built from its cells on first use."""
         if self._whole is None:
-            cells = [_ir.make_node("At", _F64, [self.ref.leaf, _ir.const(_context(), k, _I32)])
-                     for k in range(math.prod(self.shape))]
-            self._whole = _ir.make("vec", cells, self.shape if len(self.shape) == 2 else None)
+            cells = [_ir.make_node("At", _F64, [self.ref.leaf, *(_ir.const(_context(), c, _I32) for c in cell)],
+                                   edge="unchecked")
+                     for cell in itertools.product(*(range(extent) for extent in self.shape))]
+            self._whole = _ir.make("vec", cells, self.shape if len(self.shape) >= 2 else None)
         return self._whole
 
     def _cell(self, k: Any, extent: int, axis: str) -> Any:
@@ -885,14 +920,52 @@ class SharedValue(Value):
         return k
 
     def __getitem__(self, k: Any) -> Value:
-        """``p[j]`` (a vector) or ``p[i, j]`` (a matrix): one cell, read from memory."""
+        """``p[j]`` (a vector) or ``p[i, j, ...]`` (one index per axis): one cell, read from memory."""
         rank = len(self.shape)
         if rank == 1 and not isinstance(k, tuple):
             return self.ref.at(self._cell(k, self.shape[0], "component"))
-        if rank == 2 and isinstance(k, tuple) and len(k) == 2:
-            return self.ref.at(row=self._cell(k[0], self.shape[0], "row"),
-                               col=self._cell(k[1], self.shape[1], "column"))
+        if rank >= 2 and isinstance(k, tuple) and len(k) == rank:
+            labels = [label for label, _extent in self.ref.axes]
+            return self.ref[tuple(self._cell(x, extent, label)
+                                  for x, extent, label in zip(k, self.shape, labels))]
         return Value.__getitem__(self, k)
+
+
+class Row:
+    """One row of a ``Rows`` parameter: ``row.length`` entries of the values plane from offset ``row.start``."""
+
+    __slots__ = ("start", "length", "_values")
+
+    def __init__(self, values: TableRef, start: Value, length: Value) -> None:
+        """Hold the values plane, the row's first position and its entry count (both traced integers)."""
+        self._values, self.start, self.length = values, start, length
+
+    def entry(self, k: Any) -> Value:
+        """The ``k``-th entry of the row, read at ``start + k`` from the values plane."""
+        return self._values.at(self.start + k)
+
+    def bounded(self, bound: int) -> Any:
+        """Refuse a call outside a loop header: the loop ``for x in row.bounded(K):`` visits ``min(length, K)`` entries
+        and is rewritten before the body runs, so this is reached only from a helper the rewrite never sees."""
+        raise HawkError(
+            f"row.bounded({bound!r}) is the header of a `for` inside a kernel body: "
+            "`for x in row.bounded(K):` visits at most K entries; in a helper, pass the row's entries instead"
+        )
+
+
+class RowsView:
+    """What a kernel body sees for a ``Rows`` parameter: ``rows[i]`` is the row ``i``, a :class:`Row`."""
+
+    __slots__ = ("name", "_offsets", "_values")
+
+    def __init__(self, name: str, *, offsets: TableRef, values: TableRef) -> None:
+        """Relate the traced offsets plane to the traced values plane of the parameter ``name``."""
+        self.name, self._offsets, self._values = name, offsets, values
+
+    def __getitem__(self, i: Any) -> Row:
+        """The row ``i``: its start is ``offsets[i]`` and its length ``offsets[i + 1] - offsets[i]``."""
+        start = self._offsets.at(i)
+        return Row(self._values, start, self._offsets.at(i + 1) - start)
 
 
 def own_column_rewrite_advice(name: str) -> str:
@@ -967,25 +1040,25 @@ def _is_stored(value: Any) -> bool:
     return isinstance(value, _Stored)
 
 
-def by_key(ref: Any, index: Any, value: Any, accumulate: bool, contract: str = "auto") -> None:
-    """One store by key into ``ref`` at the flat ``index``: an accumulate
+def by_key(ref: Any, indices: list, value: Any, accumulate: bool, contract: str = "auto") -> None:
+    """One store by key into ``ref`` at ``indices``, one per axis of the sink: an accumulate
     (``AccumWrite``) or a store (``WideWrite``). A vector or matrix payload into
-    a sink declared with named axes adds entry ``k`` at ``index + k * extent``,
-    payload first."""
+    a sink declared with named axes is summed per key (``ReduceSamples``), payload first."""
     where = f"hawk.scatter({ref.name})[key]"
     if any(not _ir.is_a(k, "accum_write", "wide_write") for k in ref.sinks):
         raise HawkError(
             f"{ref.name!r} is written per lane (locked) and by key ({where}): one "
             "plane has one extent")
-    key_type = _ir.type_of(index)
-    if key_type.shape != () or key_type.dtype not in _INDEX_DTYPES:
-        raise HawkError(f"{where}: key is an Index or an integer value, got {key_type!r}")
+    for index in indices:
+        key_type = _ir.type_of(index)
+        if key_type.shape != () or key_type.dtype not in _INDEX_DTYPES:
+            raise HawkError(f"{where}: key is an Index or an integer value, got {key_type!r}")
     if contract == "or" and (ref.ttype.shape or ref.ttype.dtype not in _ir.INT_PLANE_DTYPES):
         raise HawkError(
             f"{where}: |= sets bits of an Int32 or UInt32 plane (a word per key), "
             f"{ref.name!r} is declared {ref.ttype!r}")
     kind = "accum" if accumulate else "wide_out"
-    if ref.ttype.shape and not (accumulate and ref.dims):
+    if ref.ttype.shape and not (accumulate and ref.axes):
         raise HawkError(
             f"{where}: a vector payload is added by key into a sink declared with "
             f"named axes (Mutable[Vector[w], \"bin\":n]); a flat sink takes one "
@@ -996,20 +1069,45 @@ def by_key(ref: Any, index: Any, value: Any, accumulate: bool, contract: str = "
             f"{ref.name!r} is stored by key twice (or both accumulated and stored): "
             "one plane takes one by-key statement, or several `+=`")
     if not accumulate:
-        ref.sinks = [_ir.make_node("WideWrite", ref.ttype, [ref._typed(value), index], name=ref.name)]
+        ref.sinks = [_ir.make_node("WideWrite", ref.ttype, [ref._typed(value), *indices], name=ref.name,
+                                   edge="unchecked", axes=ref.axes)]
     elif ref.ttype.shape:
-        extent = 1
-        for _label, size, _stride in ref.dims:
-            extent *= size
-        reduced = _ir.reduce_samples("sum", ref._typed(value), key=index,
-                                     count=_ir.const(index.ctx, extent, key_type),
-                                     contract="auto" if contract == "plain" else contract)
-        ref.sinks.extend(_ir.cells_stored(reduced, ref.name))
+        ref.sinks.extend(_payload_sums(ref, indices, value, contract))
     else:
         contract = _ir.KEYED_AUTO if contract == "auto" else contract
-        ref.sinks.append(_ir.make_node("AccumWrite", ref.ttype, [ref._typed(value), index],
-                                       name=ref.name, contract=contract, reduced=None))
+        ref.sinks.append(_ir.make_node("AccumWrite", ref.ttype, [ref._typed(value), *indices],
+                                       name=ref.name, contract=contract, reduced=None, edge="unchecked",
+                                       axes=ref.axes))
     ref.by_key_kind = kind
+
+
+def _payload_axes(ref: Any) -> tuple:
+    """The leading axes of a sink whose payload is a vector or a matrix: one per payload dimension, labelled so
+    that none repeats a declared label."""
+    taken = {label for label, _extent in ref.axes}
+    axes = []
+    for stem, extent in zip(("component",) if len(ref.ttype.shape) == 1 else ("row", "col"), ref.ttype.shape):
+        while stem in taken:
+            stem += "_"
+        taken.add(stem)
+        axes.append((stem, extent))
+    return tuple(axes)
+
+
+def _payload_sums(ref: Any, indices: list, value: Any, contract: str) -> list:
+    """The sum of a vector or matrix payload into a sink with axes: one accumulate per payload entry, at the entry's
+    coordinates followed by the key's, into the plane whose axes are the payload's then the sink's."""
+    node = ref._typed(value)
+    contract = _ir.KEYED_AUTO if contract == "auto" else contract
+    scalar = _ir.TensorType((), ref.ttype.dtype)
+    axes = _payload_axes(ref) + ref.axes
+    sums = []
+    for entry in itertools.product(*(range(extent) for extent in ref.ttype.shape)):
+        part = _ir.make("component", (node,), literal=entry if len(entry) > 1 else entry[0])
+        coordinates = [_ir.const(part.ctx, k, _ir.type_of(indices[0])) for k in entry]
+        sums.append(_ir.make_node("AccumWrite", scalar, [part, *coordinates, *indices], name=ref.name,
+                                  contract=contract, reduced=None, edge="unchecked", axes=axes))
+    return sums
 
 
 def retired_sink_method(name: str, method: str) -> str:
@@ -1021,21 +1119,23 @@ def retired_sink_method(name: str, method: str) -> str:
             f"key) or hawk.scatter({name})[key] = v (store by key)")
 
 
-def _block_write(name: str, block: Any) -> Any:
-    """The store of a block-shaped keyed sum to the plane ``name`` (``(*payload, *kept)``, payload first)."""
-    return _ir.make_node("BlockSumWrite", _ir.TensorType((), _ir.type_of(block).dtype), [block], name=name)
+def _block_write(ref: Any, block: Any) -> Any:
+    """The store of a block-shaped keyed sum to the plane of ``ref``: the plane's axes are the payload's, labelled, then the
+    declared ones (``(*payload, *kept)``, payload first)."""
+    return _ir.make_node("BlockSumWrite", _ir.TensorType((), _ir.type_of(block).dtype), [block], name=ref.name,
+                         axes=_payload_axes(ref) + tuple(ref.axes))
 
 
 class _SinkRef:
     """Shared write-side state: the sinks a body commits through one plane.
-    ``dims`` are the sink's declared named axes ``((label, size, stride), ...)``."""
+    ``axes`` are the sink's declared named axes ``((label, extent), ...)``."""
 
-    __slots__ = ("name", "ttype", "sinks", "by_key_kind", "dims")
+    __slots__ = ("name", "ttype", "sinks", "by_key_kind", "axes")
 
-    def __init__(self, name: str, ttype: _ir.TensorType, dims: tuple = ()) -> None:
+    def __init__(self, name: str, ttype: _ir.TensorType, axes: tuple = ()) -> None:
         self.name = name
         self.ttype = ttype
-        self.dims = dims
+        self.axes = axes
         self.sinks: list[Any] = []
         self.by_key_kind: str | None = None
 
@@ -1141,13 +1241,20 @@ class MutableRef(_SinkRef):
         if _ir.is_a(node, "reduce_samples"):
             self.sinks = list(_ir.cells_stored(node, self.name))
         elif _ir.is_a(node, "block_sum"):
-            self.sinks = [_block_write(self.name, node)]
+            self.sinks = [_block_write(self, node)]
         else:
-            self.sinks = [_ir.make_node("Assign", self.ttype, [node], name=self.name)]
+            self.sinks = [_ir.make_node("Assign", self.ttype, [node], name=self.name, axes=tuple(self.axes))]
+
+    def _addressed(self, sink: Any, coordinates: tuple) -> Any:
+        """The accumulate ``sink`` of a sum over some lane axes at the lane's coordinate on each kept axis, as the scatter
+        ``hawk.scatter(plane)[coordinates]`` states it; a payload entry keeps its flat key."""
+        if not _ir.is_a(sink, "accum_write") or self.ttype.shape:
+            return sink
+        return _ir.addressed(sink, coordinates, self.axes)
 
     def _reduced(self, value: Any) -> None:
         """``out = hawk.sum(x, over=...)``: ``out`` declares the kept axes."""
-        kept = [(label, size) for label, size, _stride in self.dims]
+        kept = [(label, size) for label, size in self.axes]
         if [label for label, _ in kept] != [label for label, _ in value.kept] or any(
                 extent is not None and extent != size
                 for (_, size), (_, extent) in zip(kept, value.kept)):
@@ -1171,8 +1278,8 @@ class MutableRef(_SinkRef):
             else:
                 key_type = _ir.type_of(node.field_nodes("key")[0])
                 node = _ir.recount(node, _ir.const(node.ctx, extent, key_type))
-        self.sinks = ([_block_write(self.name, node)] if _ir.is_a(node, "block_sum")
-                      else list(_ir.cells_stored(node, self.name)))
+        self.sinks = ([_block_write(self, node)] if _ir.is_a(node, "block_sum")
+                      else [self._addressed(sink, value.coordinates) for sink in _ir.cells_stored(node, self.name)])
         self.by_key_kind = "accum"
 
 

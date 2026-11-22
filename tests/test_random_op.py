@@ -140,47 +140,47 @@ def test_random_ops_are_in_the_closed_world():
 
 
 def test_an_unknown_random_kind_still_refuses():
-    seed = Leaf("vocab_read", "per_sample", "seed", I32)
-    counter = Leaf("vocab_read", "per_sample", "counter", I32)
+    seed = Leaf("vocab_read", "plane_in", "seed", I32)
+    counter = Leaf("vocab_read", "plane_in", "counter", I32)
     with pytest.raises(HawkError, match="unknown op kind"):
         mk("random_geometric", (seed, counter))
 
 
 @pytest.mark.parametrize("kind", RANDOM_OPS)
 def test_a_rank1_seed_is_refused_by_name(kind):
-    bad = Leaf("vocab_read", "vec_in", "seed", TensorType((3,), "i32"))
-    counter = Leaf("vocab_read", "per_sample", "counter", I32)
+    bad = Leaf("vocab_read", "plane_in", "seed", TensorType((3,), "i32"))
+    counter = Leaf("vocab_read", "plane_in", "counter", I32)
     with pytest.raises(HawkError, match=f"{kind}: seed"):
         mk(kind, (bad, counter))
 
 
 @pytest.mark.parametrize("kind", RANDOM_OPS)
 def test_a_real_typed_seed_is_refused_by_name(kind):
-    bad = Leaf("vocab_read", "per_sample", "seed", F64)
-    counter = Leaf("vocab_read", "per_sample", "counter", I32)
+    bad = Leaf("vocab_read", "plane_in", "seed", F64)
+    counter = Leaf("vocab_read", "plane_in", "counter", I32)
     with pytest.raises(HawkError, match=f"{kind}: seed"):
         mk(kind, (bad, counter))
 
 
 @pytest.mark.parametrize("kind", RANDOM_OPS)
 def test_a_real_typed_counter_is_refused_by_name(kind):
-    seed = Leaf("vocab_read", "per_sample", "seed", I32)
-    bad = Leaf("vocab_read", "per_sample", "counter", F64)
+    seed = Leaf("vocab_read", "plane_in", "seed", I32)
+    bad = Leaf("vocab_read", "plane_in", "counter", F64)
     with pytest.raises(HawkError, match=f"{kind}: counter"):
         mk(kind, (seed, bad))
 
 
 @pytest.mark.parametrize("kind", RANDOM_OPS)
 def test_arity_is_exactly_two(kind):
-    seed = Leaf("vocab_read", "per_sample", "seed", I32)
+    seed = Leaf("vocab_read", "plane_in", "seed", I32)
     with pytest.raises(HawkError, match="takes 2 operand"):
         mk(kind, (seed,))
 
 
 @pytest.mark.parametrize("kind", RANDOM_OPS)
 def test_i64_operands_are_accepted_and_the_result_is_rank0_f64(kind):
-    seed = Leaf("vocab_read", "per_sample", "seed", I64)
-    counter = Leaf("vocab_read", "per_sample", "counter", I64)
+    seed = Leaf("vocab_read", "plane_in", "seed", I64)
+    counter = Leaf("vocab_read", "plane_in", "counter", I64)
     node = mk(kind, (seed, counter))
     assert _ir.type_of(node) == F64, (
         "a random draw is typed the way a float literal is, so it "
@@ -390,10 +390,10 @@ def _bits_to_double(bits: int) -> float:
 # card is re-minted by test_diff_rule_card.py's own run (not here).
 # --------------------------------------------------------------------------- #
 def test_diff_no_adjoint_term_for_seed_or_counter_and_matches_fd():
-    seed = Leaf("vocab_read", "per_sample", "seed", I32)
-    counter = Leaf("vocab_read", "per_sample", "counter", I32)
-    x = Leaf("vocab_read", "per_sample", "x", F64)
-    y = Leaf("vocab_read", "per_sample", "y", F64)
+    seed = Leaf("vocab_read", "plane_in", "seed", I32)
+    counter = Leaf("vocab_read", "plane_in", "counter", I32)
+    x = Leaf("vocab_read", "plane_in", "x", F64)
+    y = Leaf("vocab_read", "plane_in", "y", F64)
     draw = mk("random_normal", (seed, counter))
     f = mk("add", (mk("mul", (x, draw)), y))
     sinks = (Assign("out", f, F64),)

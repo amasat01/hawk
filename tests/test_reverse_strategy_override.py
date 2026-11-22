@@ -38,8 +38,8 @@ _H = 1e-6
 
 def _primal(strategy: str, K: int = 3):
     context = _ir.new_context()
-    k = _ir.leaf(context, "vocab_read", "per_sample", "k", I32)
-    xs = [_ir.leaf(context, "vocab_read", "per_sample", f"x{i}", S) for i in range(K)]
+    k = _ir.leaf(context, "vocab_read", "plane_in", "k", I32)
+    xs = [_ir.leaf(context, "vocab_read", "plane_in", f"x{i}", S) for i in range(K)]
     branches = [
         _ir.make("mul", (xs[i], _ir.make("sin", (xs[(i + 1) % K],)))) for i in range(K)
     ]
@@ -118,7 +118,7 @@ def by_mask(dt: Param, kind: Index, terminated: Terminated, x: Mutable[Scalar]):
 def test_a_selector_reading_only_inputs_is_static():
     (d,) = _ir.dispatch_groups(by_input.walk)
     assert _ir.static_selector(by_input.walk, 0) is True
-    assert ("per_sample", "kind") in _ir.selector_reads(by_input.walk, 0)
+    assert ("plane_in", "kind") in _ir.selector_reads(by_input.walk, 0)
 
 
 @pytest.mark.parametrize("k", [by_state, by_mask], ids=lambda k: k.name)

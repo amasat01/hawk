@@ -31,7 +31,7 @@ V3 = _ir.TensorType((3,), "f64")
 
 
 def _real(t=S):
-    role = {0: "per_sample", 1: "vec_in"}[len(t.shape)]
+    role = {0: "plane_in", 1: "plane_in"}[len(t.shape)]
     return hawk.Value(_ir.leaf(CTX, "vocab_read", role, "a", t))
 
 

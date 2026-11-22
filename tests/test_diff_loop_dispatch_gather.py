@@ -50,12 +50,12 @@ def _fd(f, v, h=1e-6):
 def test_the_gradient_matches_finite_differences(kind):
     tab = np.random.default_rng(1).uniform(0.5, 1.2, 2 * N)
     got = evaluate(vjp(switch_gather, wrt=("x", "tab")),
-                   {"x": 0.4, "kind": float(kind), "tab": tab, "terminated": False,
-                    "bar_out": 1.0}, lanes=2 * N)
+                   {"x": 0.4, "kind": float(kind), "tab": tab.reshape(N, 2), "terminated": False,
+                    "bar_out": 1.0}, lanes=2 * N, shapes={"bar_tab": (N, 2)})
     want_x = _fd(lambda v: _primal(v[0], kind, tab), np.array([0.4]))[0]
     want_t = _fd(lambda v: _primal(0.4, kind, v), tab)
     assert abs(got["bar_x"] - want_x) < 1e-8
-    np.testing.assert_allclose(got["bar_tab"], want_t, atol=1e-8)
+    np.testing.assert_allclose(got["bar_tab"].reshape(-1), want_t, atol=1e-8)
     if kind == 2:                         # the branch with no gather
         assert not np.any(got["bar_tab"])
 

@@ -33,7 +33,7 @@ CTX = _ir.new_context()
 
 
 def _x():
-    return _ir.leaf(CTX, "vocab_read", "per_sample", "x", F64)
+    return _ir.leaf(CTX, "vocab_read", "plane_in", "x", F64)
 
 
 def _out(value):

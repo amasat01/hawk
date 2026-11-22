@@ -57,7 +57,7 @@ MAX_SCHEMA_VERSION = 3
 AETHER_ABI_VERSION = "aether-abi/2"
 
 #: Byte size of the by-value ``GRefMirror`` POD: the aether
-#: ``View<Real, extents<N,dyn>, layout_stride>`` mirror a ``vec_in``/``out``/
+#: ``View<Real, extents<N,dyn>, layout_stride>`` mirror a ``plane_in`` (rank above 0)/``out``/
 #: matrix-mutable role crosses the nanobind boundary as. Copy of the layout
 #: ``eagle.host_launch.GRefMirror`` ctypes struct asserts, and of the C++
 #: ``static_assert(sizeof(GRefMirror) == 40, ...)``
@@ -65,7 +65,7 @@ AETHER_ABI_VERSION = "aether-abi/2"
 GREF_MIRROR_SIZE = 40
 
 #: Byte size of the by-value ``ScalarHandle`` POD: the aether
-#: ``View<Real, extents<dyn>, layout_stride>`` mirror a ``per_sample``/
+#: ``View<Real, extents<dyn>, layout_stride>`` mirror a ``plane_in`` (rank 0)/
 #: ``lookup``/``terminated``/``wide_in``/``wide_out``/``accum_out``/
 #: scalar-mutable role crosses as. Copy of
 #: ``eagle.host_launch.ScalarHandle`` and of the C++

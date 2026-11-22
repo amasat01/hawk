@@ -204,7 +204,7 @@ def read_at(value: Value, positional: tuple, named: dict) -> Value:
               and _ir.type_of(node.operands[0]).dtype == "int32" and _ir.type_of(node).dtype == "i32")
     if narrow:
         node = node.operands[0]
-    if not (_ir.is_a(node, "leaf") and node.field_text("role") in ("per_sample", "vec_in", "mat_in")
+    if not (_ir.is_a(node, "leaf") and node.field_text("role") == "plane_in"
             and node.field_text("kind") != "prior_read"):
         raise HawkError(
             "at() reads an input plane at another lane; a value computed in this "

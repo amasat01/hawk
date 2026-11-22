@@ -15,7 +15,7 @@ WHAT THE BED'S ROWS REQUIRE OF A UNIT, and why these kernels are shaped as they
 are (this is narrower than ``tests/_deployable``'s deployment fixture set, which
 is why the kernels live here and not there):
 
-* exactly ONE ``per_sample`` input and exactly ONE output plane — the bed binds
+* exactly ONE ``plane_in`` input and exactly ONE output plane — the bed binds
   by ROLE, not by name, and asserts those counts;
 * every unit carries BOTH targets: the manifest ``format`` discriminant is
   device-only (``ptx``/``cubin``/``fatbin``), so a host-only unit would not load

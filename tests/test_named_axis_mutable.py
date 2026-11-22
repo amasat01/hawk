@@ -35,7 +35,7 @@ def hist(lane: Grid["i"], x: Scalar, bins: Mutable["bin":BINS]):
 
 @hawk.kernel
 def cells(lane: Grid["channel", "input":8], x: Scalar, tb: Mutable["channel":4, "input":8]):
-    hawk.scatter(tb)[lane.channel * 8 + lane.input] += x
+    hawk.scatter(tb)[lane.channel, lane.input] += x
 
 
 @pytest.fixture(scope="module")
@@ -55,12 +55,12 @@ def _ref_hist(x):
 
 def test_the_declaration_names_the_axes_and_the_payload():
     one = Mutable["bin":256]
-    assert (one.form, one.ttype, [(a, n) for a, n, _s in one.dims]) == (
+    assert (one.form, one.ttype, list(one.axes)) == (
         "mutable", Scalar, [("bin", 256)])
     two = Mutable["channel":64, "input":32]
-    assert [(a, n, s) for a, n, s in two.dims] == [("channel", 64, 32), ("input", 32, 1)]
+    assert list(two.axes) == [("channel", 64), ("input", 32)]
     vec = Mutable[Vector[3], "bin":4]
-    assert (vec.ttype, [(a, n) for a, n, _s in vec.dims]) == (Vector[3], [("bin", 4)])
+    assert (vec.ttype, list(vec.axes)) == (Vector[3], [("bin", 4)])
     assert Mutable[Scalar] == Plane("mutable", Scalar)         # unchanged
 
 

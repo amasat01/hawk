@@ -209,7 +209,7 @@ def _draw(kernel, seed: int, widths: dict | None = None) -> dict:
     rng = np.random.default_rng(seed)
     out = {}
     for role, name in kernel.arg_spec:
-        if role in ("per_sample", "vec_in"):
+        if role in ("plane_in", "plane_in"):
             out[name] = rng.uniform(0.3, 1.2, _shape(widths or {}, name))
         elif role == "uniform":
             out[name] = float(rng.uniform(0.7, 1.4))
@@ -228,7 +228,7 @@ def _new(child, parent, prefix: str, base: str) -> str:
 
 
 def _floats(kernel):
-    return [n for r, n in kernel.arg_spec if r in ("per_sample", "vec_in", "uniform", "lookup")]
+    return [n for r, n in kernel.arg_spec if r in ("plane_in", "plane_in", "uniform", "lookup")]
 
 
 def _bump(values: dict, step: dict, sign: float) -> dict:

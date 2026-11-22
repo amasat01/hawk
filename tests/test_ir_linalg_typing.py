@@ -29,15 +29,15 @@ FACTOR_TAG = {
 
 
 def mat(n, dtype="f64", name="A"):
-    return _ir.leaf(CONTEXT, "vocab_read", "mat_in", name, ((n, n), dtype, None))
+    return _ir.leaf(CONTEXT, "vocab_read", "plane_in", name, ((n, n), dtype, None))
 
 
 def vec(n, dtype="f64", name="b"):
-    return _ir.leaf(CONTEXT, "vocab_read", "vec_in", name, ((n,), dtype, None))
+    return _ir.leaf(CONTEXT, "vocab_read", "plane_in", name, ((n,), dtype, None))
 
 
 def rhs(n, k, dtype="f64"):
-    return _ir.leaf(CONTEXT, "vocab_read", "mat_in", "B", ((n, k), dtype, None))
+    return _ir.leaf(CONTEXT, "vocab_read", "plane_in", "B", ((n, k), dtype, None))
 
 
 def typed(node):
@@ -108,7 +108,7 @@ def test_info_is_an_int32_plane_that_compares_and_selects():
 )
 def test_only_a_square_float_matrix_is_factored(bad):
     shape, dtype = bad
-    leaf = _ir.leaf(CONTEXT, "vocab_read", "mat_in", "A", (shape, dtype, None))
+    leaf = _ir.leaf(CONTEXT, "vocab_read", "plane_in", "A", (shape, dtype, None))
     with pytest.raises(
         HawkError, match="square matrix is factored|f64/f32 matrix is factored"
     ):

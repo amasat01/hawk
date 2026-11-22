@@ -29,6 +29,7 @@ from pathlib import Path
 import _osprey
 
 from . import _broadcast, _place, graph_builder, ospreys
+from ._bind_checks import expand_records
 from .errors import HawkError
 from .runtime import BoundPlan, LoadedKernel, load, through_door
 from .targets import TARGETS, host_target, runs_here
@@ -164,6 +165,7 @@ class Plan:
         planes bind to that pattern's twin, compact. The checks are those of :meth:`~hawk.runtime.LoadedKernel.arguments`
         (``keep``, ``outputs`` and ``running`` as there); ``span=(base, count)`` launches over part of the range.
         """
+        planes = expand_records(self.kernel.declared, planes, self.kernel.sidecar.get("kernel", "?"))
         recorder = graph_builder.current()
         if recorder is not None and recorder.reverse and self._reversible() is not self:
             return self._reversible().bound(planes, n_samples=n_samples, layout=layout, keep=keep, outputs=outputs,

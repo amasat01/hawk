@@ -28,10 +28,10 @@ TensorType = _ir.TensorType
 
 
 def _collision(a: TensorType, b: TensorType):
-    """Two leaves sharing ``('vec_in', 'x')`` with the given types, both reached."""
+    """Two leaves sharing ``('plane_in', 'x')`` with the given types, both reached."""
     context = _ir.new_context()
-    left = _ir.leaf(context, "vocab_read", "vec_in", "x", a)
-    right = _ir.leaf(context, "vocab_read", "vec_in", "x", b)
+    left = _ir.leaf(context, "vocab_read", "plane_in", "x", a)
+    right = _ir.leaf(context, "vocab_read", "plane_in", "x", b)
     total = _ir.make_node("Op", a, (left, right), kind="add", literal=None)
     return (_ir.make_node("Assign", a, (total,), name="out"),)
 
@@ -40,7 +40,7 @@ def test_shape_collision_is_refused_naming_both_types():
     with pytest.raises(HawkError) as excinfo:
         _ir.canonical(_collision(V3, TensorType((4,), "f64")))
     msg = str(excinfo.value)
-    assert "'vec_in'" in msg and "'x'" in msg, msg
+    assert "'plane_in'" in msg and "'x'" in msg, msg
     assert "shape=(3,)" in msg and "shape=(4,)" in msg, (
         "the refusal must name BOTH types, got: " + msg
     )
@@ -61,15 +61,15 @@ def test_tag_collision_is_refused():
 def test_agreeing_leaves_merge_onto_one_slot():
     """The positive half: agreement merges, and merges ONCE."""
     walk = _ir.canonical(_collision(V3, TensorType((3,), "f64")))
-    assert _ir.arg_spec(walk).count(("vec_in", "x")) == 1
-    assert _ir.slot_of(walk)[("vec_in", "x")] == _ir.arg_spec(walk).index(
-        ("vec_in", "x")
+    assert _ir.arg_spec(walk).count(("plane_in", "x")) == 1
+    assert _ir.slot_of(walk)[("plane_in", "x")] == _ir.arg_spec(walk).index(
+        ("plane_in", "x")
     )
 
 
 def test_sink_and_leaf_do_not_collide_across_roles():
-    """``('mutable','x')`` and ``('vec_in','x')`` are distinct slots: the key
+    """``('mutable','x')`` and ``('plane_in','x')`` are distinct slots: the key
     is the PAIR, not the name."""
-    leaf = _ir.leaf(_ir.new_context(), "vocab_read", "vec_in", "x", F64)
+    leaf = _ir.leaf(_ir.new_context(), "vocab_read", "plane_in", "x", F64)
     walk = _ir.canonical((_ir.make_node("Assign", F64, (leaf,), name="x"),))
-    assert _ir.arg_spec(walk) == (("mutable", "x"), ("vec_in", "x"))
+    assert _ir.arg_spec(walk) == (("mutable", "x"), ("plane_in", "x"))

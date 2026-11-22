@@ -7,8 +7,8 @@ slot, inputs included — not the output-only ``arg_widths`` shipped with
 that module's docstring first).
 
 A v2 consumer previously had ``arg_widths`` for a ``mutable``/``out``/
-``wide_out``/``accum_out`` plane and NOTHING for a ``vec_in``/``mat_in``/
-``per_sample``/``lookup``/``terminated``/``wide_in`` one — eagle's OWN
+``wide_out``/``accum_out`` plane and NOTHING for a ``plane_in``/``plane_in``/
+``plane_in``/``lookup``/``terminated``/``wide_in`` one — eagle's OWN
 ``Plan.bind`` docstring says so in as many words ("a v2 sidecar declares
 widths for its OUTPUT planes only... that gap belongs to the producer's
 sidecar, and is being closed there"), and a downstream package's drift guard
@@ -79,7 +79,7 @@ the kernel's ``uniform`` argument, so ``Plan.bind`` raised earlier for an
 unrelated reason ("this plugin's arg_spec declares a 'uniform' named 'a'...
 bindable: ['y', 'x', 'a']"), and the loose regex matched the quoted ``'x'``
 inside that OTHER message's ``bindable`` list. Fixed by binding the uniform
-and tightening the match to ``r"vec_in 'x'"``.
+and tightening the match to ``r"plane_in 'x'"``.
 
 A second RED, this one on the FIX rather than the test: a first version of
 the fix put ``None`` straight into ``arg_widths`` — every row in THIS
@@ -112,7 +112,7 @@ N = 8
 #: independently here (not imported) so this row cannot pass by testing the
 #: implementation against itself.
 _RUNTIME_LENGTH_ROLES = ("lookup", "wide_in", "wide_out", "accum_out")
-_PLANE_ROLES = ("per_sample", "vec_in", "mat_in", "terminated", "mutable", "out",
+_PLANE_ROLES = ("plane_in", "plane_in", "plane_in", "terminated", "mutable", "out",
                 *_RUNTIME_LENGTH_ROLES)
 
 
@@ -152,7 +152,7 @@ def test_every_plane_bound_slot_declares_its_shape_and_dtype(built, bundle_name,
     ``arg_spec`` slot that binds a memory plane (every role except ``uniform``/
     ``nsamples``, which are by-value) has an entry in BOTH ``arg_shapes`` and
     ``arg_dtypes`` — inputs included, which is the entire point (as shown
-    above: a ``vec_in``/``per_sample``/``lookup`` slot was absent from
+    above: a ``plane_in``/``plane_in``/``lookup`` slot was absent from
     ``arg_widths`` and neither ``arg_shapes`` nor ``arg_dtypes`` existed).
 
     ``arg_widths`` is checked TOO, but for the opposite property: it must
@@ -217,7 +217,7 @@ def test_a_lookup_tables_row_count_is_none_in_shapes_absent_from_widths(built):
 def test_an_integer_per_sample_plane_is_told_apart_from_a_real_one(built):
     """``gather``'s ``where`` (an ``Index``, IR dtype ``i32``) and ``table``
     (a ``Scalar``, IR dtype ``f64``) share the SAME by-value ABI shape
-    (``ScalarHandle`` / ``lookup``+``per_sample`` both resolve to it) but
+    (``ScalarHandle`` / ``lookup``+``plane_in`` both resolve to it) but
     must NOT share a declared wire dtype — the exact ambiguity
     ``tests/test_emit_role_mirror_map.py``'s ``_HANDLE_ALIASES`` documents as
     a real, then-unclosed gap in the field set."""
@@ -257,7 +257,7 @@ def test_eagles_own_bind_door_now_refuses_a_wrong_vec_in_width(built):
     """This fix closes HALF the gap with ZERO eagle-side change:
     ``Plan.bind`` already reads ``arg_widths`` for every declared role's shape
     check (``eagle.plan._check_plane``, called from ``_bind_plan``); once HAWK
-    declares a ``vec_in``'s width the SAME door that already protected a
+    declares a ``plane_in``'s width the SAME door that already protected a
     ``mutable`` plane protects an INPUT one too — exactly the gap
     ``Plan.bind``'s own docstring names ("that gap belongs to the producer's
     sidecar, and is being closed there")."""
@@ -280,7 +280,7 @@ def test_the_hawk_consumer_check_refuses_a_wrong_width_naming_the_slot(built):
     re-owned ``vec_widths`` check for symmetry with the dtype row below and to
     pin the message names the slot."""
     sc = sidecar_of(built["vec3"], "vec3_scale")
-    with pytest.raises(ValueError, match=r"vec_in 'x'"):
+    with pytest.raises(ValueError, match=r"plane_in 'x'"):
         L.check_declared_planes(
             sc, {"x": np.zeros((5, N)), "y": np.zeros((3, N))}, N)
 
@@ -288,7 +288,7 @@ def test_the_hawk_consumer_check_refuses_a_wrong_width_naming_the_slot(built):
 def test_the_hawk_consumer_check_refuses_a_wrong_dtype_naming_the_slot(built):
     """The gap ``eagle.plan._check_plane`` cannot reach at all: it exempts
     every integer/bool array from its dtype check outright ("an integer or
-    bool array is passed at its own dtype"), so a ``lookup``/``per_sample``
+    bool array is passed at its own dtype"), so a ``lookup``/``plane_in``
     plane bound at the wrong INTEGER width has no eagle-side gate on either
     era's sidecar. HAWK's own re-owned check (``tests/_deploy.py``'s
     ``check_declared_planes``) is where this is caught, using the new
@@ -300,7 +300,7 @@ def test_the_hawk_consumer_check_refuses_a_wrong_dtype_naming_the_slot(built):
     arrays = {"y": np.zeros(N, dtype=np.float64),
               "where": np.zeros(N, dtype=np.float64),   # wrong: declared int32
               "table": np.arange(N, dtype=np.float64)}
-    with pytest.raises(ValueError, match=r"per_sample 'where'"):
+    with pytest.raises(ValueError, match=r"plane_in 'where'"):
         L.check_declared_planes(sc, arrays, N)
 
 

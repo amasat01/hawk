@@ -101,8 +101,8 @@ def test_the_twin_promotes_the_step_and_writes_index_form_time():
     tw = tape(osc, 8)
     slots = dict(_ir.arg_spec(tw.walk))
     spec = set(_ir.arg_spec(tw.walk))
-    assert ("per_sample", "dt") in spec and ("uniform", "dt") not in spec
-    assert ("per_sample", "t_0") in spec
+    assert ("plane_in", "dt") in spec and ("uniform", "dt") not in spec
+    assert ("plane_in", "t_0") in spec
     assert [n for n, _ in taped_planes(tw.step or tw)] == ["t", "v", "x"]
     del slots
     minted = tape(fall, 4)

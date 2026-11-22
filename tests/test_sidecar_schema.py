@@ -44,7 +44,7 @@ def test_the_sidecar_satisfies_the_schema(kernel):
     jsonschema.validate(_sidecar(kernel), json.loads(Path(schema).read_text()))
 
 
-def test_vec_widths_names_the_vector_inputs_only():
+def test_slot_shapes_state_the_value_shape_of_the_vector_input_only():
     meta = _sidecar(_flat)
-    assert meta["vec_widths"] == {"v": 3} == {n: meta["arg_widths"][n] for n in meta["vector_inputs"]}
-    assert _sidecar(_grid)["vec_widths"] == {}
+    assert meta["slot_shapes"]["v"] == [3] and meta["arg_widths"]["v"] == 3
+    assert [] == [n for n, shape in _sidecar(_grid)["slot_shapes"].items() if shape]

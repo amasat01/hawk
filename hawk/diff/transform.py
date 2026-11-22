@@ -31,7 +31,7 @@ from .altpath import AltPath
 from .jump import JumpPlan, drop_width, jump_of
 from .loops import (
     _reduce_to,
-    _taken_row,
+    _taken_indices,
     forward_loop,
     guarded_select,
     reverse_loop,
@@ -252,25 +252,25 @@ def _is_terminal(node: Any) -> bool:
     return _ir.is_a(node, *_TERMINALS)
 
 
-def _index_of(sink: Any) -> Any:
-    """The key a scattering ``sink`` commits at, ``None`` for a commit at the lane's own cell."""
-    return sink.operands[1] if len(sink.operands) > 1 else None
+def _indices_of(node: Any) -> tuple:
+    """The indices a scattering sink commits at or a read gathers at, one per axis; empty for a commit at the lane's own cell."""
+    return tuple(node.operands[1:])
 
 
 def _scatter(
-    name: str, value: Any, index: Any, ttype: Any, contract: str = "auto"
+    name: str, value: Any, indices: Sequence[Any], ttype: Any, contract: str = "auto",
+    edge: str = "unchecked",
+    axes: Sequence[Any] = (),
 ) -> Any:
-    """An accumulating commit of ``value`` into plane ``name`` at ``index`` (``None``: the lane's own cell)."""
-    operands = [value] if index is None else [value, index]
+    """An accumulating commit of ``value`` into plane ``name``, whose axes are ``axes``, at ``indices`` (none: the lane's own cell)."""
     return _ir.make_node(
-        "AccumWrite", ttype, operands, name=name, contract=contract, reduced=None
+        "AccumWrite", ttype, [value, *indices], name=name, contract=contract, reduced=None, edge=edge,
+        axes=tuple(axes),
     )
 
 
 #: dtypes a derivative flows through; everything else is a structural constant.
 _DIFFERENTIABLE = ("f64", "f32")
-#: How a read plane's RANK picks its role when a derivative mints one.
-_READ_ROLE = {0: "per_sample", 1: "vec_in", 2: "mat_in"}
 
 
 def _rederivable(derive):
@@ -483,8 +483,10 @@ def _compact_counts(primal: Any, context: Any) -> dict:
     return out
 
 
-def _scatter_payload(name: _Namer, plane: str, g: Any, index: Any) -> list:
-    """The scattered accumulate of ``g`` into the adjoint of ``plane`` at ``index``:
+def _scatter_payload(
+    name: _Namer, plane: str, g: Any, indices: Sequence[Any], edge: str, axes: Sequence[Any]
+) -> list:
+    """The scattered accumulate of ``g`` into the adjoint of ``plane`` at ``indices``, under the read's edge rule:
     a rank-0 value as it is; a vector or matrix one scalar accumulate per entry
     ``k`` (row-major) at ``index + k * count`` of ONE component-major plane, so the
     gradient has the layout of the compact plane it is the gradient of. Only a
@@ -494,9 +496,10 @@ def _scatter_payload(name: _Namer, plane: str, g: Any, index: Any) -> list:
     shape = g_type.shape
     count = name.counts.get(plane)
     if (
-        not shape or count is None
-    ):  # not a broadcast twin: the emitter refuses a rank >= 1 scatter by name
-        return [_scatter(name(plane), g, index, g_type)]
+        not shape or count is None or len(indices) != 1
+    ):  # not a broadcast twin of one axis: the emitter refuses a rank >= 1 scatter by name
+        return [_scatter(name(plane), g, indices, g_type, edge=edge, axes=axes)]
+    (index,) = indices
     t, scalar = _ir.type_of(index), _ir.TensorType((), g_type.dtype)
     out = []
     for k in range(shape[0] * (shape[1] if len(shape) == 2 else 1)):
@@ -509,7 +512,7 @@ def _scatter_payload(name: _Namer, plane: str, g: Any, index: Any) -> list:
             )
         )
         out.append(
-            _scatter(name(plane), _ir.make("component", (g,), literal=at), key, scalar)
+            _scatter(name(plane), _ir.make("component", (g,), literal=at), (key,), scalar, edge=edge, axes=axes)
         )
     return out
 
@@ -521,10 +524,11 @@ def _compensated(scatters: Sequence[Any], planes: set) -> list:
     out: list = []
     for s in scatters:
         if _ir.is_a(s, "accum_write") and s.field_text("name") in planes:
-            name, ttype, index = s.field_text("name"), _ir.type_of(s), _index_of(s)
-            out.append(_scatter(name, s.operands[0], index, ttype, "compensated"))
+            name, ttype, indices = s.field_text("name"), _ir.type_of(s), _indices_of(s)
+            edge, axes = s.field_text("edge"), _ir.field_pairs(s, "axes")
+            out.append(_scatter(name, s.operands[0], indices, ttype, "compensated", edge, axes))
             zero = _ir.const(s.ctx, 0.0, _ir.TensorType((), ttype.dtype))
-            out.append(_scatter(name + _ir.COMPANION_SUFFIX, zero, index, ttype))
+            out.append(_scatter(name + _ir.COMPANION_SUFFIX, zero, indices, ttype, edge=edge, axes=axes))
         else:
             out.append(s)
     return out
@@ -719,6 +723,7 @@ def _jvp(
             name(leaf.field_text("name")),
             _ir.type_of(leaf),
             sorted=leaf.field_flag("sorted"),
+            axes=_ir.field_pairs(leaf, "axes"),
         )
         for leaf in inputs
     }
@@ -767,10 +772,12 @@ def _jvp(
                     tangent[key(node)] = got
             continue
         if _ir.is_a(node, "at"):
-            plane, index = node.operands
+            plane, *indices = node.operands
             plane = tangent.get(key(plane))
             if plane is not None:
-                tangent[key(node)] = _ir.make_node("At", _ir.type_of(node), [plane, index])
+                tangent[key(node)] = _ir.make_node(
+                    "At", _ir.type_of(node), [plane, *indices], edge=node.field_text("edge")
+                )
             continue
         if _ir.is_a(node, "dispatch"):
             # `t_out = dispatch(kind, [t_e0, ..., t_eK])`, same strategy and
@@ -798,7 +805,7 @@ def _jvp(
         made = alt.sinks(
             sinks,
             lambda v: tangent.get(key(v)),
-            lambda s, v, index=None: _tangent_sink(s, v, name, index),
+            lambda s, v, indices=None: _tangent_sink(s, v, name, indices),
         )
     else:
         made = tuple(
@@ -911,7 +918,7 @@ def _reverse_pass(
         if g is None or _is_terminal(node):
             continue
         if _ir.is_a(node, "at"):
-            plane, index = node.operands
+            plane, *indices = node.operands
             if local_pass:
                 # `g` already holds this node's fully-accumulated local
                 # contribution — from consumers reached within this pass, or
@@ -921,7 +928,10 @@ def _reverse_pass(
             if plane in inputs:
                 scattered.add(plane.field_text("name"))
                 scatters.extend(
-                    _scatter_payload(name, plane.field_text("name"), g, index)
+                    _scatter_payload(
+                        name, plane.field_text("name"), g, indices, node.field_text("edge"),
+                        _ir.field_pairs(plane, "axes"),
+                    )
                 )
             continue
         if _ir.is_a(node, "primitive"):
@@ -1055,7 +1065,9 @@ def _dispatch_vjp(
                         name,
                         plane.field_text("name"),
                         combined,
-                        _taken_row(node, target, per_branch),
+                        _taken_indices(node, target, per_branch),
+                        target.field_text("edge"),
+                        _ir.field_pairs(plane, "axes"),
                     )
                 )
             continue
@@ -1300,26 +1312,31 @@ def _seed(sink: Any, name: _Namer) -> Any:
             )
         # the reverse of a sum over samples is a broadcast of its adjoint
         return _ir.leaf(context, "uniform", "uniform", derived, t)
-    index = _index_of(sink)
-    if _ir.is_a(sink, "accum_write", "wide_write") and index is not None:
-        # the transpose of a scatter-add is a gather of the adjoint plane
-        plane = _ir.leaf(context, "table_read", "lookup", derived, t)
-        return _ir.make_node("At", t, [plane, index])
-    return _ir.leaf(context, "vocab_read", _READ_ROLE[len(t.shape)], derived, t)
+    indices = _indices_of(sink)
+    if _ir.is_a(sink, "accum_write", "wide_write") and indices:
+        # the transpose of a scatter-add is a gather of the adjoint plane, at the same indices under the same edge rule
+        plane = _ir.leaf(context, "table_read", "lookup", derived, t, axes=_ir.field_pairs(sink, "axes"))
+        return _ir.make_node("At", t, [plane, *indices], edge=sink.field_text("edge"))
+    return _ir.leaf(context, "vocab_read", "plane_in", derived, t)
 
 
-def _tangent_sink(sink: Any, tangent: Any, name: _Namer, index: Any = None) -> Any:
+def _tangent_sink(sink: Any, tangent: Any, name: _Namer, indices: Any = None) -> Any:
     """The forward-mode twin of one primal sink, same kind and same lane
-    (at ``index`` when the alternate path moved the key)."""
+    (at ``indices`` when the alternate path moved the key)."""
     ttype = _ir.type_of(sink)
     value = tangent if tangent is not None else _ir.zero_like(sink.ctx, ttype)
     derived = name(sink.field_text("name"))
-    index = _index_of(sink) if index is None else index
+    indices = _indices_of(sink) if indices is None else indices
     if _ir.is_a(sink, "accum_write"):
-        return _scatter(derived, value, index, ttype, sink.field_text("contract"))
+        return _scatter(
+            derived, value, indices, ttype, sink.field_text("contract"), sink.field_text("edge"),
+            _ir.field_pairs(sink, "axes"),
+        )
     if _ir.is_a(sink, "wide_write"):
-        operands = [value] if index is None else [value, index]
-        return _ir.make_node("WideWrite", ttype, operands, name=derived)
+        return _ir.make_node(
+            "WideWrite", ttype, [value, *indices], name=derived, edge=sink.field_text("edge"),
+            axes=_ir.field_pairs(sink, "axes"),
+        )
     if _ir.is_a(sink, "sample_sum"):
         if sink.field_text("op") != "sum":
             raise HawkError(

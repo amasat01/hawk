@@ -37,7 +37,7 @@ def ctx():
 
 def sum_graph(ctx):
     """Return ``(x, x + 1, select, sink)`` for ``y = (x + 1) < 2 ? x : x + 1``."""
-    x = _ir.leaf(ctx, "vocab_read", "vec_in", "x", F64)
+    x = _ir.leaf(ctx, "vocab_read", "plane_in", "x", F64)
     total = _ir.make("add", [x, _ir.const(ctx, 1.0, F64)])
     cond = _ir.make("lt", [total, _ir.const(ctx, 2.0, F64)])
     pick = _ir.make_node("Select", F64, [cond, x, total])
@@ -46,7 +46,7 @@ def sum_graph(ctx):
 
 def loop_sink(ctx, kind="add"):
     """Return the sink ``z`` of a three-trip loop whose carried value is ``carry <kind> x``."""
-    x = _ir.leaf(ctx, "vocab_read", "vec_in", "x", F64)
+    x = _ir.leaf(ctx, "vocab_read", "plane_in", "x", F64)
     index = _ir.make_node("LoopIndex", I32, context=ctx, depth=0, name="k", bounds=None)
     carry = _ir.make_node("LoopCarry", F64, context=ctx, depth=0, slot=0, name="s")
     loop = _ir.loop(
@@ -77,9 +77,19 @@ def test_the_flat_index_of_a_read_is_operand_one_with_its_clamp_peeled(ctx, clam
     assert peeled == raw
 
 
+@pytest.mark.parametrize("edge", ["clamp", "wrap", "zero", "unchecked"])
+def test_the_index_of_a_read_is_operand_one_and_its_edge_rule_is_a_field(ctx, edge):
+    """A read states its index as operand 1 and what happens outside the plane as a field, with no operation around the index."""
+    table = _ir.leaf(ctx, "table_read", "lookup", "t", ((4,), "f64", None))
+    raw = _ir.const(ctx, 1, I32)
+    read = _ir.make_node("At", F64, [table, raw], edge=edge)
+    assert read.operands[1] == raw
+    assert read.field_text("edge") == edge
+
+
 def raw_block_digest(ctx, text="x + 1", language="aether", reads=("a",), returns=F64):
     """Return the digest of the walk of a sink over a raw device block with the stated record."""
-    x = _ir.leaf(ctx, "vocab_read", "vec_in", "x", F64)
+    x = _ir.leaf(ctx, "vocab_read", "plane_in", "x", F64)
     block = _ir.RawBlock(
         "blk", "sample_local", text, language, reads, (), _ir.TensorType(*returns)
     )
@@ -107,10 +117,10 @@ def test_accum_write_builds_a_keyed_accumulate_of_its_name_contract_value_and_op
     ctx, indexed
 ):
     """The node has class ``AccumWrite``, the value (then the lane index) as operands, and the name and contract as text."""
-    value = _ir.leaf(ctx, "vocab_read", "per_sample", "x", F64)
-    lane = _ir.leaf(ctx, "vocab_read", "per_sample", "k", I32)
+    value = _ir.leaf(ctx, "vocab_read", "plane_in", "x", F64)
+    lane = _ir.leaf(ctx, "vocab_read", "plane_in", "k", I32)
     node = _ir.accum_write(
-        "e", value, index=lane if indexed else None, contract="compensated"
+        "e", value, indices=(lane,) if indexed else (), contract="compensated"
     )
     operands = (LEAF_F64, ("Leaf", I32, ())) if indexed else (LEAF_F64,)
     assert shape(node) == ("AccumWrite", F64, operands)
@@ -128,7 +138,7 @@ def test_dispatch_at_role_constant_sample_sum_and_sample_index_build_with_their_
     ctx,
 ):
     """Each builder returns the class asked for, typed as stated, over exactly the operands given."""
-    x = _ir.leaf(ctx, "vocab_read", "vec_in", "x", F64)
+    x = _ir.leaf(ctx, "vocab_read", "plane_in", "x", F64)
     selector = _ir.const(ctx, 1, I32)
     dispatch = _ir.make_node("Dispatch", F64, [selector, x, _ir.const(ctx, 1.0, F64)])
     table = _ir.leaf(ctx, "table_read", "lookup", "t", ((4,), "f64", None))
@@ -154,11 +164,11 @@ def test_dispatch_at_role_constant_sample_sum_and_sample_index_build_with_their_
 
 def reduction_record(ctx, keyed):
     """Return a sum over samples written as a record: operand 0 the value, 1 the count 2, 2 the key when keyed."""
-    value = _ir.leaf(ctx, "vocab_read", "vec_in", "x", F64)
+    value = _ir.leaf(ctx, "vocab_read", "plane_in", "x", F64)
     refs = [value, _ir.const(ctx, 2, I32)]
     key = ""
     if keyed:
-        refs.append(_ir.leaf(ctx, "vocab_read", "per_sample", "k", I32))
+        refs.append(_ir.leaf(ctx, "vocab_read", "plane_in", "k", I32))
         key = ", ('key', #2)"
     head = "(('op', 'sum'), ('value', #0), ('count', #1), ('contract', 'auto'), ('kept', (('a', None),))"
     return ctx.new("ReduceSamples", f"{head}{key})", refs)
@@ -182,11 +192,11 @@ def test_recount_swaps_the_count_and_keeps_the_value_the_key_the_op_the_contract
 
 def accum_with_reduced_edge(ctx, indexed):
     """Return a keyed accumulate ``a`` carrying a ``reduced`` edge (the constant 3), written as a record."""
-    refs = [_ir.leaf(ctx, "vocab_read", "vec_in", "x", F64)]
+    refs = [_ir.leaf(ctx, "vocab_read", "plane_in", "x", F64)]
     index = ""
     if indexed:
         refs.append(_ir.const(ctx, 0, I32))
-        index = ", ('index', #1)"
+        index = ", ('indices', (#1, ))"
     refs.append(_ir.const(ctx, 3, I32))
     fields = f"(('name', 'a'), ('value', #0){index}, ('contract', 'keyed_auto'), ('reduced', #{len(refs) - 1}))"
     return ctx.new("AccumWrite", fields, refs)
@@ -212,8 +222,8 @@ def test_reduce_samples_carries_the_key_and_count_edges_the_op_the_contract_and_
     ctx, keyed
 ):
     """The builder gives operands (value, key when keyed), the count edge, and the text fields stated."""
-    value = _ir.leaf(ctx, "vocab_read", "vec_in", "x", F64)
-    key = _ir.leaf(ctx, "vocab_read", "per_sample", "k", I32) if keyed else None
+    value = _ir.leaf(ctx, "vocab_read", "plane_in", "x", F64)
+    key = _ir.leaf(ctx, "vocab_read", "plane_in", "k", I32) if keyed else None
     count = _ir.const(ctx, 4, I32)
     got = _ir.reduce_samples(
         "sum", value, key=key, count=count, contract="compensated", kept=(("a", None),)
@@ -263,11 +273,11 @@ def test_rebuild_and_replace_change_the_operands_only_and_leave_the_original_unt
 def ordered_logs(ctx, width=None):
     """Return two ordered accumulates into plane ``g`` and the value leaf (a vector of ``width`` when given)."""
     ttype = (() if width is None else (width,), "f64", None)
-    value = _ir.leaf(ctx, "vocab_read", "per_sample", "lx", ttype)
-    key = _ir.leaf(ctx, "vocab_read", "per_sample", "lk", ((), "i64", None))
+    value = _ir.leaf(ctx, "vocab_read", "plane_in", "lx", ttype)
+    key = _ir.leaf(ctx, "vocab_read", "plane_in", "lk", ((), "i64", None))
     sites = []
     for cell in ("ca", "cb"):
-        ordinal = _ir.leaf(ctx, "vocab_read", "per_sample", cell, ((), "i64", None))
+        ordinal = _ir.leaf(ctx, "vocab_read", "plane_in", cell, ((), "i64", None))
         sites.append(
             _ir.make_node(
                 "OrderedAccumWrite",
@@ -305,8 +315,8 @@ def test_a_walk_answers_its_argument_list_and_slot_numbers_for_a_select_and_for_
     for root in (sink, loop_sink(ctx)):
         name = root.field_text("name")
         walk = _ir.canonical([root])
-        assert _ir.arg_spec(walk) == (("mutable", name), ("vec_in", "x"))
-        assert _ir.slot_of(walk) == {("mutable", name): 0, ("vec_in", "x"): 1}
+        assert _ir.arg_spec(walk) == (("mutable", name), ("plane_in", "x"))
+        assert _ir.slot_of(walk) == {("mutable", name): 0, ("plane_in", "x"): 1}
 
 
 def test_a_walk_digest_is_the_same_for_one_graph_built_in_two_contexts_and_differs_for_another_graph(

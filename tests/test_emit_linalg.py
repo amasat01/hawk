@@ -269,9 +269,9 @@ def test_factorisations_inside_the_arms_of_a_dispatch_run_per_case(build, strate
     f64 = "f64"
     context = _ir.new_context()
     vector = _ir.TensorType((n,), f64)
-    a = _ir.leaf(context, "vocab_read", "mat_in", "A", _ir.TensorType((n, n), f64))
-    b = _ir.leaf(context, "vocab_read", "vec_in", "b", vector)
-    k = _ir.leaf(context, "vocab_read", "per_sample", "k", _ir.TensorType((), "i32"))
+    a = _ir.leaf(context, "vocab_read", "plane_in", "A", _ir.TensorType((n, n), f64))
+    b = _ir.leaf(context, "vocab_read", "plane_in", "b", vector)
+    k = _ir.leaf(context, "vocab_read", "plane_in", "k", _ir.TensorType((), "i32"))
     lu, chol = _ir.make("lu", (a,)), _ir.make("chol", (a,))
     arms = (_ir.make("lu_solve", (lu, b)), _ir.make("cho_solve", (chol, b)),
             _ir.make("mul", (b, _ir.make("lu_det", (lu,)))))

@@ -251,8 +251,24 @@ _LINALG = {
 }
 
 
-def evaluate(sinks, env: dict, lanes: int = 1, lane: int = 0) -> dict:
+def _address(indices, extents, edge):
+    """The position an indexed read or store reaches under the edge rule ``edge`` of the plane axes ``extents``.
+
+    ``None`` is a position the ``zero`` rule leaves out. ``unchecked`` takes the indices as they are."""
+    if edge == "clamp":
+        return tuple(min(max(i, 0), e - 1) for i, e in zip(indices, extents))
+    if edge == "wrap":
+        return tuple(i % e for i, e in zip(indices, extents))
+    if edge == "zero" and any(not 0 <= i < e for i, e in zip(indices, extents)):
+        return None
+    return tuple(indices)
+
+
+def evaluate(sinks, env: dict, lanes: int = 1, lane: int = 0, shapes: dict | None = None) -> dict:
     """Evaluate ``sinks`` at ``env`` (leaf name -> value); returns sink values.
+
+    ``shapes`` gives the axis extents of a sink stored at several indices (name -> shape); a sink
+    stored at one index and not listed has the extent ``lanes``.
 
     ``lane`` is the sample this evaluation stands at, and it is what a
     ``sample_index`` node reads: the interpreter walks ONE
@@ -289,9 +305,16 @@ def evaluate(sinks, env: dict, lanes: int = 1, lane: int = 0) -> dict:
             out[name] = target
             continue
         value = _value(value_node, env, memo_here)
-        if _ir.is_a(sink, "accum_write") and len(sink.operands) > 1:
-            target = np.asarray(out.get(name, np.zeros(lanes)), dtype=float)
-            target[int(_value(sink.operands[1], env, memo_here))] += value
+        if _ir.is_a(sink, "accum_write", "wide_write") and len(sink.operands) > 1:
+            indices = [int(_value(i, env, memo_here)) for i in sink.operands[1:]]
+            shape = (shapes or {}).get(name, (lanes,))
+            target = np.asarray(out.get(name, np.zeros(shape)), dtype=float)
+            where = _address(indices, shape[len(shape) - len(indices):], sink.field_text("edge"))
+            # the bound array is (*value shape, *axes): the axes are its last dimensions
+            if where is not None and _ir.is_a(sink, "accum_write"):
+                target[(..., *where)] += value
+            elif where is not None:
+                target[(..., *where)] = value
             out[name] = target
         else:
             out[name] = value
@@ -313,9 +336,9 @@ def _literal(node):
 
 
 def _links(node) -> list:
-    """``[(k, e), ...]`` of an ``add_at`` chain, in order (empty: not a chain)."""
+    """``[(k, e), ...]`` of a chain of ``add_at`` at one index each, in order (empty: not a chain)."""
     links = []
-    while _op_kind(node) == "add_at":
+    while _op_kind(node) == "add_at" and len(node.operands) == 3:
         links.append((node.operands[1], node.operands[2]))
         node = node.operands[0]
     return links[::-1]
@@ -428,11 +451,19 @@ def _compute(node, env: dict, memo: dict):
         if name not in env:
             raise KeyError(f"no value bound for leaf {name!r} ({node.field_text('role')})")
         return env[name]
-    if _ir.is_a(node, "plane_extent"):
-        return int(np.asarray(env[node.operands[0].field_text("name")]).size)
+    if _ir.is_a(node, "axis_extent"):
+        plane = node.operands[0]
+        axes = len(_ir.field_pairs(plane, "axes")) or 1
+        # the bound array is (*value shape, *axes): the axes are its last dimensions
+        return int(np.shape(env[plane.field_text("name")])[-axes + node.field_int("axis")])
     if _ir.is_a(node, "at"):
-        plane = _value(node.operands[0], env, memo)
-        return np.asarray(plane)[int(_value(node.operands[1], env, memo))]
+        plane = np.asarray(_value(node.operands[0], env, memo))
+        indices = [int(_value(i, env, memo)) for i in node.operands[1:]]
+        extents = plane.shape[plane.ndim - len(indices):]
+        where = _address(indices, extents, node.field_text("edge"))
+        if where is None:
+            return np.zeros(plane.shape[:plane.ndim - len(indices)])
+        return plane[(..., *where)]
     if _ir.is_a(node, "select"):
         cond = _value(node.operands[0], env, memo)
         if np.ndim(cond) == 0:
@@ -466,18 +497,18 @@ def _compute(node, env: dict, memo: dict):
         # `v` with ONE component replaced. A COPY, because the IR node
         # is a value: the vector it was given keeps the value it had.
         out = np.array(args[0], dtype=float)
-        out[int(args[1])] = args[2]
+        out[tuple(int(k) for k in args[1:-1])] = args[-1]
         return out
     if kind == "add_at":
         out = np.array(args[0], dtype=float)
-        out[int(args[1])] += args[2]
+        out[tuple(int(k) for k in args[1:-1])] += args[-1]
         return out
     if kind == "component_at":
         # the RUNTIME-indexed component: the same read `component`
         # does, at a row this evaluation computed rather than one the type
         # carried. `int()` because the index node is i32/i64 and numpy hands
         # back a 0-d array.
-        return np.asarray(args[0])[int(args[1])]
+        return np.asarray(args[0])[tuple(int(k) for k in args[1:])]
     if kind == "vec":
         conv = bool if _ir.type_of(node).dtype == "bool" else float
         flat = np.array([conv(a) for a in args])

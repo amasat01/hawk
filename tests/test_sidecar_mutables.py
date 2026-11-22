@@ -70,7 +70,7 @@ def test_a_vector_mutable_carries_its_dtype_declaration(built):
     view = plan_view(sc)
     assert view["vec_mutables"] == frozenset({"y"})
     # `arg_widths` is COMPLETE over every plane-bound slot, so the
-    # vec_in input `x` carries its own width beside the mutable output `y`'s.
+    # plane_in input `x` carries its own width beside the mutable output `y`'s.
     assert view["arg_widths"] == {"x": 3, "y": 3}
 
 

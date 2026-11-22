@@ -21,9 +21,9 @@ F64 = "f64"
 
 
 def _inputs(context, n: int):
-    a = _ir.leaf(context, "vocab_read", "mat_in", "A", _ir.TensorType((n, n), F64))
-    b = _ir.leaf(context, "vocab_read", "vec_in", "b", _ir.TensorType((n,), F64))
-    rhs = _ir.leaf(context, "vocab_read", "mat_in", "B", _ir.TensorType((n, K), F64))
+    a = _ir.leaf(context, "vocab_read", "plane_in", "A", _ir.TensorType((n, n), F64))
+    b = _ir.leaf(context, "vocab_read", "plane_in", "b", _ir.TensorType((n,), F64))
+    rhs = _ir.leaf(context, "vocab_read", "plane_in", "B", _ir.TensorType((n, K), F64))
     return a, b, rhs
 
 
@@ -106,8 +106,8 @@ def eigh_values_kernel(context, n: int) -> Kernel:
 
 def lstsq_kernel(context, m: int, n: int) -> Kernel:
     """``x, info = lstsq(J, r)`` for a tall ``m x n`` ``J`` (QR, a team stage): the solution and the status."""
-    j = _ir.leaf(context, "vocab_read", "mat_in", "J", _ir.TensorType((m, n), F64))
-    r = _ir.leaf(context, "vocab_read", "vec_in", "r", _ir.TensorType((m,), F64))
+    j = _ir.leaf(context, "vocab_read", "plane_in", "J", _ir.TensorType((m, n), F64))
+    r = _ir.leaf(context, "vocab_read", "plane_in", "r", _ir.TensorType((m,), F64))
     f = _ir.make("qr", (j,))
     return Kernel(
         f"la_lstsq_{m}_{n}",

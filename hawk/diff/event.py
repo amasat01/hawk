@@ -34,7 +34,7 @@ from typing import Any, NamedTuple
 
 from .. import _ir
 from ..errors import HawkError
-from .transform import _READ_ROLE, _single_step
+from .transform import _single_step
 
 __all__ = ["EventGuard", "event_guard", "guard_kernel", "state_guard"]
 
@@ -252,7 +252,7 @@ def _guard_sink(i: int, guard: Any) -> Any:
 def _plane_read(node: Any) -> Any:
     """A plain read of the plane ``node`` (a launch-start read or a sink) stands for."""
     ttype = _ir.type_of(node)
-    role = _READ_ROLE[len(ttype.shape)]
+    role = "plane_in"
     return _ir.leaf(node.ctx, "vocab_read", role, node.field_text("name"), ttype)
 
 

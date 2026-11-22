@@ -44,16 +44,17 @@ def order(sinks, held) -> tuple:
             )
 
     def stated(sink):
-        # a scatter commits its value and, when it names a row, that row as the second operand
+        # a scatter commits its value, then one index per axis of its plane
         value, *row = sink.operands
-        index = row[0] if row else None
         return _ir.make_node(
             "OrderedAccumWrite",
             _ir.type_of(value),
-            [value, index, key],
+            [value, *row, key],
             name=sink.field_text("name"),
             role="accum_out",
             kept=tuple(kept),
+            edge=sink.field_text("edge"),
+            axes=_ir.field_pairs(sink, "axes"),
         )
 
     out: list = []

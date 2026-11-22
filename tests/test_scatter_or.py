@@ -118,3 +118,27 @@ def test_refuses_what_is_not_a_bit_mask_store():
         @kernel
         def k4(w: Index, b: UInt32, m: Mutable[UInt32]):
             hawk.scatter(m)[w] &= b
+
+
+@kernel
+def mark_two_axes(i: Index, k: Index, bit: UInt32, mask: Mutable[UInt32, "bin":3, "slot":4]):  # noqa: F821 axis labels
+    hawk.scatter(mask)[i, k] |= bit
+
+
+def test_many_lanes_into_a_plane_with_two_axes_equal_bitwise_or_at_on_the_host(tmp_path, cache_dir):
+    rng = np.random.default_rng(11)
+    i = rng.integers(0, 3, N).astype(np.int32)
+    k = rng.integers(0, 4, N).astype(np.int32)
+    bit = (np.uint32(1) << (np.arange(N) % 32).astype(np.uint32)).astype(np.uint32)
+    bundle = build_bundle([mark_two_axes], tmp_path, mode="float64", targets=("host",), cache_dir=cache_dir)
+    mask = np.zeros((3, 4), np.uint32)
+    _launch(bundle, "mark_two_axes", "host", {"i": i, "k": k, "bit": bit, "mask": mask}).launch()
+    want = np.zeros((3, 4), np.uint32)
+    np.bitwise_or.at(want, (i, k), bit)
+    assert mask.tobytes() == want.tobytes()
+
+
+@pytest.mark.parametrize("derive", [vjp, jvp], ids=["vjp", "jvp"])
+def test_a_derivative_of_a_bit_mask_with_axes_is_refused_by_name(derive):
+    with pytest.raises(HawkError, match=r"sets bits by key.*no derivative"):
+        derive(mark_two_axes)

@@ -41,7 +41,7 @@ def test_a_grid_kernel_has_the_lane_space_and_group_it_declared():
 
 
 def test_grid_is_not_a_slot_of_the_kernel():
-    assert _by_label().arg_spec == (("mutable", "out"), ("per_sample", "x"))
+    assert _by_label().arg_spec == (("mutable", "out"), ("plane_in", "x"))
 
 
 def test_the_last_declared_axis_is_the_fastest():

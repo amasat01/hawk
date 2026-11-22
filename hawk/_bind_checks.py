@@ -324,8 +324,13 @@ def _check_sorted(name: str, value, n_samples: int, errors: list) -> None:
 
 def _check_axes_arg(sidecar: dict, name: str, value, arrays: dict, n_samples: int,
                     errors: list) -> None:
-    """A sink declared with named axes is bound ``(*payload, *axes)``; a runtime
-    axis no lane axis shares is the plane's own length, or ``<label>=N``."""
+    """A sink declared with named axes is bound ``(*payload, *axes)`` (a runtime
+    axis no lane axis shares is the plane's own length, or ``<label>=N``). The
+    gradient of a table is also accepted compact, as the table is: an array of
+    another rank whose element count is the payload times the stated axes times
+    at most one runtime axis, whose extent is the quotient (a count that does not
+    divide is refused); with two or more runtime axes only the shape
+    ``(*payload, *axes)`` is accepted. The runtime states the same rule for every plane."""
     from ._lane_bind import free_labels, output_shape
 
     try:
@@ -333,8 +338,9 @@ def _check_axes_arg(sidecar: dict, name: str, value, arrays: dict, n_samples: in
     except TypeError:
         return
     spec = sidecar["plane_axes"][name]
+    free = free_labels(sidecar)
     extents = {}
-    for label in free_labels(sidecar):
+    for label in free:
         if label in arrays:
             extents[label] = arrays[label]
             if isinstance(extents[label], bool) or not isinstance(extents[label], int) \
@@ -342,16 +348,35 @@ def _check_axes_arg(sidecar: dict, name: str, value, arrays: dict, n_samples: in
                 errors.append(f"{label}= is the extent of the runtime axis {label!r}, "
                               f"a positive int; got {extents[label]!r}")
                 return
-    for i, ax in enumerate(spec["axes"]):
-        at = len(spec["payload"]) + i
-        if ax["label"] in free_labels(sidecar) and ax["label"] not in extents and at < len(got):
-            extents[ax["label"]] = got[at]
+    axes = spec["axes"]
+    shape_rank = len(spec["payload"]) + len(axes)
+    pending = [ax["label"] for ax in axes if ax["label"] in free and ax["label"] not in extents]
+    compact = name in (sidecar.get("gradient_of") or {})
+    if compact and len(got) != shape_rank and pending:
+        if len(pending) > 1:
+            errors.append(f"argument {name!r}: declared with the runtime axes {pending}, so only the shape "
+                          f"(*payload, *axes) of {shape_rank} dimensions is accepted, got {got}")
+            return
+        extents[pending[0]] = 1
+        known = math.prod(output_shape(sidecar, name, 1, n_samples, extents))
+        total = math.prod(got)
+        if total % known:
+            errors.append(f"argument {name!r}: {total} elements do not divide by the {known} the payload "
+                          f"and the other axes take, so the runtime axis {pending[0]!r} has no extent")
+            return
+        extents[pending[0]] = total // known
+    else:
+        for i, ax in enumerate(axes):
+            at = len(spec["payload"]) + i
+            if ax["label"] in free and ax["label"] not in extents and at < len(got):
+                extents[ax["label"]] = got[at]
     want = output_shape(sidecar, name, 1, n_samples, extents)
-    if got != want:
-        axes = ", ".join(f'{ax["label"]}' if ax["extent"] is None else f'{ax["label"]}={ax["extent"]}'
-                         for ax in spec["axes"])
-        errors.append(f"argument {name!r}: declared with the axes ({axes}), so it is bound "
-                      f"{want} (payload first), got {got}")
+    if got == want or (compact and len(got) != len(want) and math.prod(got) == math.prod(want)):
+        return
+    axes_text = ", ".join(f'{ax["label"]}' if ax["extent"] is None else f'{ax["label"]}={ax["extent"]}'
+                          for ax in axes)
+    errors.append(f"argument {name!r}: declared with the axes ({axes_text}), so it is bound "
+                  f"{want} (payload first), got {got}")
 
 
 def _check_compact_arg(sidecar: dict, name: str, value, n_samples: int, errors: list) -> None:
@@ -452,7 +477,7 @@ def _check_bind(sidecar: dict, arg_spec, arrays: dict, n_samples: int,
             continue
         if role == "uniform":
             _check_uniform_arg(name, arrays[name], params, errors)
-        elif role == "mat_in" and name in (sidecar.get("gather_mats") or {}):
+        elif role == "plane_in" and name in (sidecar.get("gather_mats") or {}):
             _check_plane_arg("wide_in", name, arrays[name], arg_dtypes, arg_shapes,
                              n_samples, errors, choice)
             _check_compact_arg(sidecar, name, arrays[name], n_samples, errors)
@@ -474,3 +499,42 @@ def _check_bind(sidecar: dict, arg_spec, arrays: dict, n_samples: int,
         f"kernel {kernel_name!r}: {len(errors)} arguments failed validation:\n"
         + "\n".join(f"  - {e}" for e in errors)
     )
+
+
+def expand_records(sidecar: dict, arrays: dict, kernel: str) -> dict:
+    """``arrays`` with every ``Record`` or ``Rows`` parameter given under its own name replaced by one array per field.
+
+    The groups are the sidecar's ``records`` and ``rows``, each ``{parameter: {field: plane name}}`` over every field
+    the type declares. The value is a mapping or an object with the fields. THE RULE: a declared field the body never
+    reads is accepted and ignored (the caller passes the whole record); a declared field the body reads and the value
+    lacks is refused, and so is a field the type does not declare (found among a mapping's keys or an object's own
+    attributes), each naming the record and the field. Planes bound under their expanded names follow the rule of any
+    plane: one the kernel does not take is refused by the caller's later name check.
+    """
+    records = {**(sidecar.get("records") or {}), **(sidecar.get("rows") or {})}
+    if not any(name in arrays for name in records):
+        return arrays
+    unread = set(sidecar.get("unused_planes") or ())
+    out = {name: value for name, value in arrays.items() if name not in records}
+    for record, fields in records.items():
+        if record not in arrays:
+            continue
+        value = arrays[record]
+        mapping = hasattr(value, "keys")
+        own = set(value.keys()) if mapping else {n for n in getattr(value, "__dict__", {}) if not n.startswith("_")}
+        offered = own | {field for field in fields if not mapping and hasattr(value, field)}
+        lacking = sorted(field for field, plane in fields.items() if plane not in unread and field not in offered)
+        stray = sorted(own - set(fields))
+        if lacking or stray:
+            raise HawkError(
+                f"kernel {kernel!r}: record {record!r} declares the fields {sorted(fields)}"
+                + (f"; the value lacks {lacking}" if lacking else "")
+                + (f"; {stray} are not fields of it" if stray else "")
+            )
+        for field, plane in fields.items():
+            if plane in unread:
+                continue
+            if plane in arrays:
+                raise HawkError(f"kernel {kernel!r}: {plane!r} is given both by itself and as the field {field!r} of {record!r}")
+            out[plane] = value[field] if mapping else getattr(value, field)
+    return out

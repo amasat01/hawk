@@ -18,7 +18,7 @@ from .. import _ir
 from ..errors import HawkError
 
 #: The roles a member may read an intermediate as: its own lane's element.
-BOUND_LEAF_ROLES = ("per_sample", "vec_in", "mat_in", "mutable")
+BOUND_LEAF_ROLES = ("plane_in", "mutable")
 #: The roles an intermediate may be committed as.
 BOUND_SINK_ROLES = ("mutable", "out")
 
@@ -153,7 +153,7 @@ def segments(members: Sequence, cuts: Sequence[int]) -> list:
         for lf in _walk_sinks(sinks)[0]:
             name, ttype = lf.field_text("name"), _ir.type_of(lf)
             if name in crossed:
-                mapping[lf] = _ir.leaf(lf.ctx, "vocab_read", "vec_in" if ttype.shape else "per_sample",
+                mapping[lf] = _ir.leaf(lf.ctx, "vocab_read", "plane_in",
                                        CROSS_PREFIX + name, ttype)
         if mapping:
             sinks = _rebuilt(sinks, mapping)

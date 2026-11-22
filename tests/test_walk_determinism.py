@@ -47,7 +47,7 @@ def test_digest_is_sensitive_to_a_real_change():
     """Non-vacuity: the digest must not be constant. Renaming one leaf moves it."""
     a = _ir.canonical(drag_dag(CTX))
     ctx = _ir.new_context()
-    other = _ir.leaf(ctx, "vocab_read", "vec_in", "other", V3)
+    other = _ir.leaf(ctx, "vocab_read", "plane_in", "other", V3)
     b = _ir.canonical((_ir.make_node("Assign", V3, (other,), name="acc"),))
     assert _ir.digest(a) != _ir.digest(b)
 

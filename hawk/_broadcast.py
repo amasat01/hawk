@@ -33,15 +33,15 @@ BY_VALUE = "by value"
 #: What a bare number is: the values that bind by value.
 NUMBERS = (bool, int, float)
 #: The roles of a read-only per-lane input; the ones that broadcast.
-READ_ROLES = ("per_sample", "vec_in", "mat_in")
+READ_ROLES = ("plane_in",)
 #: The roles of a per-lane plane that is written or masked: exact.
 EXACT_ROLES = ("mutable", "out", "terminated")
 
 
-def _head(ttype, role: str) -> tuple:
+def _head(ttype) -> tuple:
     """The component axes of a per-lane slot, which stay exact: a Vector's ``(w,)``,
-    a Matrix's ``(rows, cols)``."""
-    return ttype.shape[:2] if role == "mat_in" else ttype.shape[:1]
+    a Matrix's ``(rows, cols)``, a deeper value's every extent."""
+    return tuple(ttype.shape)
 
 
 def shape_of(value) -> tuple | None:
@@ -297,13 +297,13 @@ def _read(name: str, ttype, pattern, axes, context) -> tuple:
     while comp in labels:
         comp += "_"
     spans = ([slice(comp, width)] if width else []) + [slice(axes[i][0], axes[i][1]) for i in held]
-    dims = _axes("Table", tuple(spans))
-    table = TableRef(name, element, dims=dims)
+    table_axes = _axes("Table", tuple(spans))
+    table = TableRef(name, element, axes=table_axes)
     at = {axes[i][0]: lane[i] for i in held}
     if not width:
-        return Plane("table", element, dims=dims), table.at(**at).node
+        return Plane("table", element, axes=table_axes), table.at(**at).node
     parts = tuple(table.at(**at, **{comp: k}).node for k in range(width))
-    return Plane("table", element, dims=dims), _ir.make("vec", parts)
+    return Plane("table", element, axes=table_axes), _ir.make("vec", parts)
 
 
 def _swap(sinks, mapping: dict) -> tuple:
@@ -339,8 +339,8 @@ def classify(kernel, given: dict, where: str, extent=None) -> tuple:
     source = _primal(kernel)
     roles = {n: r for r, n in source.arg_spec}
     walk = source.walk
-    heads = {n: _head(_ir.slot_type(walk, r, n), r) for n, r in roles.items() if r in READ_ROLES + EXACT_ROLES}
-    named = {n for n in given if getattr(source.planes.get(n), "dims", ())}
+    heads = {n: _head(_ir.slot_type(walk, r, n)) for n, r in roles.items() if r in READ_ROLES + EXACT_ROLES}
+    named = {n for n in given if getattr(source.planes.get(n), "axes", ())}
     if extent is None:
         shaped = [(shape_of(given[n]), heads[n]) for n in heads if n in given and n not in named]
         extent = runtime_extent(shaped, axes, given.get(axes[0][0]))
@@ -361,7 +361,7 @@ def _tangent_patterns(kernel, patterns: dict, given: dict, heads: dict, extent, 
     for tangent, name in getattr(kernel.sinks, "tangents", {}).items():
         if name not in patterns or tangent not in given:
             continue
-        kept = of(name, "per_sample", given[tangent], heads[name], axes, extent, where)
+        kept = of(name, "plane_in", given[tangent], heads[name], axes, extent, where)
         got = None if kept is None else _pattern(given[tangent], kept, heads[name])
         if got != patterns[name]:
             raise HawkError(

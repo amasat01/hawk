@@ -71,7 +71,7 @@ def _v(t: _ir.TensorType, name: str = "a"):
     """A traced value over a fresh leaf of type ``t``."""
     if t.dtype == "bool":
         return hawk.Value(_ir.leaf(CTX, "terminated", "terminated", name, t))
-    role = {0: "per_sample", 1: "vec_in", 2: "mat_in"}[len(t.shape)]
+    role = {0: "plane_in", 1: "plane_in", 2: "plane_in"}[len(t.shape)]
     return hawk.Value(_ir.leaf(CTX, "vocab_read", role, name, t))
 
 

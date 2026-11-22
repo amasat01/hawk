@@ -23,7 +23,7 @@ H = 1e-6
 def _primal():
     """``y = w[0] * x + w[1] * x * x`` over per-lane ``x`` and ONE two-cell ``w``."""
     context = _ir.new_context()
-    x = _ir.leaf(context, "vocab_read", "per_sample", "x", F64)
+    x = _ir.leaf(context, "vocab_read", "plane_in", "x", F64)
     w = _ir.leaf(context, "table_read", "lookup", "w", F64)
     w0, w1 = (_ir.make_node("At", F64, [w, _ir.const(context, k, I32)]) for k in (0, 1))
     y = _ir.make(

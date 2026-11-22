@@ -212,7 +212,7 @@ def test_a_finishing_kernel_under_two_masks_keeps_a_flagged_samples_value(tmp_pa
 
 def _gp() -> Kernel:
     """Own-column partials under the default mask guard, built as IR (the ``AccumWrite`` a sum sink makes)."""
-    x = _ir.leaf(_ir.new_context(), "vocab_read", "per_sample", "x", _ir.TensorType((), "f64"))
+    x = _ir.leaf(_ir.new_context(), "vocab_read", "plane_in", "x", _ir.TensorType((), "f64"))
     return Kernel("gp", (_ir.accum_write("acc", _ir.make("mul", (x, x))),), {"terminated": Terminated})
 
 

@@ -67,6 +67,6 @@ def test_the_traced_kernel_declares_one_state_in_and_one_state_out(example):
 
     assert kernel.name == example.KERNEL_NAME
     assert set(roles) == {"x", "w1", "b1", "w2", "b2", "dt", "x_next"}
-    assert roles["x"] == "vec_in" and roles["x_next"] == "mutable"
+    assert roles["x"] == "plane_in" and roles["x_next"] == "mutable"
     assert roles["w1"] == roles["b1"] == roles["w2"] == roles["b2"] == "lookup"
     assert roles["dt"] == "uniform"

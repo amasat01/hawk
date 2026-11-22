@@ -22,10 +22,9 @@ TensorType = _ir.TensorType
 _V3 = TensorType((3,), "f64")
 _S = TensorType((), "f64")
 
-#: The mirror each role rides; ``mutable`` and ``out`` resolve by rank (see ``_expected``).
+#: The mirror each role rides; ``mutable``, ``out`` and ``plane_in`` resolve by rank (see ``_expected``).
 _MIRROR_OF = {
-    "out": "GRefMirror", "vec_in": "GRefMirror", "mat_in": "GRefMirror",
-    "per_sample": "ScalarHandle", "lookup": "ScalarHandle",
+    "out": "GRefMirror", "lookup": "ScalarHandle",
     "terminated": "ScalarHandle", "wide_in": "ScalarHandle",
     "wide_out": "ScalarHandle", "accum_out": "ScalarHandle",
     "uniform": "value", "nsamples": "value",
@@ -37,6 +36,8 @@ def _expected(role, name, sidecar):
     if role in ("mutable", "out"):
         shape = next((m["dtype"] for m in sidecar["mutables"] if m["name"] == name), "scalar")
         return "GRefMirror" if shape in ("vector", "matrix") else "ScalarHandle"
+    if role == "plane_in":
+        return "GRefMirror" if sidecar["slot_shapes"][name] else "ScalarHandle"
     return _MIRROR_OF[role]
 
 

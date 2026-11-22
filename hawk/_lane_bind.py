@@ -252,10 +252,15 @@ def check_index_set(sidecar: dict, arrays: dict, extent: int | None) -> None:
         first[lane] = position
 
 
-def _flat_extent(arg_spec, arrays: dict, per_sample_roles) -> int | None:
+def _has_axes_of_its_own(sidecar: dict, name: str) -> bool:
+    """Whether the plane ``name`` holds a value of rank two or more, whose leading axes are not lanes."""
+    return len((sidecar.get("slot_shapes") or {}).get(name, ())) >= 2
+
+
+def _flat_extent(sidecar: dict, arg_spec, arrays: dict, per_sample_roles) -> int | None:
     """The lane count a flat kernel's per-sample planes agree on, when one is bound."""
     for role, name in arg_spec:
-        if role in per_sample_roles and role != "mat_in" and name in arrays:
+        if role in per_sample_roles and not _has_axes_of_its_own(sidecar, name) and name in arrays:
             try:
                 return int(describe(arrays[name]).shape[-1])
             except TypeError:
@@ -272,7 +277,7 @@ def bind(sidecar: dict, arg_spec, arrays: dict, n_samples, per_sample_roles) -> 
     if (sidecar.get("launch") or {}).get("index_set") is not None:
         check_index_set(sidecar, out, total if total is not None else n_samples
                         if n_samples is not None
-                        else _flat_extent(arg_spec, out, per_sample_roles))
+                        else _flat_extent(sidecar, arg_spec, out, per_sample_roles))
     return out, total
 
 
@@ -305,8 +310,8 @@ def _bind_grid(sidecar: dict, arg_spec, arrays: dict, n_samples, per_sample_role
                                 f"a positive int; got {extent!r}")
     shapes = sidecar.get("arg_shapes", {})
     named = sidecar.get("plane_axes") or {}
-    mats = sidecar.get("mat_shapes") or {}
-    heads = {name: tuple(mats[name]) if role == "mat_in" and name in mats
+    slot_shapes = sidecar.get("slot_shapes") or {}
+    heads = {name: tuple(slot_shapes[name]) if _has_axes_of_its_own(sidecar, name)
              else (int(shapes.get(name) or 1),) if int(shapes.get(name) or 1) > 1 else ()
              for role, name in arg_spec if name in out and name not in named}
     known = _broadcast.runtime_extent(
@@ -319,7 +324,7 @@ def _bind_grid(sidecar: dict, arg_spec, arrays: dict, n_samples, per_sample_role
             if kept is not None:
                 raise HawkError(_broadcast.loaded_only(
                     sidecar.get("kernel", "?"), name, shape, kept, heads[name], axes))
-        if role not in per_sample_roles or role == "mat_in" or name not in out or len(axes) < 2:
+        if role not in per_sample_roles or _has_axes_of_its_own(sidecar, name) or name not in out or len(axes) < 2:
             continue
         try:
             mv = describe(out[name])                  # a NumPy array's own view, another library's array as its DLPack states

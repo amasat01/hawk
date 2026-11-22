@@ -468,7 +468,7 @@ def test_over_by_label_position_and_tuple_agree(over):
         return hawk.sum(x, over="sample")
 
     assert _ir.digest(by.walk) == _ir.digest(ref.walk)
-    assert [(a, e) for a, e, _s in by.planes["out"].dims] == [("channel", 4), ("input", 8)]
+    assert list(by.planes["out"].axes) == [("channel", 4), ("input", 8)]
 
 
 def test_over_two_axes_keeps_one_and_over_every_axis_is_the_cell():
@@ -480,7 +480,7 @@ def test_over_two_axes_keeps_one_and_over_every_axis_is_the_cell():
     def every(lane: Grid["channel":4, "input":8, "sample":32], x: Scalar) -> Scalar:
         return hawk.sum(x, over=(0, 1, 2))
 
-    assert [(a, e) for a, e, _s in two.planes["out"].dims] == [("channel", 4)]
+    assert list(two.planes["out"].axes) == [("channel", 4)]
     assert [s.cls for s in every.sinks] == ["SampleSum"]
 
 
@@ -674,7 +674,8 @@ def test_a_vector_by_key_into_a_named_axis_sink_is_payload_first():
     def k(lane: Index, u: Vector[3], acc: Mutable[Vector[3], "bin":4]):
         hawk.scatter(acc)[lane] += u
 
-    assert len(k.sinks) == 3 and all(_ir.is_a(s, "accum_write") for s in k.sinks)
+    entries = [s for s in k.sinks if s.field_text("name") == "acc"]
+    assert len(entries) == 3 and all(_ir.is_a(s, "accum_write") and len(s.operands) == 3 for s in entries)
 
 
 def test_masked_mean_names_the_count():

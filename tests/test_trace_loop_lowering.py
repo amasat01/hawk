@@ -350,17 +350,18 @@ def test_a_gather_loops_reverse_scatters_once_per_iteration_in_the_same_scope():
     walk = _ir.canonical(derived)
     assert ("accum_out", "bar_t") in _ir.arg_spec(walk)
     assert _ir.access_class(walk) == "cross_sample_write"
-    table = np.arange(ROWS * COLS, dtype=float) * 0.5 + 1.0
-    got = evaluate(derived, {"t": table, "bar_y": 1.0}, lanes=ROWS * COLS)["bar_t"]
-    want = np.zeros(ROWS * COLS)
+    table = (np.arange(ROWS * COLS, dtype=float) * 0.5 + 1.0).reshape(ROWS, COLS)
+    got = evaluate(derived, {"t": table, "bar_y": 1.0}, lanes=ROWS * COLS, shapes={"bar_t": (ROWS, COLS)})["bar_t"]
+    want = np.zeros((ROWS, COLS))
     for r in range(ROWS):
-        want[r * COLS + 2] += 1.5
+        want[r, 2] += 1.5
     np.testing.assert_allclose(got, want, rtol=1e-14, atol=1e-14)
     kernel = SimpleNamespace(name="gather_vjp", sinks=derived, walk=walk, gradients=derived.gradients,
                              cotangents=derived.cotangents, next_values=derived.next_values, tangents=derived.tangents)
     text = emit_source(kernel, targets=("host",)).sources["host"].text
     commits = (text.count("hawk_abi::accum_add(aout_bar_t, ")
-               + text.count("aether::accum::run::add<32>(aout_bar_t, "))
+               + text.count("aether::accum::run::add<32>(aout_bar_t, ")
+               + text.count("hawk_abi::accum_add_at(aout_bar_t("))
     # no ``text.count("for (") == 1`` here: the old count was on the body alone; the whole unit's text
     # also holds the sample loop of the wrapper, so it shows 2.
     assert commits == 1, text
@@ -379,9 +380,9 @@ def test_a_nested_for_emits_a_nested_scope():
         y = total
 
     emit_source(grid, targets=("host",))
-    table = np.arange(ROWS * COLS, dtype=float) * 0.25 + 1.0
+    table = (np.arange(ROWS * COLS, dtype=float) * 0.25 + 1.0).reshape(ROWS, COLS)
     got = float(evaluate(grid.sinks, {"t": table})["y"])
-    want = sum(sum(table[r * COLS + c] for c in range(COLS)) ** 2
+    want = sum(sum(table[r, c] for c in range(COLS)) ** 2
                for r in range(ROWS))
     assert got == pytest.approx(want)
 
@@ -400,7 +401,7 @@ def test_a_mutable_committed_only_inside_the_loop_is_carried_not_refused():
         for j in range(3):
             out = x + j
     assert sorted(_ir.prior_reads(k.walk)) == ["out"]
-    assert k.arg_spec == (("mutable", "out"), ("per_sample", "x"))
+    assert k.arg_spec == (("mutable", "out"), ("plane_in", "x"))
 
 
 def test_a_rank_one_carry_is_declared_as_an_aether_Item():

@@ -157,7 +157,7 @@ def test_a_wrong_cotangent_fails_the_same_agreement_check(example):
 
 
 def test_the_traced_derivative_kernels_declare_the_expected_planes(example):
-    """The primal declares one vec_in and one uniform in, one mutable out;
+    """The primal declares one plane_in and one uniform in, one mutable out;
     the vjp/jvp kernels' OWN planes are read from the built bundle's
     sidecars (never assumed) and must carry the roles the naming rule
     (``hawk.diff.ADJOINT_PREFIX``/``TANGENT_PREFIX``) implies."""
@@ -173,17 +173,17 @@ def test_the_traced_derivative_kernels_declare_the_expected_planes(example):
     vjp_roles = {name: role for role, name in vjp_spec}
     jvp_roles = {name: role for role, name in jvp_spec}
 
-    assert primal_roles == {"x": "vec_in", "dt": "uniform", "x_next": "mutable"}
+    assert primal_roles == {"x": "plane_in", "dt": "uniform", "x_next": "mutable"}
 
     names = example._plane_names()
-    assert vjp_roles["x"] == "vec_in"
+    assert vjp_roles["x"] == "plane_in"
     assert vjp_roles["dt"] == "uniform"
-    assert vjp_roles[names.bar_out] == "vec_in"
+    assert vjp_roles[names.bar_out] == "plane_in"
     assert vjp_roles[names.bar_wrt] == "mutable"
 
-    assert jvp_roles["x"] == "vec_in"
+    assert jvp_roles["x"] == "plane_in"
     assert jvp_roles["dt"] == "uniform"
-    assert jvp_roles[names.dot_wrt] == "vec_in"
+    assert jvp_roles[names.dot_wrt] == "plane_in"
     assert jvp_roles[names.dot_out] == "mutable"
 
     # each derivative's sidecar names its OWN primal and direction.

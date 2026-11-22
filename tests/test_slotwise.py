@@ -34,7 +34,7 @@ V3 = TensorType((3,), "f64")
 
 
 def _leaf(name, t, role=None):
-    role = role or ("per_sample" if not t.shape else "vec_in")
+    role = role or ("plane_in" if not t.shape else "plane_in")
     return _ir.leaf(CTX, "vocab_read", role, name, t)
 
 
@@ -133,14 +133,32 @@ def _dense(build):
         mp.undo()
 
 
+def _extents(leaf):
+    """The shape of the array bound to a plane: its declared axes, a run-time axis being 64 long."""
+    return tuple(64 if extent is None else extent for _label, extent in _ir.field_pairs(leaf, "axes")) or (64,)
+
+
+def _shapes(sinks):
+    """The shape of each sink stored at several indices (a loop's body sinks included), from its axes."""
+    shapes = {}
+    for node in _ir.canonical_nodes(tuple(sinks))[0]:
+        stored = node.field_nodes("body_sinks") if _ir.is_a(node, "loop") else [node]
+        for sink in stored:
+            if _ir.is_a(sink, "accum_write", "wide_write") and len(sink.operands) > 1:
+                axes = _ir.field_pairs(sink, "axes")
+                shapes[sink.field_text("name")] = tuple(64 if e is None else e for _label, e in axes) or (64,)
+    return shapes
+
+
 def _env(sinks, rng):
     """A random value for every leaf the sinks read (an integer leaf in 0..2)."""
     env = {}
     walk = _ir.canonical(tuple(sinks))
+    leaves = {n.field_text("name"): n for n in _ir.canonical_nodes(tuple(sinks))[0] if _ir.is_a(n, "leaf")}
     for role, name in _ir.arg_spec(walk):
         t = _ir.slot_type(walk, role, name)
         if role in ("lookup", "wide_in"):
-            env[name] = rng.normal(size=64)
+            env[name] = rng.normal(size=_extents(leaves[name]))
         elif t.dtype in ("i32", "i64"):
             env[name] = int(rng.integers(0, 3)) if not t.shape \
                 else rng.integers(0, 3, size=t.shape)
@@ -161,7 +179,9 @@ def test_slotwise_form_evaluates_as_the_dense_form(name):
     rng = np.random.default_rng(20261021)
     for _trial in range(4):
         env = _env(dense, rng)
-        want, got = evaluate(dense, env, lanes=64), evaluate(wide, env, lanes=64)
+        shapes = _shapes(dense)
+        want = evaluate(dense, env, lanes=64, shapes=shapes)
+        got = evaluate(wide, env, lanes=64, shapes=shapes)
         assert want.keys() == got.keys()
         for key in want:
             assert _same(want[key], got[key]), f"{name}: sink {key!r}"

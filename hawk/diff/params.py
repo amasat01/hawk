@@ -127,7 +127,7 @@ def _per_sample_read(cell: Any) -> Any:
     return _ir.leaf(
         cell.ctx,
         "vocab_read",
-        "per_sample",
+        "plane_in",
         plane.field_text("name"),
         _ir.type_of(cell),
         sorted=plane.field_flag("sorted"),
@@ -150,7 +150,7 @@ def promote(sinks: Any, names: Any) -> tuple:
         n: _ir.param_cell(n.ctx, n.field_text("name"), _ir.type_of(n))
         for n in nodes
         if _ir.is_a(n, "leaf")
-        and n.field_text("role") == "per_sample"
+        and n.field_text("role") == "plane_in"
         and n.field_text("name") in names
     }
     try:

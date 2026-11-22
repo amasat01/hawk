@@ -360,15 +360,15 @@ def test_per_cell_gradient_is_the_sum_over_the_samples_that_read_the_entry(per_c
     want = np.zeros(CELLS)
     for c in range(CELLS):
         pick = cell == c
-        per_sample = np.zeros(pick.sum())
+        plane_in = np.zeros(pick.sum())
         rt.run(
             load["plain"]("stateful_vjp"),
             x=x[pick],
             g=float(g[c]),
             bar_y=np.ones(pick.sum()),
-            bar_g=per_sample,
+            bar_g=plane_in,
         )
-        want[c] = per_sample.sum()
+        want[c] = plane_in.sum()
     np.testing.assert_allclose(bar, want, rtol=1e-13)
     assert np.all(bar != 0.0)
 
@@ -376,7 +376,7 @@ def test_per_cell_gradient_is_the_sum_over_the_samples_that_read_the_entry(per_c
 def test_per_cell_names_and_refusals():
     cells = param_planes(stateful, per_cell=True)
     assert cells.name == "stateful_params_cells"
-    assert dict((n, r) for r, n in _ir.arg_spec(cells.walk))["param_cell"] == "per_sample"
+    assert dict((n, r) for r, n in _ir.arg_spec(cells.walk))["param_cell"] == "plane_in"
     assert _ir.digest(cells.walk) != _ir.digest(param_planes(stateful).walk)
 
     @kernel

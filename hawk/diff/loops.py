@@ -132,15 +132,17 @@ def _tape_read(loop: Any, slot: int, index: Any) -> Any:
     return _ir.make_node("TapeRead", ttype, [loop, index], literal=slot, slot=slot)
 
 
-def _accum_write(plane: str, value: Any, index: Any) -> Any:
-    """The scatter-add of ``value`` into row ``index`` of the plane ``plane``."""
+def _accum_write(plane: str, value: Any, indices: Sequence[Any], edge: str, axes: Sequence[Any]) -> Any:
+    """The scatter-add of ``value`` into the plane ``plane`` at ``indices``, under the edge rule of the read it transposes."""
     return _ir.make_node(
         "AccumWrite",
         _ir.type_of(value),
-        [value, index],
+        [value, *indices],
         name=plane,
         contract="auto",
         reduced=None,
+        edge=edge,
+        axes=tuple(axes),
     )
 
 
@@ -255,10 +257,15 @@ def _pullback(
                 # enclosing :func:`_dispatch_pullback` commits ONE scatter, at a
                 # row only the taken branch computes
                 continue
-            plane, row = node.operands
+            plane, *indices = node.operands
             if plane in inputs:
                 scattered.add(plane.field_text("name"))
-                scatters.append(_accum_write(name(plane.field_text("name")), g, row))
+                scatters.append(
+                    _accum_write(
+                        name(plane.field_text("name")), g, indices, node.field_text("edge"),
+                        _ir.field_pairs(plane, "axes"),
+                    )
+                )
             continue
         if _ir.is_a(node, "dispatch"):
             _dispatch_pullback(
@@ -402,7 +409,9 @@ def _dispatch_pullback(
                     _accum_write(
                         name(plane.field_text("name")),
                         combined,
-                        _taken_row(node, target, per_branch),
+                        _taken_indices(node, target, per_branch),
+                        target.field_text("edge"),
+                        _ir.field_pairs(plane, "axes"),
                     )
                 )
             continue
@@ -442,23 +451,26 @@ def guarded_select(node: Any) -> Any:
     return dispatch_node(chosen, [on_false, on_true], "switch", _ir.type_of(node))
 
 
-def _taken_row(node: Any, target: Any, per_branch: dict) -> Any:
-    """The row a branch-gathered plane's scatter commits at.
+def _taken_indices(node: Any, target: Any, per_branch: dict) -> list:
+    """The indices a branch-gathered plane's scatter commits at.
 
-    The gather's row is computed only by the branches that read it; the scatter
-    sits outside the ``dispatch`` and would evaluate it for every lane, so a lane
-    whose branch did NOT read the plane could commit (a zero) at a row that is out
-    of range for it. A row every branch computes is kept as it is; otherwise the row
-    is itself a ``dispatch`` of the same selector: the gather's row where the branch
-    gathered, row 0 (always in range, and a zero is added there) elsewhere."""
+    The gather's indices are computed only by the branches that read it; the scatter
+    sits outside the ``dispatch`` and would evaluate them for every lane, so a lane
+    whose branch did NOT read the plane could commit (a zero) at a position that is out
+    of range for it. Indices every branch computes are kept as they are; otherwise each index
+    is itself a ``dispatch`` of the same selector: the gather's index where the branch
+    gathered, 0 (always in range, and a zero is added there) elsewhere."""
     selector, *branches = node.operands
-    row = target.operands[1]
+    indices = target.operands[1:]
     if len(per_branch) == len(branches):
-        return row
-    row_type = _ir.type_of(row)
-    zero = _ir.const(target.ctx, 0, row_type)
-    rows = [row if j in per_branch else zero for j in range(len(branches))]
-    return dispatch_node(selector, rows, dispatch_strategy(node), row_type)
+        return list(indices)
+    taken = []
+    for index in indices:
+        index_type = _ir.type_of(index)
+        zero = _ir.const(target.ctx, 0, index_type)
+        arms = [index if j in per_branch else zero for j in range(len(branches))]
+        taken.append(dispatch_node(selector, arms, dispatch_strategy(node), index_type))
+    return taken
 
 
 # --------------------------------------------------------------------------
@@ -855,10 +867,12 @@ def forward_loop(loop: Any, tangent_of, name, augmented_of=None, jump=None, alt=
             if handled:
                 continue
         if _ir.is_a(node, "at"):
-            plane, row = node.operands
+            plane, *indices = node.operands
             plane_tangent = tangent.get(plane)
             if plane_tangent is not None:
-                tangent[node] = _ir.make_node("At", _ir.type_of(node), [plane_tangent, row])
+                tangent[node] = _ir.make_node(
+                    "At", _ir.type_of(node), [plane_tangent, *indices], edge=node.field_text("edge")
+                )
             continue
         if _ir.is_a(node, "tape_read"):
             owner = node.operands[0]

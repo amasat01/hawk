@@ -320,8 +320,8 @@ def run_host(bundle, state: np.ndarray, dt: float, seed: int = 1) -> dict:
     p_plugin = host_plugin(bundle, KERNEL_NAME)
     v_plugin = host_plugin(bundle, VJP_NAME)
     j_plugin = host_plugin(bundle, JVP_NAME)
-    _assert_plane_roles(v_plugin, {names.bar_out: "vec_in", names.bar_wrt: "mutable"})
-    _assert_plane_roles(j_plugin, {names.dot_wrt: "vec_in", names.dot_out: "mutable"})
+    _assert_plane_roles(v_plugin, {names.bar_out: "plane_in", names.bar_wrt: "mutable"})
+    _assert_plane_roles(j_plugin, {names.dot_wrt: "plane_in", names.dot_out: "mutable"})
 
     plan_p = eplan.plan(p_plugin, structure=eexec.HostTeam)
     plan_v = eplan.plan(v_plugin, structure=eexec.HostTeam)
@@ -411,8 +411,8 @@ def run_device(bundle, state: np.ndarray, dt: float, seed: int = 1) -> dict:
     p_plugin = device_plugin(bundle, KERNEL_NAME)
     v_plugin = device_plugin(bundle, VJP_NAME)
     j_plugin = device_plugin(bundle, JVP_NAME)
-    _assert_plane_roles(v_plugin, {names.bar_out: "vec_in", names.bar_wrt: "mutable"})
-    _assert_plane_roles(j_plugin, {names.dot_wrt: "vec_in", names.dot_out: "mutable"})
+    _assert_plane_roles(v_plugin, {names.bar_out: "plane_in", names.bar_wrt: "mutable"})
+    _assert_plane_roles(j_plugin, {names.dot_wrt: "plane_in", names.dot_out: "mutable"})
 
     plan_p = eplan.plan(p_plugin, structure=eexec.DeviceKernel)
     plan_v = eplan.plan(v_plugin, structure=eexec.DeviceKernel)

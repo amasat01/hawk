@@ -54,9 +54,9 @@ def host(tmp_path, cache_dir):
 
 
 def test_a_bare_first_axis_declares_a_runtime_extent():
-    assert Mutable["node"].dims == (("node", None, 1),)
-    assert Table["elem", "c":3].dims == (("elem", None, 3), ("c", 3, 1))
-    assert Mutable[hawk.Vector[2], "node", ].dims == (("node", None, 1),)
+    assert Mutable["node"].axes == (("node", None),)
+    assert Table["elem", "c":3].axes == (("elem", None), ("c", 3))
+    assert Mutable[hawk.Vector[2], "node", ].axes == (("node", None),)
 
 
 @pytest.mark.parametrize("bad", [lambda: Mutable["a":2, "b"], lambda: Table["a":2, "b"],
@@ -110,7 +110,7 @@ def test_a_table_first_axis_is_the_plane_passed():
 
 
 def test_a_label_a_lane_axis_shares_is_the_lane_extent(host):
-    assert lane_sink.planes["b"].dims == (("e", None, 1),)
+    assert lane_sink.planes["b"].axes == (("e", None),)
     got = hawk.deploy(lane_sink).run(x=np.ones(5), e=5)
     np.testing.assert_array_equal(got, np.ones(5))
 

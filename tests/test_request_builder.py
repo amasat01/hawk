@@ -170,14 +170,14 @@ def test_a_kernel_with_compensated_sums_states_no_companion_plane_and_no_compens
     assert built(standard)["body"] == plain("standard", sinks_at(standard, standard))
 
 
-def test_a_sink_with_named_axes_states_its_payload():
-    """The plane is bound (payload, then named axes): the payload is in the declaration only, so the request states it."""
-    assert built(add_vec)["sink_axes"] == [
-        {"name": "acc", "axes": [{"label": "bin", "extent": 9}], "payload": [3]}
-    ]
-    assert built(add_one)["sink_axes"] == [
-        {"name": "acc", "axes": [{"label": "bin", "extent": 9}], "payload": []}
-    ]
+def test_a_sink_with_named_axes_states_its_payload_in_the_ir_and_not_in_the_request():
+    """The plane is bound (payload, then named axes): the sink states the payload as leading labelled axes, so the request
+    states no axes of its own."""
+    assert "sink_axes" not in built(add_vec) and "sink_axes" not in built(add_one)
+    vector = {_ir.field_pairs(s, "axes") for s in add_vec.sinks}
+    assert vector == {(("component", 3), ("bin", 9))}
+    scalar = {_ir.field_pairs(s, "axes") for s in add_one.sinks}
+    assert scalar == {(("bin", 9),)}
 
 
 def test_a_placed_build_states_the_settings_that_differ_from_the_defaults_and_the_layout_sizes():

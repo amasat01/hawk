@@ -19,19 +19,29 @@ from ..ext import PLAIN, DEFAULT_GUARD, DATA_ONLY, DEFAULT_KIND
 from ..trace import steps as _steps
 from ..trace.decl import Plane
 from ..targets import TARGETS
-from ..trace.kernel import _declared, derived_axes
+from ..trace.kernel import _declared
 
 
 def _camel(word: str) -> str:
-    """``per_sample`` as ``PerSample``: the way the request spells a name of a closed set."""
+    """``plane_in`` as ``PlaneIn``: the way the request spells a name of a closed set."""
     return "".join(part.capitalize() for part in word.split("_"))
 
 
-def _slot(slot) -> dict:
+def _slot(slot, axes=()) -> dict:
+    """The request's spelling of a declared slot; ``axes`` are those of the plane the slot binds."""
     out = {"role": _camel(slot.role), "name": slot.name, "dtype": _camel(slot.ttype.dtype), "shape": list(slot.ttype.shape)}
     if slot.ttype.tag is not None:
         out["tag"] = slot.ttype.tag
+    if axes:
+        out["axes"] = _axes(axes)
     return out
+
+
+def _leaf_axes(walk) -> dict:
+    """``{(role, name): the axes the walk's plane leaf states}`` for each plane with axes."""
+    leaves = (n for n in _ir.walk_order(walk) if _ir.is_a(n, "leaf"))
+    return {(n.field_text("role"), n.field_text("name")): _ir.field_pairs(n, "axes") for n in leaves
+            if _ir.field_pairs(n, "axes")}
 
 
 def _mixes(body) -> tuple:
@@ -50,7 +60,9 @@ def _member(body, name: str, position: dict) -> dict:
         declared = [_slot(slot) for slot in _declared(planes)]
         declared += [_slot(slot) for slot in _mixes(body)]
     else:
-        declared = [_slot(_ir.Slot(role, slot, _ir.slot_type(body.walk, role, slot))) for role, slot in _ir.arg_spec(body.walk) if role in _ir.LEAF_ROLES]
+        axes = _leaf_axes(body.walk)
+        declared = [_slot(_ir.Slot(role, slot, _ir.slot_type(body.walk, role, slot)), axes.get((role, slot), ()))
+                    for role, slot in _ir.arg_spec(body.walk) if role in _ir.LEAF_ROLES]
     return {
         "name": name,
         "sinks": [position[sink] for sink in body.sinks],
@@ -92,7 +104,7 @@ def _table_payload(plane, pattern) -> dict:
     if not isinstance(plane, Plane) or plane.form != "table":
         return {}
     kept = sum(flag is True for flag in pattern)
-    own = plane.dims[:max(len(plane.dims) - kept, 0)]
+    own = plane.axes[:max(len(plane.axes) - kept, 0)]
     return {"payload": [extent for _, extent, *_ in own]}
 
 
@@ -136,7 +148,7 @@ _ROLE_WORDS = MappingProxyType({"tape": "Tape", "tape_fused": "TapeFused", "step
 
 def _part(kernel, *, settings, sizes, position: dict) -> dict:
     """The members of a kernel's request that belong to the kernel alone, which a derived kernel states for itself as well: its
-    single step, group, planes, build settings, steps, lane space, sink axes, shared planes and broadcast pattern."""
+    single step, group, planes, build settings, steps, lane space, shared planes and broadcast pattern."""
     out = {}
     one = getattr(kernel, "one_step", None)
     if one is not None:
@@ -157,14 +169,6 @@ def _part(kernel, *, settings, sizes, position: dict) -> dict:
     lanes = _axes(getattr(kernel, "lane_space", ((None, None),)))   # the default the sidecar writer takes
     if lanes:
         out["lane_space"] = lanes
-    sinks = [(n, p) for n, p in planes.items() if isinstance(p, Plane) and p.form == "accum"]
-    if type(kernel.sinks).__name__ == "Derived" and not planes:
-        sinks += derived_axes(kernel.walk, getattr(kernel.sinks, "source", None), kernel.gradients, kernel.tangents).items()
-    # A sink with named axes is bound (payload, then the named axes): the payload is the plane's own per-sample component,
-    # which only the declaration knows (empty for a scalar plane).
-    axes = [{"name": n, "axes": _axes(p.dims), "payload": list(p.ttype.shape)} for n, p in sinks if p.dims]
-    if axes:
-        out["sink_axes"] = axes
     shared = [n for n, p in planes.items() if isinstance(p, Plane) and p.shared]
     if shared:
         out["shared"] = shared

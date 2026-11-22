@@ -37,7 +37,7 @@ from hawk import runtime
 OUTPUT_ROLES = ("out", "mutable", "wide_out", "accum_out")
 
 #: The roles the caller supplies an input plane for (``eagle.plan._INPUT_ROLES``).
-INPUT_ROLES = ("per_sample", "vec_in", "mat_in", "terminated", "lookup", "wide_in")
+INPUT_ROLES = ("plane_in", "plane_in", "plane_in", "terminated", "lookup", "wide_in")
 
 _NP_DTYPE = {"float64": np.float64, "float32": np.float32}
 
@@ -54,8 +54,8 @@ def load(directory, kernel: str, sidecar: dict | None = None):
 def planes(kernel, n: int, kw: dict) -> dict:
     """Every plane one run binds, allocated eagle's way (see the module note)."""
     dtype = np.dtype(_NP_DTYPE[kernel.scalar_type])
-    # `arg_widths` covers input roles too (vec_in/mat_in/
-    # per_sample/terminated, alongside the output roles this already had), but
+    # `arg_widths` covers input roles too (plane_in/plane_in/
+    # plane_in/terminated, alongside the output roles this already had), but
     # it stays INT-ONLY: a runtime-length role (lookup/wide_in/wide_out/
     # accum_out) is simply ABSENT here, never `None` (hawk/artifact/
     # sidecar.py documents why an `int(v)` cast over this

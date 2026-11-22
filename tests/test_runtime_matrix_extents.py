@@ -45,11 +45,12 @@ def host(tmp_path, cache_dir):
 def test_the_sidecar_declares_the_extents_a_run_binds_by(host):
     kernel, bundle = host(products)
     sidecar = sidecar_of(bundle, "products")
-    assert sidecar["mat_shapes"] == {"A": [4, 5], "B": [5, 3]}
-    assert sidecar["vec_widths"] == {"v": 5}
+    shapes_of_inputs = {n: sidecar["slot_shapes"][n] for n in ("A", "B", "v")}
+    assert shapes_of_inputs == {"A": [4, 5], "B": [5, 3], "v": [5]}
     shapes = {m["name"]: m.get("shape") for m in sidecar["mutables"]}
     assert shapes == {"C": [4, 3], "y": None}
-    assert [role for role, _name in kernel.arg_spec].count("mat_in") == 2
+    matrix_inputs = [name for role, name in kernel.arg_spec if role == "plane_in" and len(sidecar["slot_shapes"][name]) == 2]
+    assert len(matrix_inputs) == 2
 
 
 def test_rectangular_inputs_and_outputs_run(host):

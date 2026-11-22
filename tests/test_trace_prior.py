@@ -221,7 +221,7 @@ def test_a_loop_that_fills_every_index_does_not_need_the_start_value():
         for j in range(3):
             curve[j] = a * (j + 1.0)
 
-    assert not [r for r, n in full.arg_spec if n == "curve" and r == "per_sample"]
+    assert not [r for r, n in full.arg_spec if n == "curve" and r == "plane_in"]
     for derive in (vjp, jvp):
         derive(full, wrt=("a",))
         with pytest.raises(HawkError, match="start the plane from zeros"):

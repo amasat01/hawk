@@ -12,7 +12,7 @@ exports, then ``eagle.plan`` under ``DeviceKernel`` on GPU-0 and under
 
 Fixture set (this is the FULL set, not the scalar-handle
 subset scoped it to until then): a ``Vector[3]`` output plane, a
-``vec_in``, a ``mat_in``, a ``float32`` arm, a MULTI-output kernel, a
+``plane_in``, a ``plane_in``, a ``float32`` arm, a MULTI-output kernel, a
 ``lookup`` gather (``cross_sample_read``), a mapreduce partial, a scatter
 (``cross_sample_write``), the ``nsamples`` role, a compound quantity, the
 two-wire compound read and the plain scalar-handle shape. The table itself is

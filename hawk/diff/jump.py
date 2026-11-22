@@ -177,8 +177,9 @@ class JumpPlan:
             self.rounded: list = []
         self.root.rounded.extend(
             idx
-            for idx in map(_runtime_index, seq)
-            if idx is not None and self.reach.get(key(idx), 0) == 2 and self._from_input(idx)
+            for node in seq
+            for idx in _runtime_indices(node)
+            if self.reach.get(key(idx), 0) == 2 and self._from_input(idx)
         )
         for node in seq:
             if _ir.is_a(node, "select"):
@@ -669,13 +670,17 @@ class JumpPlan:
         return record
 
 
-def _runtime_index(node: Any) -> Any:
-    """The runtime row or key ``node`` reads or commits at, else ``None``."""
+def _runtime_indices(node: Any) -> tuple:
+    """The runtime rows or keys ``node`` reads or commits at (one per axis), else none."""
     if _ir.is_a(node, "accum_write", "wide_write"):
-        return node.operands[1] if len(node.operands) > 1 else None
-    if node.field_text("kind") in ("at", "component_at", "set_component_at", "add_at"):
-        return node.operands[1]
-    return None
+        return tuple(node.operands[1:])
+    if _ir.is_a(node, "at"):
+        return tuple(node.operands[1:])
+    if node.field_text("kind") == "component_at":
+        return tuple(node.operands[1:])
+    if node.field_text("kind") in ("set_component_at", "add_at"):
+        return tuple(node.operands[1:-1])     # the entry written is the last operand
+    return ()
 
 
 def _reach_of(node: Any, get, leaf) -> int:

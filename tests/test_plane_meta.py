@@ -55,7 +55,7 @@ def test_a_note_that_is_not_json_is_refused():
 def test_eagles_reader_refuses_notes_for_a_plane_the_kernel_lacks():
     from eagle.sidecar import read_plane_meta
 
-    meta = {"arg_spec": [["per_sample", "x"]], "plane_meta": {"z": {"a": 1}}}
+    meta = {"arg_spec": [["plane_in", "x"]], "plane_meta": {"z": {"a": 1}}}
     with pytest.raises(ValueError, match="plane_meta must map each plane of the arg_spec"):
         read_plane_meta(meta, name="k")
 

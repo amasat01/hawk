@@ -40,7 +40,7 @@ def _assign(name, value):
 
 def _gather_primal():
     """``out = tab.at(k) ** 3`` -- one gather, one sample-local write."""
-    idx = _leaf("vocab_read", "per_sample", "idx", I32)
+    idx = _leaf("vocab_read", "plane_in", "idx", I32)
     tab = _leaf("table_read", "lookup", "tab", F64)
     read = _ir.make_node("At", F64, (tab, idx))
     return (idx, tab), (_assign("out", _ir.make("mul", (read, _ir.make("mul", (read, read))))),)
@@ -51,7 +51,7 @@ def test_the_reverse_of_a_gather_is_a_scatter_add_classified_cross_sample_write(
     derived = vjp(sinks)
     scatter = [s for s in derived if _ir.is_a(s, "accum_write")]
     assert len(scatter) == 1 and scatter[0].field_text("name") == "bar_tab"
-    assert scatter[0].field_kind("index"), "the scatter targets the gathered lane"
+    assert len(scatter[0].operands) == 2, "the scatter targets the gathered lane"
     assert _ir.access_class(_ir.canonical(derived)) == "cross_sample_write", (
         "a write whose target lane is not `i` is cross_sample_write -- the "
         "class eagle checks the placement against"
@@ -89,9 +89,9 @@ def test_the_gather_jvp_reads_a_tangent_lookup_plane():
 
 
 def test_the_reverse_of_a_scattered_accumulate_is_a_gather():
-    idx = _leaf("vocab_read", "per_sample", "idx", I32)
-    x = _leaf("vocab_read", "per_sample", "x", F64)
-    sinks = (_ir.accum_write("energy", _ir.make("mul", (x, x)), index=idx),)
+    idx = _leaf("vocab_read", "plane_in", "idx", I32)
+    x = _leaf("vocab_read", "plane_in", "x", F64)
+    sinks = (_ir.accum_write("energy", _ir.make("mul", (x, x)), indices=(idx,)),)
     derived = vjp(sinks)
     walk = _ir.canonical(derived)
     assert ("lookup", "bar_energy") in _ir.slot_of(walk), (
@@ -104,8 +104,8 @@ def test_the_reverse_of_a_scattered_accumulate_is_a_gather():
 
 
 def test_the_seed_of_an_own_column_accumulate_is_a_plain_read():
-    x = _leaf("vocab_read", "per_sample", "x", F64)
+    x = _leaf("vocab_read", "plane_in", "x", F64)
     sinks = (_ir.accum_write("energy", _ir.make("mul", (x, _ir.const(CTX, 3.0, F64)))),)
     walk = _ir.canonical(vjp(sinks))
-    assert ("per_sample", "bar_energy") in _ir.slot_of(walk)
+    assert ("plane_in", "bar_energy") in _ir.slot_of(walk)
     assert _ir.access_class(walk) == "sample_local"

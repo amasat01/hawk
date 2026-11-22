@@ -29,7 +29,7 @@ from typing import Any
 from .. import _ir
 from ..errors import HawkError
 from . import astpass, helpers, reduce
-from .decl import Plane, resolve, role_of, spell
+from .decl import Plane, Record, RecordView, Rows, resolve, role_of, spell
 from .lane_axes import (
     LaneAxes,
     check_group,
@@ -43,6 +43,7 @@ from .value import (
     INDEX32,
     FinishRefusal,
     MutableRef,
+    RowsView,
     SharedValue,
     TableRef,
     DISPATCH_STRATEGIES,
@@ -53,8 +54,7 @@ from .value import (
 )
 
 #: How an input plane's ROLE picks the leaf KIND it mints.
-_LEAF_KIND = {"per_sample": "vocab_read", "vec_in": "vocab_read",
-              "mat_in": "vocab_read", "uniform": "uniform",
+_LEAF_KIND = {"plane_in": "vocab_read", "uniform": "uniform",
               "terminated": "terminated"}
 _SINK_FORMS = ("mutable", "wide_out")
 
@@ -351,7 +351,7 @@ def _trace(fn: Callable[..., None], kind: Any) -> Kernel:
             fn, scope, sink_names, mutables, finishes=finishes,
             returns_value=True if forced is not None else None)
         with tracing(lane_space(planes), fn.__name__):
-            out = _call_finishing(traced, fn, args)
+            out = _call_finishing(traced, fn, {**args, **_group_views(planes, args)})
         _retag_by_key(planes, args)
         _check_axis_sinks(fn.__name__, planes, args)
         finished = _finished(fn.__name__, params, args, finishes, resolved_kind)
@@ -390,17 +390,17 @@ def _retag_by_key(planes: dict[str, Any], args: dict[str, Any]) -> None:
     for name, ref in args.items():
         kind = getattr(ref, "by_key_kind", None)
         if kind is not None:
-            planes[name] = Plane(kind, planes[name].ttype, dims=planes[name].dims)
+            planes[name] = Plane(kind, planes[name].ttype, axes=planes[name].axes)
 
 
 def _check_axis_sinks(name: str, planes: dict[str, Any], args: dict[str, Any]) -> None:
     """A sink with named axes is bound ``(*payload, *axes)``, not one value per
     lane: a body that assigns it on its own column is refused."""
     for p, plane in planes.items():
-        if (isinstance(plane, Plane) and plane.form == "mutable" and plane.dims
+        if (isinstance(plane, Plane) and plane.form == "mutable" and plane.axes
                 and p in args and any(_ir.is_a(s, "assign") for s in args[p].sinks)):
             axes = ", ".join(f'"{label}"' if size is None else f'"{label}":{size}'
-                             for label, size, _stride in plane.dims)
+                             for label, size in plane.axes)
             raise HawkError(
                 f"kernel {name!r}: {p!r} is declared with the axes [{axes}], so it is "
                 f"written by key (hawk.scatter({p})[key] += v, or {p} = hawk.sum(x, "
@@ -454,12 +454,12 @@ def _check_grid(name: str, params: list[str], planes: dict[str, Any]) -> None:
     lane_labels = {label for g in grids for label, _ in planes[g].grid}
     for p in params:
         plane = planes[p]
-        if isinstance(plane, Plane) and plane.dims and plane.dims[0][1] is None \
+        if isinstance(plane, Plane) and plane.axes and plane.axes[0][1] is None \
                 and plane.form in ("mutable", "table", "accum") \
-                and plane.dims[0][0] not in lane_labels \
-                and plane.dims[0][0] in params:
+                and plane.axes[0][0] not in lane_labels \
+                and plane.axes[0][0] in params:
             raise HawkError(
-                f"kernel {name!r}: the axis label {plane.dims[0][0]!r} of {p!r} is also a "
+                f"kernel {name!r}: the axis label {plane.axes[0][0]!r} of {p!r} is also a "
                 "parameter name, so a launch could not tell which one a keyword binds; "
                 "rename the label")
     if not grids:
@@ -520,10 +520,10 @@ def _commit_returns(fn: Callable[..., Any], out: Any, shape: Any, forced: Any,
     refs = []
     for leaf, ttype in zip(leaves, ttypes):
         if isinstance(leaf.value, reduce.Reduced):
-            dims = reduce.axes_plane(leaf.value.kept)
-            ref = MutableRef(leaf.name, ttype, dims)
+            axes = tuple(leaf.value.kept)
+            ref = MutableRef(leaf.name, ttype, axes)
             ref.write(leaf.value)
-            planes[leaf.name] = Plane("accum", ttype, dims=dims)
+            planes[leaf.name] = Plane("accum", ttype, axes=axes)
         else:
             ref = MutableRef(leaf.name, ttype)
             ref.write(leaf.value)
@@ -626,9 +626,23 @@ def _own_declarations(fn: Callable[..., None], scope: dict[str, Any]
                       ) -> tuple[dict[str, Any], list[str]]:
     """A body's own annotated declarations and its parameter names, in
     signature order."""
-    own = {name: resolve(name, _annotation(fn, name, ann, scope))
-           for name, ann in _annotations(fn).items()}
-    return own, list(inspect.signature(fn).parameters)
+    declared = {name: _annotation(fn, name, ann, scope) for name, ann in _annotations(fn).items()}
+    own: dict[str, Any] = {}
+    params: list[str] = []
+    for name in inspect.signature(fn).parameters:
+        if isinstance(declared.get(name), (Record, Rows)):
+            expanded = declared[name].planes(name)
+            clash = sorted(set(expanded) & (set(inspect.signature(fn).parameters) | set(own)))
+            if clash:
+                raise HawkError(f"kernel {fn.__name__!r}: record {name!r} expands to {clash}, "
+                                "which another parameter already names")
+            own.update(expanded)
+            params.extend(expanded)
+            continue
+        params.append(name)
+        if name in declared:
+            own[name] = resolve(name, declared[name])
+    return own, params
 
 
 def _resolve_planes(fn: Callable[..., None], params: list[str],
@@ -706,8 +720,8 @@ def _zero_accumulate(name: str, like: Any) -> Any:
     """An accumulate of a zero into the plane ``name``, at the key and of the type of the sink ``like``."""
     ttype = _ir.type_of(like)
     zero = _ir.const(like.ctx, 0.0, _ir.TensorType((), ttype.dtype))
-    return _ir.make_node("AccumWrite", ttype, [zero, *like.operands[1:2]], name=name, contract="auto",
-                          reduced=None)
+    return _ir.make_node("AccumWrite", ttype, [zero, *like.operands[1:]], name=name, contract="auto",
+                          reduced=None, edge=like.field_text("edge"), axes=_ir.field_pairs(like, "axes"))
 
 
 def _scattered_companion(kind: Any, sinks: tuple[Any, ...]) -> tuple[Any, ...]:
@@ -747,7 +761,7 @@ def _contract_companions(name: str, planes: dict[str, Any], sinks: tuple[Any, ..
                     "rename the parameter")
             out.setdefault(comp, []).append(_zero_accumulate(comp, s))
             planes[comp] = Plane("accum", planes[s.field_text("name")].ttype,
-                                 dims=planes[s.field_text("name")].dims)
+                                 axes=planes[s.field_text("name")].axes)
     return tuple(c for group in out.values() for c in group)
 
 
@@ -846,26 +860,6 @@ def _finished(name: str, params: list[str], args: dict[str, Any],
     return tuple(out)
 
 
-def derived_axes(walk: _ir.Walk, primal: Any, gradients: dict[str, str], tangents: dict[str, str]) -> dict[str, Any]:
-    """The named axes of a derivative's sinks, from its primal's: a tangent plane (``tangents`` maps
-    each to its primal plane) is bound as that plane is (``Mutable["node"]`` gives ``node=N``), and the
-    gradient of a one-axis ``Table["node"]`` (``gradients`` maps each gradient plane to its input) as that
-    table (the length is the caller's, the label its run-time extent). Planes the primal declares no axes
-    for stay undeclared."""
-    declared = getattr(primal, "planes", None) or {}
-    out: dict[str, Any] = {}
-    for role, name in _ir.arg_spec(walk):
-        tangent = name in tangents
-        base = tangents.get(name) or gradients.get(name)
-        plane = declared.get(base) if base else None
-        if role in ("mutable", "out", "wide_out", "accum_out") and isinstance(plane, Plane) \
-                and plane.dims and (tangent or (len(plane.dims) == 1
-                                                and plane.dims[0][1] is None)):
-            out[name] = Plane("accum" if role == "accum_out" else "mutable", plane.ttype,
-                              dims=plane.dims)
-    return out
-
-
 def _declared(planes: dict[str, Any]) -> tuple:
     """The slots a DECLARATION binds whether or not the body reads them.
 
@@ -934,6 +928,21 @@ def _scope(fn: Callable[..., None], defining: dict[str, Any]) -> dict[str, Any]:
     return scope
 
 
+def _group_views(planes: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
+    """The body's view of each ``Record`` and ``Rows`` parameter: the traced planes it expanded to."""
+    fields: dict[str, dict[str, Any]] = {}
+    forms: dict[str, str] = {}
+    for name, plane in planes.items():
+        if isinstance(plane, Plane) and plane.group:
+            parameter, field, form = plane.group
+            fields.setdefault(parameter, {})[field] = args[name]
+            forms[parameter] = form
+    return {
+        parameter: RowsView(parameter, **traced) if forms[parameter] == "rows" else RecordView(parameter, traced)
+        for parameter, traced in fields.items()
+    }
+
+
 def _bind(name: str, plane: Plane | _ir.Quantity) -> Any:
     """The traced argument one declaration binds to (its leaves live in the context being traced)."""
     context = current_context()
@@ -943,19 +952,19 @@ def _bind(name: str, plane: Plane | _ir.Quantity) -> Any:
     if plane.grid:
         return LaneAxes(plane.grid)
     if plane.form == "mutable":
-        return MutableRef(name, plane.ttype, plane.dims)
+        return MutableRef(name, plane.ttype, plane.axes)
     if plane.form == "wide_out":
-        return WideOutRef(name, plane.ttype, plane.dims)
+        return WideOutRef(name, plane.ttype, plane.axes)
     if plane.form == "terminated":
         return TerminatedRef(_ir.leaf(context, "terminated", role, name, plane.ttype))
     if plane.shared and plane.ttype.shape:
         # Param[Vector[W]] / Param[Matrix[R,C]]: one value, read cell by cell from its plane
-        return SharedValue(name, plane.shared, plane.dims)
+        return SharedValue(name, plane.shared, plane.axes)
     if plane.form in ("table", "wide"):
         # one READ form for both roles: pins `lookup` and `wide_in` to the
         # same 32-byte ScalarHandle, so the access is the at(expr) either way.
-        return TableRef(name, plane.ttype, role=role, dims=plane.dims)
-    if plane.ttype == INDEX and role == "per_sample":
+        return TableRef(name, plane.ttype, role=role, axes=plane.axes)
+    if plane.ttype == INDEX and role == "plane_in":
         return Value(widened(_ir.leaf(context, _LEAF_KIND[role], role, name, INDEX32,
                                       sorted=plane.sorted)))
     return Value(_ir.leaf(context, _LEAF_KIND[role], role, name, plane.ttype, sorted=plane.sorted))

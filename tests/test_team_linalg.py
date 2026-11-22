@@ -220,8 +220,8 @@ def test_eigh_values_vectors_and_info_match_numpy(cache, n, form, target):
 @pytest.mark.parametrize("target", [pytest.param("host", id="host"), pytest.param("cuda", marks=DEVICE, id="cuda")])
 def test_a_matrix_of_512_runs_in_scratch_a_lane_could_not_hold(cache, target):
     n = BIG
-    a = _ir.leaf(CTX, "vocab_read", "mat_in", "A", _ir.TensorType((n, n), "f64"))
-    b = _ir.leaf(CTX, "vocab_read", "vec_in", "b", _ir.TensorType((n,), "f64"))
+    a = _ir.leaf(CTX, "vocab_read", "plane_in", "A", _ir.TensorType((n, n), "f64"))
+    b = _ir.leaf(CTX, "vocab_read", "plane_in", "b", _ir.TensorType((n,), "f64"))
     f = _ir.make("chol", (a,))
     solved = _ir.make_node("Assign", _ir.TensorType((n,), "f64"), (_ir.make("cho_solve", (f, b)),), name="x")
     status = _ir.make_node("Assign", _ir.TensorType((), "int32"), (_ir.make("chol_info", (f,)),), name="info")
