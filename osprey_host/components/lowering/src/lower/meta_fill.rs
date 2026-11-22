@@ -712,6 +712,20 @@ pub(super) fn unit(parts: &Parts) -> Result<(m::UnitMeta, Option<m::Contraction>
             })
         })
         .collect::<Result<Vec<_>, Refusal>>()?;
+    let counts = super::walk_of(parts.ctx, parts.walk)?
+        .counts
+        .iter()
+        .map(|(count, of)| {
+            let at = |plane: &str| {
+                slot_at(&slots, plane)
+                    .ok_or_else(|| fault(format!("a count over the plane {plane}")))
+            };
+            Ok(m::Counted {
+                slot: at(count)?,
+                of_slot: at(of)?,
+            })
+        })
+        .collect::<Result<Vec<_>, Refusal>>()?;
     // SAFETY: `ctx` is the live context the caller holds; it is only read here.
     let made =
         raptor_wings::cells::walk_companions(unsafe { &*parts.ctx }, parts.walk).map_err(wing)?;
@@ -741,6 +755,7 @@ pub(super) fn unit(parts: &Parts) -> Result<(m::UnitMeta, Option<m::Contraction>
             cell_row: if stores { parts.card.cells_row } else { 0 },
             cells,
             companions,
+            counts,
             dispatches,
             slots,
             ..m::Body::default()

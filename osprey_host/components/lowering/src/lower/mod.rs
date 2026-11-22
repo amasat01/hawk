@@ -919,6 +919,11 @@ fn canonical(ctx: *mut Ctx, member: &Member) -> Result<(u32, String), Refusal> {
             .filter(|slot| slot.zeroed)
             .map(|slot| (slot.role.name().to_string(), slot.name.clone()))
             .collect(),
+        counts: member
+            .declared
+            .iter()
+            .filter_map(|slot| Some((slot.name.clone(), slot.counts.clone()?)))
+            .collect(),
     };
     let force = member.force.map(|a| a.name());
     // SAFETY: `ctx` is the live context the caller holds; nothing else reads it during the call.
@@ -955,6 +960,11 @@ fn leaf_slots(ctx: *mut Ctx, walk: u32) -> Result<Vec<DeclaredSlot>, Refusal> {
                 tag: ttype.tag.clone(),
                 axes: axes_of(&ttype.axes),
                 zeroed: zeroed.contains(&(role.clone(), name.clone())),
+                counts: read
+                    .counts
+                    .iter()
+                    .find(|(count, _)| count == name)
+                    .map(|(_, of)| of.clone()),
             })
         })
         .collect()
@@ -1504,6 +1514,7 @@ mod tests {
             tag: None,
             axes: vec![],
             zeroed: false,
+            counts: None,
         }
     }
 

@@ -1,7 +1,9 @@
 //! The fused step: lanes written one after the other in one body, each in a scope of its own, as one unit. The unit's walk binds
 //! every slot each lane binds, so that the fused entry has the signature of all its lanes.
 use super::request::{DeclaredSlot, LaneAxis, Member};
-use super::{canonical, carries_no_forced_access, held_exempt, merge_slot, typed_walk, Pending};
+use super::{
+    canonical, carries_no_forced_access, held_exempt, merge_slot, typed_walk, walk_of, Pending,
+};
 use aether_writers::contract::types::{FusedLane, Role};
 use aether_writers::refuse::{not_written, Refusal};
 use raptor_ir::record::Ctx;
@@ -9,6 +11,7 @@ use raptor_ir::record::Ctx;
 /// The slots the lane's own walk binds, as slots the fused walk declares.
 fn bound_slots(ctx: *mut Ctx, lane: &Member) -> Result<Vec<DeclaredSlot>, Refusal> {
     let (walk, _) = canonical(ctx, lane)?;
+    let counts = walk_of(ctx, walk)?.counts.clone();
     Ok(typed_walk(ctx, walk)?
         .slots
         .into_iter()
@@ -16,11 +19,15 @@ fn bound_slots(ctx: *mut Ctx, lane: &Member) -> Result<Vec<DeclaredSlot>, Refusa
         .filter(|slot| slot.role != Role::Extent)
         .map(|slot| DeclaredSlot {
             role: slot.role,
-            name: slot.name,
+            name: slot.name.clone(),
             dtype: slot.dtype,
             shape: slot.shape,
             tag: None,
             zeroed: slot.zeroed,
+            counts: counts
+                .iter()
+                .find(|(count, _)| *count == slot.name)
+                .map(|(_, of)| of.clone()),
             axes: slot
                 .axes
                 .unwrap_or_default()

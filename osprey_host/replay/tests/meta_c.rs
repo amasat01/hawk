@@ -150,6 +150,7 @@ fn full_tree() -> (LibraryMeta, UnitMeta) {
             host_fold_entry: Some("fold_host".into()),
             device_fold_function: Some("fold_dev".into()),
         }],
+        counts: vec![],
         cells: vec![Cell {
             op: ReduceOp::Sum,
             internal: true,

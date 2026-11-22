@@ -521,6 +521,7 @@ fn read_slots(ctx: *mut Ctx, reads: &[u32]) -> Result<Vec<DeclaredSlot>, Refusal
                     &context.field(leaf, "axes").map_err(wing)?,
                 )),
                 zeroed: false,
+                counts: None,
             })
         })
         .collect()

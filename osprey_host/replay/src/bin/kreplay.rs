@@ -260,6 +260,7 @@ fn declared_of(slot: &J) -> Result<DeclaredSlot, String> {
         tag: text(ttype.get("tag")).map(String::from),
         axes: vec![],
         zeroed,
+        counts: None,
     })
 }
 

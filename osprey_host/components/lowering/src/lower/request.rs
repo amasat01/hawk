@@ -37,6 +37,8 @@ pub struct DeclaredSlot {
     pub axes: Vec<LaneAxis>,
     /// Whether the slot is a written plane the runtime zeroes before the run.
     pub zeroed: bool,
+    /// The plane this slot counts the appends into, when it is the one-element count of an appended plane.
+    pub counts: Option<String>,
 }
 
 /// One kernel body: the nodes it writes and how its walk is taken over them.
@@ -634,6 +636,7 @@ impl DeclaredSlot {
             tag: None,
             axes: vec![],
             zeroed: false,
+            counts: None,
         }
     }
 
@@ -656,6 +659,10 @@ impl DeclaredSlot {
                 .map(|z| flag_of(z, "zeroed"))
                 .transpose()?
                 .unwrap_or(false),
+            counts: keys
+                .opt("counts")
+                .map(|c| text_of(c, "counts"))
+                .transpose()?,
         };
         keys.done()?;
         if let Some(unlabelled) = slot.axes.iter().position(|a| a.label.is_none()) {
@@ -685,6 +692,9 @@ impl DeclaredSlot {
         }
         if self.zeroed {
             o.push(("zeroed".into(), Json::Bool(true)))
+        }
+        if let Some(counts) = &self.counts {
+            o.push(("counts".into(), Json::Str(counts.clone())))
         }
         Json::Obj(o)
     }
@@ -1519,6 +1529,7 @@ mod tests {
                     shape: vec![2],
                     tag: None,
                     zeroed: false,
+                    counts: None,
                     axes: vec![
                         LaneAxis {
                             label: Some("i".into()),

@@ -370,6 +370,16 @@ record! {
     }
 }
 record! {
+    /// A one-element plane that counts the appends into another plane. Stated in the answer's JSON only, like the slot's
+    /// `mirror`: the C record of the header has no such member, and `meta_c` does not write it.
+    pub struct Counted {
+        /// The count's slot.
+        pub slot: usize,
+        /// The slot of the appended plane it counts.
+        pub of_slot: usize,
+    }
+}
+record! {
     /// A reduction over samples kept in rows and folded into the cell between launches.
     pub struct Cell {
         /// The fold.
@@ -496,6 +506,8 @@ record! {
         pub slots: Vec<Slot>,
         /// The compensation planes.
         pub companions: Vec<Companion>,
+        /// The counts of appended planes.
+        pub counts: Vec<Counted>,
         /// The cells.
         pub cells: Vec<Cell>,
         /// The keyed planes.
