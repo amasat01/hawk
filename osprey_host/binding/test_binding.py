@@ -34,7 +34,16 @@ UNIT = {
     "sinks": [3],
     "walk": {
         "access": "SampleLocal",
-        "slots": [{"role": "Mutable", "name": "y", "dtype": "F64", "shape": [], "index": 0}],
+        "slots": [
+            {
+                "role": "Mutable",
+                "name": "y",
+                "dtype": "F64",
+                "shape": [],
+                "index": 0,
+                "zeroed": False,
+            }
+        ],
     },
     "body": "Walk",
     "rows": 1,
@@ -211,7 +220,21 @@ assert c.const_names("ACCESS_CLASSES")[-1] == "mapreduce" and c.const_names("ADJ
     "bar",
 )
 done.append("const_names of the constants the manifest gained")
-assert c.compensates("compensated") and c.compensates("keyed_auto") and not c.compensates("ordered")
+
+
+def update_of(**fields):
+    """An update node of the float plane `u` whose fields are `fields`."""
+    text = "".join(f", ('{k}', '{v}')" for k, v in fields.items())
+    return c.make("Update", "f64", [], None, [x], f"(('name', 'u'){text}, ('reduced', None))")
+
+
+assert c.compensates(update_of(op="add", summation="compensated"))
+assert not c.compensates(update_of(op="add", order="lane")) and not c.compensates(
+    update_of(op="store")
+)
+assert not c.compensates(update_of(op="add", summation="plain")) and not c.compensates(
+    update_of(op="or")
+)
 done.append("compensates")
 assert c.is_a(x, "leaf") and not c.is_a(x, "op") and not c.is_a(x, "NoSuchKind")
 done.append("is_a")
@@ -511,7 +534,7 @@ sample_x = c.make("Leaf", "f64", [], None, [], PER_SAMPLE % "lx")
 sample_k = c.make("Leaf", "i64", [], None, [], PER_SAMPLE % "lk")
 cell_a = c.make("Leaf", "i64", [], None, [], PER_SAMPLE % "ca")
 cell_b = c.make("Leaf", "i64", [], None, [], PER_SAMPLE % "cb")
-ORDERED = "(('name', 'g'), ('role', 'accum_out'), ('kept', (('net', None),)))"
+ORDERED = "(('name', 'g'), ('role', 'plane_out'), ('kept', (('net', None),)))"
 site_a = c.make("OrderedAccumWrite", "f64", [], None, [sample_x, cell_a, sample_k], ORDERED)
 site_b = c.make("OrderedAccumWrite", "f64", [], None, [sample_x, cell_b, sample_k], ORDERED)
 logged = c.logs_ordered([site_a, site_b])
@@ -617,12 +640,12 @@ assert c.walk_companions(c.cells_walk([plain], "()", None)) == ()
 # the companions of the compensated keyed accumulates: {<plane>_c: plane} of the previous
 # walk, once per plane
 ACCUM = (
-    "(('kind', 'accum_write'), ('name', '%s'), ('role', 'accum_out'), "
-    "('contract', '%s'), ('reduced', None))"
+    "(('kind', 'update'), ('name', '%s'), ('role', 'plane_out'), "
+    "('op', 'add'), ('summation', '%s'), ('reduced', None))"
 )
 accums = [
-    c.make("AccumWrite", "f64", [], None, [x], ACCUM % pair)
-    for pair in (("a", "compensated"), ("b", "auto"), ("a", "compensated"), ("c", "keyed_auto"))
+    c.make("Update", "f64", [], None, [x], ACCUM % pair)
+    for pair in (("a", "compensated"), ("b", "auto"), ("a", "compensated"), ("c", "compensated"))
 ]
 assert c.walk_accum_companions(c.cells_walk(accums, "()", None)) == (("a_c", "a"), ("c_c", "c"))
 assert c.walk_accum_companions(c.cells_walk([plain], "()", None)) == ()
@@ -689,7 +712,7 @@ blocks = c.make(
 stored_block = c.make("BlockSumWrite", "f64", [], None, [blocks], "(('name', 'g'),)")
 expanded = c.blocks_expand_stores([plain, stored_block, plain])
 assert len(expanded) == 5 and expanded[0] == plain and expanded[4] == plain
-assert [n.cls for n in expanded[1:4]] == ["AccumWrite"] * 3 and c.blocks_expand_stores([]) == ()
+assert [n.cls for n in expanded[1:4]] == ["Update"] * 3 and c.blocks_expand_stores([]) == ()
 done.append(
     "blocks_expand_stores: a vector block makes three accumulates, other sinks stay in order"
 )

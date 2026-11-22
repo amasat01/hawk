@@ -911,7 +911,15 @@ fn axes_text(axes: &[request::LaneAxis]) -> String {
 /// The kernel's canonical walk over the member's sinks and declared slots (the wing adds the companion, finished-count and
 /// branch-mix slots), and the walk's digest.
 fn canonical(ctx: *mut Ctx, member: &Member) -> Result<(u32, String), Refusal> {
-    let declared: Vec<_> = member.declared.iter().map(declared_leaf).collect();
+    let declared = raptor_ir::canon::Declared {
+        slots: member.declared.iter().map(declared_leaf).collect(),
+        zeroed: member
+            .declared
+            .iter()
+            .filter(|slot| slot.zeroed)
+            .map(|slot| (slot.role.name().to_string(), slot.name.clone()))
+            .collect(),
+    };
     let force = member.force.map(|a| a.name());
     // SAFETY: `ctx` is the live context the caller holds; nothing else reads it during the call.
     let context = unsafe { &mut *ctx };
@@ -931,8 +939,9 @@ pub(super) fn walk_of<'a>(ctx: *mut Ctx, walk: u32) -> Result<&'a WalkRes, Refus
 /// The walk's leaves read back as slots, in argument order: each with its role, name, element type, shape and tag.
 fn leaf_slots(ctx: *mut Ctx, walk: u32) -> Result<Vec<DeclaredSlot>, Refusal> {
     let shape = || fault("a walk leaf with a role or an element type this library does not know");
-    walk_of(ctx, walk)?
-        .leaves
+    let read = walk_of(ctx, walk)?;
+    let zeroed = &read.zeroed;
+    read.leaves
         .iter()
         .map(|((role, name), ttype)| {
             Ok(DeclaredSlot {
@@ -945,6 +954,7 @@ fn leaf_slots(ctx: *mut Ctx, walk: u32) -> Result<Vec<DeclaredSlot>, Refusal> {
                 shape: ttype.shape.clone(),
                 tag: ttype.tag.clone(),
                 axes: axes_of(&ttype.axes),
+                zeroed: zeroed.contains(&(role.clone(), name.clone())),
             })
         })
         .collect()
@@ -968,6 +978,7 @@ fn typed_walk(ctx: *mut Ctx, walk: u32) -> Result<Walk, Refusal> {
             shape: slot.shape.clone(),
             index: index as i64,
             axes: (!slot.axes.is_empty()).then(|| slot.axes.iter().map(axis_of).collect()),
+            zeroed: slot.zeroed,
         })
         .collect();
     // each runtime axis of a plane reaches the entry as one more argument, which the runtime fills from the bound array
@@ -981,6 +992,7 @@ fn typed_walk(ctx: *mut Ctx, walk: u32) -> Result<Walk, Refusal> {
                 shape: vec![],
                 index: slots.len() as i64,
                 axes: None,
+                zeroed: false,
             });
         }
     }
@@ -1491,6 +1503,7 @@ mod tests {
             shape: vec![2],
             tag: None,
             axes: vec![],
+            zeroed: false,
         }
     }
 

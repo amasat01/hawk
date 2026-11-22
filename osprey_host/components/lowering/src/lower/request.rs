@@ -35,6 +35,8 @@ pub struct DeclaredSlot {
     pub tag: Option<String>,
     /// The axes of a plane the slot declares, in storage order (empty for a plane declared without axes).
     pub axes: Vec<LaneAxis>,
+    /// Whether the slot is a written plane the runtime zeroes before the run.
+    pub zeroed: bool,
 }
 
 /// One kernel body: the nodes it writes and how its walk is taken over them.
@@ -482,13 +484,12 @@ pub const DTYPES: [Dtype; 7] = [
     Dtype::Bool,
 ];
 /// The slot roles.
-pub const ROLES: [Role; 10] = [
+pub const ROLES: [Role; 9] = [
     Role::Mutable,
     Role::PlaneIn,
     Role::Lookup,
-    Role::WideOut,
+    Role::PlaneOut,
     Role::Uniform,
-    Role::AccumOut,
     Role::Terminated,
     Role::WideIn,
     Role::Nsamples,
@@ -632,6 +633,7 @@ impl DeclaredSlot {
             shape: vec![],
             tag: None,
             axes: vec![],
+            zeroed: false,
         }
     }
 
@@ -649,6 +651,11 @@ impl DeclaredSlot {
                 .map(|a| list_of(a, "axes", LaneAxis::read))
                 .transpose()?
                 .unwrap_or_default(),
+            zeroed: keys
+                .opt("zeroed")
+                .map(|z| flag_of(z, "zeroed"))
+                .transpose()?
+                .unwrap_or(false),
         };
         keys.done()?;
         if let Some(unlabelled) = slot.axes.iter().position(|a| a.label.is_none()) {
@@ -675,6 +682,9 @@ impl DeclaredSlot {
                 "axes".into(),
                 Json::Arr(self.axes.iter().map(LaneAxis::write).collect()),
             ))
+        }
+        if self.zeroed {
+            o.push(("zeroed".into(), Json::Bool(true)))
         }
         Json::Obj(o)
     }
@@ -1508,6 +1518,7 @@ mod tests {
                     dtype: Dtype::F64,
                     shape: vec![2],
                     tag: None,
+                    zeroed: false,
                     axes: vec![
                         LaneAxis {
                             label: Some("i".into()),

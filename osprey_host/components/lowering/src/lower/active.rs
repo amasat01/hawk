@@ -104,7 +104,10 @@ fn with_map(ctx: *mut Ctx, request: &KernelRequest, mut unit: Pending) -> Result
             Guard::Default => &default,
             Guard::DataOnly => &[],
         };
-        if leaves.iter().any(|slot| slot.role == Role::AccumOut) {
+        if leaves
+            .iter()
+            .any(|slot| slot.role == Role::PlaneOut && slot.zeroed)
+        {
             return Err(accumulates(name));
         }
         let binds = |mask: &String| {

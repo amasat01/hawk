@@ -193,9 +193,8 @@ closed! {
         /** A plane read and written in place. */ Mutable = 0 => "EG_ROLE_MUTABLE",
         /** A plane read per sample, whatever the rank of its value: the slot's shape says it. */ PlaneIn = 1 => "EG_ROLE_PLANE_IN",
         /** A table indexed at run time. */ Lookup = 3 => "EG_ROLE_LOOKUP",
-        /** Several values per sample out. */ WideOut = 4 => "EG_ROLE_WIDE_OUT",
+        /** A plane the unit writes. */ PlaneOut = 4 => "EG_ROLE_PLANE_OUT",
         /** One value for all samples. */ Uniform = 5 => "EG_ROLE_UNIFORM",
-        /** Accumulated over samples. */ AccumOut = 7 => "EG_ROLE_ACCUM_OUT",
         /** The mask that marks a sample finished. */ Terminated = 8 => "EG_ROLE_TERMINATED",
         /** Several values per sample in. */ WideIn = 9 => "EG_ROLE_WIDE_IN",
         /** The sample count. */ Nsamples = 10 => "EG_ROLE_NSAMPLES",
@@ -281,11 +280,12 @@ closed! {
 }
 
 /// The flag bits of a slot, with the header's macro names.
-pub const SLOT_FLAGS: [(u32, &str); 4] = [
+pub const SLOT_FLAGS: [(u32, &str); 5] = [
     (1 << 0, "EG_SLOT_PRIOR"),
     (1 << 1, "EG_SLOT_PARAM_PLANE"),
     (1 << 2, "EG_SLOT_GATHER"),
     (1 << 3, "EG_SLOT_SHARED"),
+    (1 << 4, "EG_SLOT_ZEROED"),
 ];
 /// The flag of a slot the body reads before writing it: a caller must give it an initial value (the door validates the bit and does
 /// not act on it).
@@ -294,6 +294,8 @@ pub const SLOT_PRIOR: u32 = 1 << 0;
 pub const SLOT_PARAM_PLANE: u32 = 1 << 1;
 /// The flag of a parameter plane with no lane axis.
 pub const SLOT_SHARED: u32 = 1 << 3;
+/// The flag of a written plane the runtime zeroes before the run (an accumulate target): its handle counts the plane's own elements.
+pub const SLOT_ZEROED: u32 = 1 << 4;
 /// The slot flag of a matrix plane the unit reads only at lane indices.
 pub const SLOT_GATHER: u32 = 1 << 2;
 /// The flag bits of a unit record, with the header's macro names.

@@ -127,12 +127,12 @@ def at_kernel(edge, table_axes, index_names):
         f"(('kind', 'at'), ('literal', None), ('edge', '{edge}'))",
     )
     sink = ctx.make(
-        "AccumWrite",
+        "Update",
         "f64",
         [],
         None,
         [read, target],
-        "(('kind', 'accum_write'), ('name', 's'), ('role', 'accum_out'), ('contract', 'auto'), "
+        "(('kind', 'update'), ('name', 's'), ('role', 'plane_out'), ('op', 'add'), "
         "('reduced', None), ('edge', 'unchecked'), ('axes', (('t', None),)))",
     )
     nodes = [table, *indices, target, read, sink]
@@ -217,10 +217,10 @@ def test_a_store_and_an_accumulate_at_two_indices_equal_assignment_and_add_at(ho
     stored = host.launch(
         store_kernel(
             "w",
-            "wide_out",
-            "WideWrite",
-            "(('kind', 'wide_write'), ('name', '%s'), ('role', '%s'), ('edge', 'unchecked'), "
-            "('axes', %s))",
+            "plane_out",
+            "Update",
+            "(('kind', 'update'), ('name', '%s'), ('role', '%s'), ('op', 'store'), "
+            "('edge', 'unchecked'), ('axes', %s))",
             axes,
         ),
         {"v": v, "ii": ii_u, "kk": kk_u, "w": np.zeros((rows, cols))},
@@ -233,9 +233,9 @@ def test_a_store_and_an_accumulate_at_two_indices_equal_assignment_and_add_at(ho
     added = host.launch(
         store_kernel(
             "a",
-            "accum_out",
-            "AccumWrite",
-            "(('kind', 'accum_write'), ('name', '%s'), ('role', '%s'), ('contract', 'auto'), "
+            "plane_out",
+            "Update",
+            "(('kind', 'update'), ('name', '%s'), ('role', '%s'), ('op', 'add'), "
             "('reduced', None), ('edge', 'unchecked'), ('axes', %s))",
             axes,
         ),

@@ -50,9 +50,8 @@ fn role(role: Role) -> m::SlotRole {
         Role::Mutable => m::SlotRole::Mutable,
         Role::PlaneIn => m::SlotRole::PlaneIn,
         Role::Lookup => m::SlotRole::Lookup,
-        Role::WideOut => m::SlotRole::WideOut,
+        Role::PlaneOut => m::SlotRole::PlaneOut,
         Role::Uniform => m::SlotRole::Uniform,
-        Role::AccumOut => m::SlotRole::AccumOut,
         Role::Terminated => m::SlotRole::Terminated,
         Role::WideIn => m::SlotRole::WideIn,
         Role::Nsamples => m::SlotRole::Nsamples,
@@ -154,6 +153,7 @@ pub(super) fn slots(
                 aether_writers::ir::runtime_names::mirror_of(s.role.name(), s.shape.len())?;
             Ok(m::Slot {
                 flags: if planar { m::SLOT_PARAM_PLANE } else { 0 }
+                    | if s.zeroed { m::SLOT_ZEROED } else { 0 }
                     | if gather.is_some() { m::SLOT_GATHER } else { 0 }
                     | if prior.contains(&s.name) {
                         m::SLOT_PRIOR
@@ -183,7 +183,7 @@ pub(super) fn slots(
 fn is_written(role: Role, name: &str, finish_mask: Option<&str>) -> bool {
     match role {
         Role::Terminated => finish_mask == Some(name),
-        Role::Mutable | Role::Out | Role::WideOut | Role::AccumOut => true,
+        Role::Mutable | Role::Out | Role::PlaneOut => true,
         _ => false,
     }
 }
@@ -268,7 +268,7 @@ const ADJOINT_PREFIX: &str = "bar_";
 fn like_slot(typed: &Walk, at: usize) -> Option<usize> {
     let slot = &typed.slots[at];
     let plane = slot.name.strip_prefix(ADJOINT_PREFIX)?;
-    (slot.role == Role::AccumOut).then_some(())?;
+    (slot.role == Role::PlaneOut && slot.zeroed).then_some(())?;
     typed
         .slots
         .iter()
@@ -941,7 +941,8 @@ fn state_keyed_outputs(units: &mut [UnitAnswer], listing: usize, block: &StageBl
                 let slots = &u.meta.body.slots;
                 let outputs = slots.iter().filter(|s| {
                     // a scratch plane the runtime owns is no output of the kernel
-                    s.role == m::SlotRole::WideOut
+                    s.role == m::SlotRole::PlaneOut
+                        && s.flags & m::SLOT_ZEROED == 0
                         && !block.team_planes.iter().any(|p| p.name == s.name)
                 });
                 outputs.map(|s| s.name.clone()).collect()
@@ -950,7 +951,10 @@ fn state_keyed_outputs(units: &mut [UnitAnswer], listing: usize, block: &StageBl
         let meta = &mut units[listing].meta;
         for name in written {
             let at = slot_at(&meta.body.slots, &name);
-            let wide = at.is_some_and(|at| meta.body.slots[at].role == m::SlotRole::WideOut);
+            let wide = at.is_some_and(|at| {
+                let slot = &meta.body.slots[at];
+                slot.role == m::SlotRole::PlaneOut && slot.flags & m::SLOT_ZEROED == 0
+            });
             let stated = at.is_some_and(|at| meta.launch.plane_axes.iter().any(|p| p.slot == at));
             if let (Some(at), true, false) = (at, wide, stated) {
                 meta.launch.plane_axes.push(m::PlaneAxes {
@@ -1138,7 +1142,7 @@ mod tests {
         let written = |name: &str| m::Slot {
             name: name.into(),
             written: true,
-            role: m::SlotRole::WideOut,
+            role: m::SlotRole::PlaneOut,
             ..m::Slot::default()
         };
         let unit = |name: &str, slots: Vec<m::Slot>| UnitAnswer {

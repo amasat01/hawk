@@ -234,6 +234,15 @@ fn declared_of(slot: &J) -> Result<DeclaredSlot, String> {
     let slot = rec(slot);
     let ttype = rec(slot.get("ttype").ok_or("a declared slot without a type")?);
     let (role, dtype) = (text(slot.get("role")), text(ttype.get("dtype")));
+    // a recording made before the written planes shared one role names the planes the runtime zeroes by the role `accum_out`
+    let zeroed = role == Some("accum_out") || matches!(slot.get("zeroed"), Some(J::Bool(true)));
+    let role = role.map(|r| {
+        if matches!(r, "accum_out" | "wide_out") {
+            "plane_out"
+        } else {
+            r
+        }
+    });
     Ok(DeclaredSlot {
         role: *ROLES
             .iter()
@@ -250,6 +259,7 @@ fn declared_of(slot: &J) -> Result<DeclaredSlot, String> {
             .collect(),
         tag: text(ttype.get("tag")).map(String::from),
         axes: vec![],
+        zeroed,
     })
 }
 

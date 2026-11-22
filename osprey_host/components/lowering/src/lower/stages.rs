@@ -520,6 +520,7 @@ fn read_slots(ctx: *mut Ctx, reads: &[u32]) -> Result<Vec<DeclaredSlot>, Refusal
                 axes: super::axes_of(&raptor_ir::value::text_val(
                     &context.field(leaf, "axes").map_err(wing)?,
                 )),
+                zeroed: false,
             })
         })
         .collect()

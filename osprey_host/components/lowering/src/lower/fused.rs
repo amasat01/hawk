@@ -20,6 +20,7 @@ fn bound_slots(ctx: *mut Ctx, lane: &Member) -> Result<Vec<DeclaredSlot>, Refusa
             dtype: slot.dtype,
             shape: slot.shape,
             tag: None,
+            zeroed: slot.zeroed,
             axes: slot
                 .axes
                 .unwrap_or_default()
