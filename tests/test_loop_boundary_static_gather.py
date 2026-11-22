@@ -43,19 +43,36 @@ def test_a_runtime_index_stays_in_the_guard():
     assert not _leaves_the_guard(_ir.make("add", (_warp_lane(), runtime)))
 
 
-def test_the_jvp_of_a_fused_matvec_reads_its_table_before_the_step_loop(tmp_path):
-    """The loop-weighted FP64 count, as the lowering decides it: every table gather of ``w`` and ``dot_w`` sits before
-    the K-step loop (executed once), none inside (executed K times). It was 48 gathers x 8 steps inside."""
+def _loads_before_the_loop(text):
+    """Whether every table gather of ``w`` and ``dot_w`` sits before the K-step loop and none inside. A plane with axes is
+    read in the view's call form (``lut_w(``), the others by subscript (``lut_w[``)."""
     import re
 
+    head, body = text.split("_step = 0;", 1)
+    gather = r"lut_(?:dot_)?w[\[(]"
+    return len(re.findall(gather, head)) >= 48 and not re.findall(gather, body)
+
+
+def _fused_jvp():
     import _wide_kernels as wk
-    import pytest
     from hawk.diff import step_jvp
 
+    return hawk.steps(step_jvp(wk.steps_matvec_k1), 8)
+
+
+def test_the_emitted_text_of_a_fused_matvec_jvp_reads_its_table_before_the_step_loop():
+    """The loop-weighted FP64 count, as the lowering decides it. Emitted without a compiler."""
+    from hawk.artifact import emit_source
+
+    text = emit_source(_fused_jvp(), targets=("cuda",), device_arch="sm_89").sources["cuda"].text
+    assert _loads_before_the_loop(text)
+
+
+def test_the_jvp_of_a_fused_matvec_reads_its_table_before_the_step_loop(tmp_path):
+    """The same property on the compiled device unit. It was 48 gathers x 8 steps inside."""
+    import pytest
+
     pytest.importorskip("cuda.bindings.nvrtc")
-    kernel = hawk.steps(step_jvp(wk.steps_matvec_k1), 8)
+    kernel = _fused_jvp()
     hawk.build([kernel], str(tmp_path), targets=("cuda",), device_arch="sm_89")
-    text = (tmp_path / f"{kernel.name}.cu").read_text()
-    head, body = text.split("_step = 0;", 1)
-    gather = r"lut_(?:dot_)?w\["
-    assert len(re.findall(gather, head)) >= 48 and not re.findall(gather, body)
+    assert _loads_before_the_loop((tmp_path / f"{kernel.name}.cu").read_text())

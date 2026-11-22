@@ -164,7 +164,7 @@ def test_the_device_two_axis_or_equals_bitwise_or_at(tmp_path, cache_dir):
     import cupy as cp
 
     i, k, bit = _two_axis_or_inputs()
-    bundle = build_bundle([mark_two_axes], tmp_path, mode="float64", targets=("cuda",), cache_dir=cache_dir)
+    bundle = build_bundle([mark_two_axes], tmp_path, mode="float64", targets=("cuda", "host"), cache_dir=cache_dir)
     mask = cp.zeros((3, 4), np.uint32)
     _launch(bundle, "mark_two_axes", "cuda", {"i": cp.asarray(i), "k": cp.asarray(k), "bit": cp.asarray(bit),
                                               "mask": mask}).launch()

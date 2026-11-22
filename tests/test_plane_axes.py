@@ -436,7 +436,7 @@ def test_a_vector_read_from_a_plane_with_two_axes_equals_numpy_on_the_device(tmp
 
     lanes = 40
     where = np.array([_draw(FIELD.shape[1:], edge) for _ in range(lanes)], dtype=np.int32)
-    bundle = build_bundle([hawk.Kernel(f"read_{edge}", _vector_read(edge))], tmp_path, targets=("cuda",),
+    bundle = build_bundle([hawk.Kernel(f"read_{edge}", _vector_read(edge))], tmp_path, targets=("cuda", "host"),
                           cache_dir=cache_dir)
     out = cp.zeros((3, lanes))
     planes = {"p": cp.asarray(FIELD), "i0": cp.asarray(where[:, 0].copy()), "i1": cp.asarray(where[:, 1].copy()), "y": out}

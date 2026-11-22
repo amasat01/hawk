@@ -22,7 +22,6 @@ target; the rows pin it
 
 from __future__ import annotations
 
-import _deploy as L
 import numpy as np
 import pytest
 from conftest import sidecar_of
@@ -273,12 +272,9 @@ def test_vjp_of_a_per_pair_kernel_matches_central_differences(n_items):
 # ---- the device ---------------------------------------------------------------
 
 def _launch(bundles, mode, k, planes):
-    import eagle.exec as eexec
-    from eagle import plan as eplan
-
+    """One device launch of ``k`` over ``planes``, through hawk's own verbs."""
     bundle = bundles[mode, k.name]
-    plugin = L.device_plugin(bundle.directory, k.name, sidecar_of(bundle, k.name))
-    eplan.plan(plugin, structure=eexec.DeviceKernel).bind(**planes).launch()
+    hawk.plan(hawk.load(bundle.directory, k.name), hawk.DeviceKernel).bind(**planes).launch()
 
 
 @pytest.mark.gpu

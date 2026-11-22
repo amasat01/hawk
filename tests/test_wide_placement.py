@@ -167,6 +167,20 @@ def test_the_device_text_writes_the_plane_in_a_loop_and_reads_it_back_by_the_rol
     assert "Item<Real, 512>" not in text and "AETHER_NO_UNROLL()" in text
 
 
+@pytest.mark.parametrize("entry", ["matvec_in", "matvec_computed", "matvec_in_seg"])
+@pytest.mark.parametrize("mode", ["float32", "float64"])
+def test_the_device_text_of_a_wide_row_of_a_two_axis_table_is_a_loop_not_unrolled_elements(entry, mode):
+    """Emitted without a compiler, so it runs wherever the lowering does: the 512 reads of a row of a table with two axes
+    are one run over its last axis, written in a loop under ``AETHER_NO_UNROLL`` and never as a 512-element local."""
+    from hawk.artifact import emit_source
+
+    corpus = W.CORPUS[entry]
+    kind = {} if corpus.kind is None else {"kind": corpus.kind}
+    text = emit_source(corpus.kernel, targets=TARGETS_BOTH, device_arch=_a1_arch(), mode=mode, **kind).sources["cuda"].text
+    assert "AETHER_NO_UNROLL()" in text and "Item<Real, 512>" not in text
+    assert "win_hwd0_i.at(1) =" not in text
+
+
 def test_the_host_text_renders_a_placement_as_its_value(tmp_path, cache_dir):
     kernel = W.fill_mask
     bundle = build_bundle([kernel], tmp_path, targets=TARGETS_BOTH, cache_dir=cache_dir, host_profile="native")
