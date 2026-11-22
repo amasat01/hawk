@@ -167,9 +167,9 @@ def test_a_plain_buffer_is_refused_by_name_and_numpy_asarray_is_the_fix(gather_v
     where = array.array("i", [0, 1, 2])
     bar_y = np.array([1.0, 2.0, 3.0])
     with pytest.raises(HawkError, match=r"'where'.*plain buffer.*wrap it in numpy.asarray\(where"):
-        R.run(kernel, bar_y=bar_y, where=where, bar_table=np.zeros(3), table=np.zeros(3), n_samples=3)
+        R.run(kernel, bar_y=bar_y, where=where, bar_table=np.zeros(3), n_samples=3)
     bar_table = np.zeros(3)
-    R.run(kernel, bar_y=bar_y, where=np.asarray(where), bar_table=bar_table, table=np.zeros(3), n_samples=3)
+    R.run(kernel, bar_y=bar_y, where=np.asarray(where), bar_table=bar_table, n_samples=3)
     np.testing.assert_allclose(bar_table, bar_y)
 
 
@@ -186,7 +186,7 @@ def test_explicit_n_samples_always_wins_over_the_bound_planes(gather_vjp_unit):
     bar_y = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])   # 8 samples
     where = np.array([0, 1, 2, 0, 1, 2, 3, 4], dtype=np.int32)
     bar_table = np.zeros(5)
-    R.run(kernel, bar_y=bar_y[:3], where=where[:3], bar_table=bar_table, table=np.zeros_like(bar_table), n_samples=3)
+    R.run(kernel, bar_y=bar_y[:3], where=where[:3], bar_table=bar_table, n_samples=3)
     want = np.zeros(5)
     np.add.at(want, where[:3], bar_y[:3])                        # only 3 scattered
     np.testing.assert_allclose(bar_table, want)
@@ -216,7 +216,20 @@ def test_an_accum_led_kernel_is_silently_wrong_before_the_fix(gather_vjp_unit):
     bar_y = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])
     where = np.array([0, 1, 2, 0, 1, 2, 3, 4], dtype=np.int32)
     bar_table = np.zeros(5)
-    R.run(kernel, bar_y=bar_y, where=where, bar_table=bar_table, table=np.zeros_like(bar_table))  # NO n_samples=
+    R.run(kernel, bar_y=bar_y, where=where, bar_table=bar_table)  # NO n_samples=
     want = np.zeros(5)
     np.add.at(want, where, bar_y)   # scatter-add over ALL 8 samples
     np.testing.assert_allclose(bar_table, want)
+
+
+def test_the_reverse_gather_kernel_declares_only_the_planes_it_reads(gather_vjp_unit):
+    """The reverse of a gather reads the adjoint table, the adjoint output and the index: it
+    does not read the primal table, so binding one is refused by name."""
+    from conftest import sidecar_of
+
+    sidecar = sidecar_of(gather_vjp_unit, "gather_vjp")
+    kernel = R.load(gather_vjp_unit.directory, "gather_vjp", sidecar)
+    bar_y = np.arange(1.0, 4.0)
+    where = np.arange(3, dtype=np.int32)
+    with pytest.raises(HawkError, match=r"\['table'\] are not planes it declares"):
+        R.run(kernel, bar_y=bar_y, where=where, bar_table=np.zeros(3), table=np.zeros(3))
