@@ -16,7 +16,7 @@ Every file with its line count (this file excluded):
    2459  osprey_host/binding/template/door.c
      45  osprey_host/binding/template/module.h
     116  osprey_host/binding/template/types.c
-   1077  osprey_host/binding/test_binding.py
+   1078  osprey_host/binding/test_binding.py
    2277  osprey_host/binding/test_door.py
     314  osprey_host/binding/test_end_to_end.py
     311  osprey_host/binding/test_plane_axes.py

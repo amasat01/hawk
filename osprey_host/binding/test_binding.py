@@ -223,9 +223,10 @@ done.append("const_names of the constants the manifest gained")
 
 
 def update_of(**fields):
-    """An update node of the float plane `u` whose fields are `fields`."""
+    """An update node of the plane `u` whose fields are `fields`: a float plane, an integer one for an or (a bit operation)."""
     text = "".join(f", ('{k}', '{v}')" for k, v in fields.items())
-    return c.make("Update", "f64", [], None, [x], f"(('name', 'u'){text}, ('reduced', None))")
+    dtype, value = ("i32", c.make("Leaf", "i32", [], None, [], LEAF % "bits")) if fields.get("op") == "or" else ("f64", x)
+    return c.make("Update", dtype, [], None, [value], f"(('name', 'u'){text}, ('reduced', None))")
 
 
 assert c.compensates(update_of(op="add", summation="compensated"))
