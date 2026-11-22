@@ -67,8 +67,8 @@ def ticket(key: Index, x: Scalar, y: Mutable[Scalar], seen: Mutable[Scalar]):
     "primal, reason",
     [
         (racing_store, r"stores by key under conflict='any': the lane that wins a shared key differs between runs"),
-        (minimum, r"is a keyed minimum.*written under the ordered contract, which is not written yet"),
-        (maximum, r"is a keyed maximum.*written under the ordered contract, which is not written yet"),
+        (minimum, r'is a keyed minimum.*write it as `hawk.scatter\(y, contract="ordered"\)\[k\].min\(v\)`'),
+        (maximum, r'is a keyed maximum.*write it as `hawk.scatter\(y, contract="ordered"\)\[k\].max\(v\)`'),
         (conjunction, r"is a bitwise and by key.*an integer mask has no derivative"),
         (parity, r"is a bitwise xor by key.*an integer mask has no derivative"),
         (swap, r"exchanges by key.*the old value it returns depends on the order lanes arrive in"),

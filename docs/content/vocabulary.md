@@ -91,7 +91,9 @@ Declaring the shape of your lanes brings a few more words; the [glossary](glossa
   `hawk.scatter(y, contract="ordered")[k].min(v)` (or `.max(v)`, scalar planes) fixes which lane wins each element: the lowest lane
   among those whose value equals the finished element. The plane is the one the unordered fold gives; the winners are made with
   the run (`<y>_winner`, unsigned, all ones where no lane wrote) and `plan.bind(...).winner("y")` reads them after a launch as an
-  `int32` array with `-1` for none. A NaN element has no winner, and `+0.0` and `-0.0` tie.
+  `int32` array with `-1` for none. A NaN element has no winner, and `+0.0` and `-0.0` tie. Such a fold has a derivative: `jvp`
+  gives an element the tangent of its winning lane and `vjp` gives the element's adjoint to that lane alone; bind the primal's
+  `plan.winner("y")` to the derivative kernel as `y_winner`. Without `contract="ordered"` the derivative is refused by name.
 - **`slot = hawk.append(out, value=v, when=cond)`** adds `v` to the list `out` (a plane declared with one axis, whose extent is
   its capacity) for each lane whose `when` holds, in no promised order, and gives the lane's place as an integer (`-1` when it
   asked for none). The run counts the lanes that asked in a one-element plane made with it: `plan.bind(...).count("out")` after

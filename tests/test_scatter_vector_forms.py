@@ -121,5 +121,5 @@ def test_a_vector_value_into_a_sink_without_axes_is_refused_by_name():
 
 @pytest.mark.parametrize("derive", [vjp, jvp], ids=["vjp", "jvp"])
 def test_a_derivative_of_a_vector_min_is_refused_by_name_as_the_scalar_one_is(derive):
-    with pytest.raises(HawkError, match=r"is a keyed minimum.*written under the ordered contract"):
+    with pytest.raises(HawkError, match=r"is a keyed minimum.*write it as `hawk.scatter\(y, contract=\"ordered\"\)"):
         derive(matrix_extremes)

@@ -404,7 +404,7 @@ def scatter(sink: Any, contract: str = "auto", conflict: str = "unique") -> Any:
     ``max``; a NaN absorbs). The plane keeps the value the caller gave it as the fold's start. ``contract="ordered"`` on
     ``.min`` and ``.max`` of a scalar plane also records the winner of each element, the lowest lane whose value equals the
     finished element (``+0.0`` and ``-0.0`` tie; a NaN element has none), in a plane the run makes beside it and
-    :meth:`hawk.runtime.BoundPlan.winner` reads. Two
+    :meth:`hawk.runtime.BoundPlan.winner` reads; ``jvp`` and ``vjp`` of such a kernel differentiate through those winners. Two
     methods return the value the element held before this lane's update, which depends on the order the lanes arrive
     in: ``old = hawk.scatter(y)[k].exchange(v)`` and
     ``old = hawk.scatter(y)[k].compare_exchange(expected, v)`` (the lane that finds ``expected`` there installs

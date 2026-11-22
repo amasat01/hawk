@@ -366,6 +366,7 @@ def _vjp(
     inputs = drop_width(_wrt(seq, wrt), None, jump)
     name = _Namer(ADJOINT_PREFIX, _taken(seq), _named(sinks, inputs))
     name.counts = _compact_counts(primal, context)
+    name.winners = _ranked(primal)
     key = _keyer(position)
     plan = _plan(seq, key, inputs, jump, primal)
     alt = AltPath.of(plan, seq, reverse=True)
@@ -717,6 +718,7 @@ def _jvp(
     context = sinks[0].ctx
     inputs = drop_width(_wrt(seq, wrt), None, jump)
     name = _Namer(TANGENT_PREFIX, _taken(seq), _named(sinks, inputs))
+    name.winners = _ranked(primal)
     key = _keyer(position)
     plan = _plan(seq, key, inputs, jump, primal)
     alt = AltPath.of(plan, seq)
@@ -1155,13 +1157,13 @@ def _accumulate(store: dict, key: Any, node: Any, contribution: Any) -> None:
     store[slot] = contribution if held is None else _ir.make("add", (held, contribution))
 
 
-#: What each update with no derivative is written as, and why it has none. The derivative of a keyed minimum or maximum is
-#: not refused for good: it is written under the ordered contract, in a later step.
+#: What each update with no derivative is written as, and why it has none. A keyed minimum or maximum has one only under the
+#: ordered contract, which records the lane that won each element (:func:`_winner_mask`).
 _NO_DERIVATIVE = MappingProxyType({
-    "min": ("is a keyed minimum (`.min`)", "the derivative of a keyed minimum is written under the ordered contract, which "
-            "is not written yet"),
-    "max": ("is a keyed maximum (`.max`)", "the derivative of a keyed maximum is written under the ordered contract, which "
-            "is not written yet"),
+    "min": ("is a keyed minimum (`.min`)", "no lane is fixed as the winner of an element, so write it as "
+            "`hawk.scatter(y, contract=\"ordered\")[k].min(v)`, which records the winner and has a derivative"),
+    "max": ("is a keyed maximum (`.max`)", "no lane is fixed as the winner of an element, so write it as "
+            "`hawk.scatter(y, contract=\"ordered\")[k].max(v)`, which records the winner and has a derivative"),
     "and": ("is a bitwise and by key (`.and_`)", "an integer mask has no derivative"),
     "xor": ("is a bitwise xor by key (`.xor`)", "an integer mask has no derivative"),
     "exchange": ("exchanges by key (`.exchange`)", "the old value it returns depends on the order lanes arrive in"),
@@ -1181,7 +1183,7 @@ def _refused_update(node: Any, counts: frozenset = frozenset()) -> tuple[str, st
     op = node.field_text("op")
     if op == "or":
         return ("sets bits by key (`|=`)", "a bit mask is discrete and has no derivative")
-    if op in _NO_DERIVATIVE:
+    if op in _NO_DERIVATIVE and not _is_ordered_fold(node):
         return _NO_DERIVATIVE[op]
     if node.field_text("conflict") == "any":
         return ("stores by key under conflict='any'", "the lane that wins a shared key differs between runs")
@@ -1189,6 +1191,37 @@ def _refused_update(node: Any, counts: frozenset = frozenset()) -> tuple[str, st
         return ("adds by key and returns the old value (`.add(v, old=True)`)",
                 "the old value it returns depends on the order lanes arrive in")
     return None
+
+
+def _is_ordered_fold(node: Any) -> bool:
+    """Whether ``node`` is a keyed minimum or maximum that takes the lane order, which records its winners."""
+    return (_ir.is_a(node, "update") and node.field_text("op") in ("min", "max") and node.field_text("order") == "lane"
+            and bool(_indices_of(node)))
+
+
+def _ranked(primal: Any) -> dict:
+    """``{plane: the plane of its winner lanes}`` of the ordered minimums and maximums of ``primal``, as its planes state them."""
+    planes = getattr(primal, "planes", None) or {}
+    return {plane.winner_of: name for name, plane in planes.items() if getattr(plane, "winner_of", "")}
+
+
+def _winner_mask(sink: Any, name: Any) -> tuple[Any, tuple]:
+    """For the ordered fold ``sink``: the test that this lane is the winner of the element it wrote, and the indices that
+    address that element when it is, else ``-1`` (which the zero edge rule drops). The winners are the primal run's: the
+    derivative reads them from the plane the primal's :meth:`BoundPlan.winner` returns, bound under the winner plane's name."""
+    ranked, context = sink.field_text("name"), sink.ctx
+    if ranked not in name.winners:
+        raise HawkError(f"{ranked!r} is an ordered fold of a kernel that states no winner plane for it")
+    indices = _indices_of(sink)
+    whole = _ir.TensorType((), "int32")
+    plane = _ir.leaf(context, "table_read", "lookup", name.winners[ranked], whole, axes=_ir.field_pairs(sink, "axes"))
+    won = _ir.make_node("At", whole, [plane, *indices], edge=sink.field_text("edge"))
+    mine = _ir.make("eq", (won, _ir.make_node("SampleIndex", whole, context=context)))
+    places = []
+    for index in indices:
+        kind = _ir.type_of(index)
+        places.append(_ir.make_node("Select", kind, [mine, index, _ir.const(context, -1, kind)]))
+    return mine, tuple(places)
 
 
 def _appended(primal: Any) -> dict:
@@ -1342,6 +1375,8 @@ class _Namer:
         #: ``{plane: column count}`` of the compact planes of a broadcast kernel
         #: (:func:`_compact_counts`)
         self.counts: dict = {}
+        #: ``{plane: the plane of its winner lanes}`` of the ordered minimums and maximums the derivative reads
+        self.winners: dict = {}
         self.source: dict[str, str] = {}
         flat = [n.replace(_ir.NAMESPACE_SEP, "_") for n in names]
         self.level = 1
@@ -1391,7 +1426,12 @@ def _seed(sink: Any, name: _Namer) -> Any:
     if _ir.is_a(sink, "update") and indices:
         # the transpose of a scatter-add is a gather of the adjoint plane, at the same indices under the same edge rule
         plane = _ir.leaf(context, "table_read", "lookup", derived, t, axes=_ir.field_pairs(sink, "axes"))
-        return _ir.make_node("At", t, [plane, *indices], edge=sink.field_text("edge"))
+        gathered = _ir.make_node("At", t, [plane, *indices], edge=sink.field_text("edge"))
+        if _is_ordered_fold(sink):
+            # only the winning lane of an element receives its adjoint
+            mine, _ = _winner_mask(sink, name)
+            return _ir.make_node("Select", t, [mine, gathered, _ir.zero_like(context, t)])
+        return gathered
     return _ir.leaf(context, "vocab_read", "plane_in", derived, t)
 
 
@@ -1402,6 +1442,12 @@ def _tangent_sink(sink: Any, tangent: Any, name: _Namer, indices: Any = None) ->
     value = tangent if tangent is not None else _ir.zero_like(sink.ctx, ttype)
     derived = name(sink.field_text("name"))
     indices = _indices_of(sink) if indices is None else indices
+    if _is_ordered_fold(sink):
+        # the tangent of an element is the tangent of its winning lane: a unique store that only that lane makes
+        _, places = _winner_mask(sink, name)
+        return _ir.make_node(
+            "Update", ttype, [value, *places], name=derived, op="store", edge="zero", axes=_ir.field_pairs(sink, "axes"),
+        )
     if _ir.is_accumulate(sink):
         return _scatter(
             derived, value, indices, ttype, _ir.operation_fields(sink), sink.field_text("edge"),
