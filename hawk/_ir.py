@@ -682,10 +682,14 @@ def with_value(sink: Any, value: Any) -> Any:
 
 @_as_hawk_error
 def swap(sinks: Sequence[Any], mapping: Mapping[Any, Any]) -> tuple:
-    """``sinks`` with the nodes in ``mapping`` replaced inside the values they commit."""
-    sinks = tuple(sinks)
-    values = substitute([sink.operands[0] for sink in sinks], mapping)
-    return tuple(with_value(sink, value) for sink, value in zip(sinks, values))
+    """``sinks`` with the nodes in ``mapping`` replaced, in the value each commits and in the key of an accumulate."""
+    roots = substitute([o for sink in sinks for o in sink.operands], mapping)
+    out, at = [], 0
+    for sink in sinks:
+        part = roots[at:at + len(sink.operands)]
+        at += len(sink.operands)
+        out.append(replace(sink, operands=part) if is_accumulate(sink) else with_value(sink, part[0]))
+    return tuple(out)
 
 
 @_as_hawk_error

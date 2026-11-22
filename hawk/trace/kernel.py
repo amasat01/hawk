@@ -35,6 +35,7 @@ from .lane_axes import (
     check_group,
     current_context,
     lane_space,
+    placed_on_axes,
     trace_context,
     tracing,
 )
@@ -353,7 +354,7 @@ def _trace(fn: Callable[..., None], kind: Any) -> Kernel:
         traced, returning, shape = _retrace(
             fn, scope, sink_names, mutables, finishes=finishes,
             returns_value=True if forced is not None else None)
-        with tracing(lane_space(planes), fn.__name__):
+        with tracing(lane_space(planes), fn.__name__) as reads:
             out = _call_finishing(traced, fn, {**args, **_group_views(planes, args)})
         _declare_counts(planes, args)
         _retag_by_key(planes, args)
@@ -372,7 +373,7 @@ def _trace(fn: Callable[..., None], kind: Any) -> Kernel:
         extra = _compensated_companion(resolved_kind, planes, vocab, sinks)
         if extra is not None:
             sinks = sinks + (extra,)
-        sinks = sinks + _contract_companions(fn.__name__, planes, sinks)
+        sinks = placed_on_axes(sinks + _contract_companions(fn.__name__, planes, sinks), reads, lane_space(planes))
         return Kernel(fn.__name__, sinks, planes, kind=resolved_kind,
                       source_digest=source_digest(fn), returns=returns)
 

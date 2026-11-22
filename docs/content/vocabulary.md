@@ -66,6 +66,7 @@ Declaring the shape of your lanes brings a few more words; the [glossary](glossa
   hawk binds your array as it is, without copying it, and compiles the kernel to read it along only the axes
   it varies along. The gradient of such an input comes back in its own shape. Planes a kernel writes, and the
   `terminated` mask, keep the exact lane shape.
+- **`u.at(row=r, col=c, edge="clamp")`** reads a per-lane input `u` at another lane of the `Grid`: name every axis, and `edge` (`"clamp"`, the default, `"wrap"` or `"zero"`) is what a coordinate outside its axis reads. **`u.near(col=1)`** is the short form: this lane's coordinates moved by the integer offsets on the axes you name (an axis you leave out keeps this lane's coordinate). `u.at(i)` reads at a flat lane index, which the same `edge` rules bring into the launch. Only an input that existed before the launch can be read at another lane.
 - **`table.sample(x, y, ...)`** reads a `Table` at real coordinates in index units, one per axis (one to three): `filter="linear"` (the default) weighs the corners of the cell the point is in, `"nearest"` reads the element at `floor(x + 0.5)`; `edge="clamp"` (the default), `"wrap"` or `"zero"` is what a read past an axis gives. A whole coordinate is exactly the stored element.
 - A **bare label** (`Grid["channel", ...]`, `Mutable["node"]`, `Table["elem", "c":3]`) is an extent given when
   you run, and only the first axis may be bare. Give it as `node=N` or by passing a plane of that length; one

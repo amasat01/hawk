@@ -232,7 +232,7 @@ def _build(kernel, patterns: dict):
             else:
                 planes[name], read = _read(name, ttype, patterns[name], step.lane_space, context)
             mapping.update({leaf: read for leaf in found})
-    out = Kernel(step.name, _swap(step.sinks, mapping), planes, kind=step.kind,
+    out = Kernel(step.name, _ir.swap(step.sinks, mapping), planes, kind=step.kind,
                  source_digest=step.source_digest, returns=step.returns)
     out.time, out.time_step, out.jump, out.group = step.time, step.time_step, step.jump, step.group
     # the request and the sidecar state the lane axes each input varies along; a number has none
@@ -304,19 +304,6 @@ def _read(name: str, ttype, pattern, axes, context) -> tuple:
         return Plane("table", element, axes=table_axes), table.at(**at).node
     parts = tuple(table.at(**at, **{comp: k}).node for k in range(width))
     return Plane("table", element, axes=table_axes), _ir.make("vec", parts)
-
-
-def _swap(sinks, mapping: dict) -> tuple:
-    """``sinks`` with the nodes in ``mapping`` replaced, in value and key."""
-    roots = _ir.substitute(tuple(o for s in sinks for o in s.operands), mapping)
-    out, at = [], 0
-    for s in sinks:
-        part = roots[at:at + len(s.operands)]
-        at += len(s.operands)
-        out.append(
-            _ir.replace(s, operands=part) if _ir.is_accumulate(s) else _ir.with_value(s, part[0])
-        )
-    return tuple(out)
 
 
 # -- a call's planes: classified, then compacted for the twin ----------------- #

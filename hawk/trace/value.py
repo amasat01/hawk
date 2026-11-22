@@ -180,12 +180,20 @@ class Value:
         """The node's tensor type."""
         return _ir.type_of(self.node)
 
-    def at(self, *positional: Any, **named: Any) -> Value:
-        """``u.at(i)`` / ``u.at(row=…, col=…)``: this per-lane input read at
-        another lane, by flat lane index or by every ``Grid`` axis."""
+    def at(self, *positional: Any, edge: str = "clamp", **named: Any) -> Value:
+        """``u.at(i)`` / ``u.at(row=…, col=…)``: this per-lane input read at another lane, by flat lane index or by
+        every ``Grid`` axis. ``edge`` is what a coordinate outside its axis (a flat index outside the launch) reads:
+        ``"clamp"`` (the edge lane), ``"wrap"`` (modulo the extent) or ``"zero"``."""
         from .lane_axes import read_at
 
-        return read_at(self, positional, named)
+        return read_at(self, positional, named, edge)
+
+    def near(self, *, edge: str = "clamp", **offsets: Any) -> Value:
+        """``u.near(col=1)``: this per-lane input read at this lane's coordinates moved by the integer offsets on the
+        named ``Grid`` axes; an axis not named keeps this lane's coordinate. ``edge`` is as in :meth:`at`."""
+        from .lane_axes import near
+
+        return near(self, offsets, edge)
 
     def __repr__(self) -> str:  # pragma: no cover - diagnostics only
         return f"<Value {self.node.cls} {self.ttype}>"
