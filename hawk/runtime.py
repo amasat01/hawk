@@ -309,6 +309,9 @@ class LoadedKernel:
             made = self._made_for_running(arrays, n_samples, make)
             given |= made
             arrays = {**arrays, **made}
+        made = self._made_counts(arrays, make)
+        given |= made
+        arrays = {**arrays, **made}
         _refuse_unbound_names(self, arrays, self._plane_names())
         return self._checked(arrays, n_samples, layout, keep=keep, running=running, make=make)._replace(given=given, extents=stated)
 
@@ -367,6 +370,12 @@ class LoadedKernel:
             view = array if name in kept else array.reshape((*array.shape[:1][:width > 1], -1))
             views[name] = samples_last(view) if marked else view
         return views
+
+    def _made_counts(self, arrays: dict, make: Maker) -> dict:
+        """The count planes of the lists ``hawk.append`` fills, one zeroed element each, that the caller did not bind: the run
+        counts into them and :meth:`BoundPlan.count` reads them."""
+        counts = self.declared.get("counts") or {}
+        return {name: make.zeros((1,), self.declared["arg_dtypes"][name]) for name in counts if name not in arrays}
 
     def _made_for_running(self, arrays: dict, n_samples: int, make: Maker) -> dict:
         """What a runner starts from when the caller left it out: an all-false ``terminated`` mask."""
@@ -749,6 +758,17 @@ class BoundPlan:
         """The arrays bound, by name, as the caller gave them (a plane made for an output left out included), read-only."""
         return MappingProxyType({name: getattr(value, "array", value) for name, value in self._arguments.given.items()})
 
+    def count(self, appended: str) -> int:
+        """The number of lanes that asked to append to the list ``appended`` in the launches since its count was zeroed
+        (``hawk.append``). It is the plane the unit states as the count of ``appended``, whatever it is named. More than the
+        list holds means values were dropped: compare it with the list's length."""
+        counts = (self._kernel.sidecar.get("counts") or {})
+        found = [plane for plane, counted in counts.items() if counted == appended]
+        if not found:
+            raise HawkError(f"{self._kernel.path.name}: {appended!r} is not a list that hawk.append fills; "
+                            f"the lists are {sorted(set(counts.values()))}")
+        return int(self.planes[found[0]][0])
+
     @property
     def door(self):
         """The runtime door this plan and its planes belong to: the door of the place the planes live in."""
@@ -840,7 +860,7 @@ def _load_unit(door, path: Path, sidecar: dict, deps=()):
 
 #: The declarations of a split kernel's stages that are dicts keyed by plane name, lists of records named by plane, and lists of names.
 _DICT_DECLARATIONS = ("arg_dtypes", "arg_shapes", "arg_widths", "slot_shapes", "param_shapes",
-                      "plane_axes", "gather_mats", "adjoint_like", "companions")
+                      "plane_axes", "gather_mats", "adjoint_like", "companions", "counts")
 _RECORD_DECLARATIONS = ("mutables", "params")
 _NAME_DECLARATIONS = ("index_planes", "sorted_inputs", "unused_planes")
 

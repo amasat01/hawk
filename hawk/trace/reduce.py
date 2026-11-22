@@ -443,13 +443,15 @@ _RETURNING = ("exchange", "compare_exchange")
 
 def scatter_store(refs: dict, name: str, key: Any, value: Any, op: str, current: Any,
                   contract: str = "auto", conflict: str = "unique", expected: Any = None,
-                  old: bool = False) -> Any:
+                  old: bool = False, when: Any = True) -> Any:
     """``hawk.scatter(name, contract=...)[key] (op)= value``, as the ast pass
     reaches it: ``+=`` accumulates (an ``Update`` that adds), ``=`` stores
     (an ``Update`` that stores). A method (``op`` an operation name, not an augmented assignment) returns the pair of the
     marker the plane's name takes and the old value its element held (``None`` when the method returns none)."""
     from .value import MutableRef, _SinkRef, by_key
 
+    if op == "append":
+        return append_store(refs, name, value, when)
     method = op not in ("=", "+=", "|=")
     where = f"hawk.scatter({name})[key] {op}{'' if method else ' v'}"
     ref = refs.get(name)
@@ -483,6 +485,57 @@ def scatter_store(refs: dict, name: str, key: Any, value: Any, op: str, current:
                       expected=expected, returns_old=operation in _RETURNING or old)
     marker = current if isinstance(current, _Stored) else _Stored(name)
     return (marker, returned) if method else marker
+
+
+def append(out: Any, value: Any = None, when: Any = True) -> Any:
+    """``slot = hawk.append(out, value=v, when=cond)`` adds ``v`` to the list ``out`` in the order the lanes arrive and gives
+    this lane's place in it as an integer value (the ticket). ``out`` is a plane declared with ONE axis, the list
+    (``Mutable[Scalar, "item":64]``, or a vector value ``Mutable[Vector[2], "item":64]`` stored whole at its place); the extent of
+    that axis is its capacity. A lane whose ``when`` is false takes no place and gets ``slot == -1``.
+
+    The run counts every lane that asked in a one-element integer plane that belongs to ``out`` and is made zeroed, like any output
+    the caller leaves out: :meth:`hawk.runtime.BoundPlan.count` reads it after the launch. When more lanes ask than ``out``
+    holds, the values past its capacity are dropped, the count keeps counting and nothing is raised: the caller compares the
+    count with the capacity. A count made with the run starts at zero; a bound count keeps what it holds, so a second launch
+    continues the list where the first stopped. The places are a permutation of ``0 .. count - 1`` in an order no launch promises. Two appends to one
+    ``out`` in one kernel share its count. A vector value is stored whole. ``slot`` and the count have no derivative; the
+    tangent of ``v`` is stored at the place its value takes. Written only as a statement of the kernel body."""
+    raise HawkError(
+        "hawk.append(out, value=v, when=cond) is a statement of the kernel body: write "
+        "slot = hawk.append(out, value=v) inside the kernel")
+
+
+def append_store(refs: dict, name: str, value: Any, when: Any = True) -> Any:
+    """``slot = hawk.append(out, value=v, when=cond)``, as the ast pass reaches it: a ticket ``Update`` of the count plane that adds
+    one for a lane that asks, and a store of ``v`` at the ticket under the ``zero`` edge rule, which drops a place outside the
+    list (a ticket past the capacity, or -1). Returns the pair of the marker ``out`` takes and the slot value."""
+    from .value import INT32, _context, _SinkRef, by_key
+
+    where = f"hawk.append({name})"
+    ref = refs.get(name)
+    if not isinstance(ref, _SinkRef) or ref.counts:
+        raise HawkError(f"{where}: {name!r} is not an output plane (declare it Mutable[...])")
+    if len(ref.axes) != 1:
+        raise HawkError(
+            f"{where}: {name!r} is a list, a plane declared with one axis "
+            f'(Mutable[Scalar, "item":64]), whose extent is the capacity; it is declared with {len(ref.axes)}')
+    if not isinstance(value, Value):
+        value = Value(node_of(value))
+    always = when is True
+    if not always and (not isinstance(when, Value) or when.ttype != _ir.TensorType((), "bool")):
+        raise HawkError(f"{where}: when= is this lane's condition (a bool value) or omitted, got {when!r}")
+    count_name = f"{name}_count"
+    count = refs.get(count_name)
+    if count is None:
+        if count_name in refs:
+            raise HawkError(f"{where}: {count_name!r} is a parameter, the name of the count of {name!r}; rename the parameter")
+        count = refs[count_name] = _SinkRef(count_name, INT32, (("count", 1),), counts=name)
+    one, zero, none = (Value(_ir.const(_context(), n, INT32)) for n in (1, 0, -1))
+    ticket = by_key(count, [index_node(0)], one if always else select(when, one, zero), "add", "plain", returns_old=True,
+                    several=True)
+    slot = ticket if always else select(when, ticket, none)
+    by_key(ref, [_ir.make("cast", (node_of(slot),), "i32")], value, "store", several=True, edge="zero")
+    return _Stored(name), slot
 
 
 def logic(which: str, *args: Any) -> Any:

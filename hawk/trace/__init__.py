@@ -81,6 +81,7 @@ from .raw import RawBlock as RawBlock
 from .reduce import max as max
 from .reduce import mean as mean
 from .reduce import min as min
+from .reduce import append as append
 from .reduce import scatter as scatter
 from .reduce import sum as sum
 from .raw import raw_device as raw_device

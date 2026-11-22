@@ -50,7 +50,7 @@ _AUTHORING = (
     "Scalar", "Index", "Int32", "UInt32", "Quat", "Vector", "Matrix", "Tensor", "Record", "Rows", "Param",
     "Mutable", "Meta", "Table", "Grid", "Sorted", "Staged", "Wide", "WideOut",
     "Terminated", "HawkError", "ToolchainAbsent", "steps", "resolve_dispatch",
-    "sum", "max", "min", "mean", "scatter",
+    "sum", "max", "min", "mean", "scatter", "append",
 )
 
 #: The subset of :data:`_AUTHORING` resolved from :mod:`hawk.errors` rather

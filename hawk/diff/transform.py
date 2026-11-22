@@ -76,8 +76,12 @@ class Derived(tuple):
         cotangents: dict | None = None,
         next_values: dict | None = None,
         tangents: dict | None = None,
+        counts: dict | None = None,
     ):
         self = super().__new__(cls, sinks)
+        #: The counts of the lists a forward derivative of an appending kernel still appends to: each count plane mapped
+        #: to the list it counts.
+        self.counts = {} if counts is None else counts
         #: A reverse derivative's planes as the transform named them: ``gradients`` maps each gradient plane to the
         #: input it is the gradient of, ``cotangents`` each cotangent (seed) plane to the forward output it seeds.
         #: Empty for a forward derivative.
@@ -698,7 +702,7 @@ def _jvp(
 
         return jvp_chain(primal, wrt, primal_unit)
     primal = _single_step(primal)
-    sinks = _sinks_of(primal)
+    sinks = _sinks_of(primal, forward=True)
     for sink in sinks:
         if _ir.is_a(sink, "loop"):
             raise HawkError(
@@ -814,7 +818,10 @@ def _jvp(
             for s in sinks
             if _ir.type_of(s).dtype not in _ir.INT_PLANE_DTYPES
         )
-    out = _ir.slotwise(_mask_termination(made, primal, context))
+    # an append is kept whole: the ticket is taken once and the value and its tangent are stored at it
+    appended = _appended(primal)
+    whole = tuple(s for s in sinks if s.field_text("name") in {*appended, *appended.values()})
+    out = _ir.slotwise(_mask_termination((*whole, *made), primal, context))
     names = tuple(leaf.field_text("name") for leaf in inputs)
     if plan is not None:
         out += plan.spread_cells()
@@ -826,6 +833,7 @@ def _jvp(
         primal_unit=primal_unit,
         jump=None if plan is None else plan.record(names),
         tangents=dict(name.source),
+        counts=appended,
     )
 
 
@@ -1162,12 +1170,12 @@ _NO_DERIVATIVE = MappingProxyType({
 })
 
 
-def _refused_update(node: Any) -> tuple[str, str] | None:
+def _refused_update(node: Any, counts: frozenset = frozenset()) -> tuple[str, str] | None:
     """What ``node`` is and why it has no derivative, when it is an update the derivative refuses (or a loop whose body holds
     one): a bit mask, the operations of :data:`_NO_DERIVATIVE`, a store under ``conflict='any'``, or an add that returns the
     value it found."""
     if _ir.is_a(node, "loop"):
-        return next((r for s in node.field_nodes("body_sinks") if (r := _refused_update(s))), None)
+        return next((r for s in node.field_nodes("body_sinks") if (r := _refused_update(s, counts))), None)
     if not _ir.is_a(node, "update"):
         return None
     op = node.field_text("op")
@@ -1177,13 +1185,29 @@ def _refused_update(node: Any) -> tuple[str, str] | None:
         return _NO_DERIVATIVE[op]
     if node.field_text("conflict") == "any":
         return ("stores by key under conflict='any'", "the lane that wins a shared key differs between runs")
-    if node.field_flag("returns_old"):
+    if node.field_flag("returns_old") and node.field_text("name") not in counts:
         return ("adds by key and returns the old value (`.add(v, old=True)`)",
                 "the old value it returns depends on the order lanes arrive in")
     return None
 
 
-def _sinks_of(primal: Any) -> tuple[Any, ...]:
+def _appended(primal: Any) -> dict:
+    """``{count plane: the list it counts}`` of the lists ``hawk.append`` fills in ``primal``, as its planes state them."""
+    planes = getattr(primal, "planes", None) or {}
+    return {name: plane.counts for name, plane in planes.items() if getattr(plane, "counts", "")}
+
+
+def _sinks_of(primal: Any, forward: bool = False) -> tuple[Any, ...]:
+    """The sinks of ``primal`` to differentiate, refusing by name an update that has no derivative. The ticket an append takes
+    is an integer and carries none; the forward derivative keeps the append (one ticket stores a value and its tangent), and
+    the reverse derivative refuses it: the adjoint of a value is read at the place the primal run gave it, and the primal run's
+    places are not recorded for it yet."""
+    appended = _appended(primal)
+    if appended and not forward:
+        raise HawkError(
+            f"{primal!r} appends to {sorted(set(appended.values()))} (`hawk.append`): the reverse derivative reads the adjoint "
+            "of each value at the place the primal run gave it, which needs those places recorded in a plane by the primal "
+            "run; that is not written yet. Its forward derivative (`jvp`) is")
     sinks = tuple(getattr(primal, "sinks", primal))
     if not sinks or not all(_ir.is_a(s, "sink", "loop") for s in sinks):
         raise HawkError(
@@ -1194,7 +1218,7 @@ def _sinks_of(primal: Any) -> tuple[Any, ...]:
     # so the derived kernel binds no counter, writes no mask and carries no
     # sidecar ``finish``; it keeps the primal's mask READ (``_mask_termination``).
     kept = _ir.expand_stores([s for s in sinks if not _ir.is_a(s, "finish")])
-    refused = next((r for s in kept if (r := _refused_update(s))), None)
+    refused = next((r for s in kept if (r := _refused_update(s, frozenset(appended)))), None)
     if refused:
         what, why = refused
         raise HawkError(f"{primal!r} {what}: {why}; differentiate a kernel that does not write it")

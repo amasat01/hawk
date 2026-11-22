@@ -41,6 +41,7 @@ from .lane_axes import (
 from .value import (
     INDEX,
     INDEX32,
+    INT32,
     FinishRefusal,
     MutableRef,
     RowsView,
@@ -90,6 +91,8 @@ class Kernel:
         sinks = _scattered_companion(self.kind, sinks)
         self.sinks = sinks
         self.planes = {} if planes is None else planes
+        for count, appended in getattr(sinks, "counts", {}).items():
+            self.planes[count] = Plane("accum", INT32, axes=(("count", 1),), counts=appended)
         self.walk: _ir.Walk = _ir.cells_walk(sinks, _declared(self.planes))
         #: The launch shape, ``((label|None, extent|None), ...)`` row-major with the
         #: fastest axis last: the ``Grid[...]`` declared, else one unlabelled
@@ -352,6 +355,7 @@ def _trace(fn: Callable[..., None], kind: Any) -> Kernel:
             returns_value=True if forced is not None else None)
         with tracing(lane_space(planes), fn.__name__):
             out = _call_finishing(traced, fn, {**args, **_group_views(planes, args)})
+        _declare_counts(planes, args)
         _retag_by_key(planes, args)
         _check_axis_sinks(fn.__name__, planes, args)
         finished = _finished(fn.__name__, params, args, finishes, resolved_kind)
@@ -364,6 +368,7 @@ def _trace(fn: Callable[..., None], kind: Any) -> Kernel:
             returns = None
             sinks = _collect(fn.__name__, params, args, sink_names,
                              finishing=bool(finished)) + finished
+        sinks += tuple(s for name, ref in args.items() if _is_count(ref) for s in ref.sinks)
         extra = _compensated_companion(resolved_kind, planes, vocab, sinks)
         if extra is not None:
             sinks = sinks + (extra,)
@@ -383,6 +388,19 @@ def source_digest(fn: Callable[..., Any]) -> str | None:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+def _is_count(ref: Any) -> bool:
+    """Whether ``ref`` is the count plane ``hawk.append`` made, which no parameter declares."""
+    return bool(getattr(ref, "counts", ""))
+
+
+def _declare_counts(planes: dict[str, Any], args: dict[str, Any]) -> None:
+    """The plane of each count ``hawk.append`` made in the body: a one-element integer plane written by an add, so the run zeroes
+    it, that states the plane it counts."""
+    for name, ref in args.items():
+        if _is_count(ref):
+            planes[name] = Plane("accum", ref.ttype, axes=ref.axes, counts=ref.counts)
+
+
 def _retag_by_key(planes: dict[str, Any], args: dict[str, Any]) -> None:
     """A plane a body wrote by key (``hawk.scatter(y)[key] (+)= v``, or
     ``y = hawk.sum(x, over=...)``) is shared, so its declaration becomes the
@@ -390,7 +408,7 @@ def _retag_by_key(planes: dict[str, Any], args: dict[str, Any]) -> None:
     for name, ref in args.items():
         kind = getattr(ref, "by_key_kind", None)
         if kind is not None:
-            planes[name] = Plane(kind, planes[name].ttype, axes=planes[name].axes)
+            planes[name] = Plane(kind, planes[name].ttype, axes=planes[name].axes, counts=planes[name].counts)
 
 
 def _check_axis_sinks(name: str, planes: dict[str, Any], args: dict[str, Any]) -> None:

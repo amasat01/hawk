@@ -559,7 +559,7 @@ def transform(fn: ast.FunctionDef, filename: str, sinks: frozenset[str],
     body = _lower_row_loops(body, filename)
     _validate(body, filename, sinks, in_branch=False)
     body = _lower_break_blocks(body, [0])
-    body = _rewrite_view_stores(body)
+    body = _rewrite_view_stores(body, filename=filename)
     _check_no_prior_attr(body, filename, mutables | finishes)
     body, written = _rewrite_mutable_stores(body, sinks, mutables, finishes,
                                             filename, fn.name)
@@ -746,6 +746,16 @@ def _check_view_store(st: ast.stmt, filename: str, in_branch: bool,
                                "collective every lane reaches: it may not sit inside a "
                                "branch or a `for`; reduce at the top level and fold the "
                                "condition into where=")
+    if _append_site(st) is not None:
+        if in_branch:
+            raise _err(st, filename, "hawk.append(out, value=v, when=cond) may not sit inside a branch: the lane that asks "
+                       "is the one whose `when` is true; write the condition as when=")
+        return
+    if _append_site(st) is not None:
+        if in_branch:
+            raise _err(st, filename, "hawk.append(out, value=v, when=cond) may not sit inside a branch: the lane that asks "
+                       "is the one whose `when` is true; write the condition as when=")
+        return
     site = _method_site(st)
     target = (st.targets[0] if isinstance(st, ast.Assign) and len(st.targets) == 1
               else getattr(st, "target", None))
@@ -817,7 +827,42 @@ def _check_method_site(st: ast.stmt, site: tuple[ast.Subscript, ast.Call], filen
                    ".exchange(v), .compare_exchange(expected, v) and .add(v, old=True)")
 
 
-def _rewrite_view_stores(stmts: list[ast.stmt], in_loop: bool = False) -> list[ast.stmt]:
+def _append_site(st: ast.stmt) -> ast.Call | None:
+    """The call ``hawk.append(...)`` when ``st`` is one as a statement or as the value of an assignment to a name, else ``None``."""
+    call = st.value if isinstance(st, ast.Expr) or (
+        isinstance(st, ast.Assign) and len(st.targets) == 1 and isinstance(st.targets[0], ast.Name)) else None
+    return call if isinstance(call, ast.Call) and _named_call(call.func, "append") and (
+        isinstance(call.func, ast.Attribute)) else None
+
+
+def _rewrite_append_site(st: ast.stmt, call: ast.Call, in_loop: bool, filename: str) -> list[ast.stmt]:
+    """``slot = hawk.append(out, value=v, when=c)`` as the pair ``(out, slot)`` of the helper that stores by key (the name ``out``
+    takes the marker a store leaves, as after ``hawk.scatter``)."""
+    keywords = {k.arg: k.value for k in call.keywords}
+    positional = call.args[1:]
+    value = positional[0] if positional else keywords.pop("value", None)
+    if (len(call.args) < 1 or not isinstance(call.args[0], ast.Name) or len(positional) > 1 or value is None
+            or (positional and "value" in keywords) or set(keywords) - {"when"}):
+        raise _err(st, filename, "hawk.append(out, value=v, when=cond): `out` is the name of a list plane, `value` is required "
+                   "and `when` is optional")
+    name = call.args[0].id
+    helper = ast.Call(
+        func=ast.Name(id=SCATTER_HELPER, ctx=ast.Load()),
+        args=[ast.Name(id=REFS, ctx=ast.Load()), ast.Constant(value=name), ast.Constant(value=None), value,
+              ast.Constant(value="append"), ast.Name(id=name, ctx=ast.Load())],
+        keywords=[ast.keyword(arg="when", value=keywords["when"])] if "when" in keywords else [])
+    marker = ast.Name(id=name, ctx=ast.Store())
+    if isinstance(st, ast.Assign):
+        slot = st.targets[0]
+        made = (ast.Assign(targets=[slot], value=ast.Subscript(value=helper, slice=ast.Constant(value=1), ctx=ast.Load()))
+                if in_loop else ast.Assign(targets=[ast.Tuple(elts=[marker, slot], ctx=ast.Store())], value=helper))
+    else:
+        made = ast.Expr(value=helper) if in_loop else ast.Assign(targets=[marker], value=ast.Subscript(
+            value=helper, slice=ast.Constant(value=0), ctx=ast.Load()))
+    return [ast.copy_location(made, st)]
+
+
+def _rewrite_view_stores(stmts: list[ast.stmt], in_loop: bool = False, filename: str = "<kernel>") -> list[ast.stmt]:
     """``hawk.scatter(y, contract=c)[k] (op)= e`` as
     ``y = __hawk_scatter__(__hawk_refs__, "y", k, e, "op=", y, contract=c)``: the
     name carries a marker after a store by key. Inside a ``for`` the call is a
@@ -825,8 +870,12 @@ def _rewrite_view_stores(stmts: list[ast.stmt], in_loop: bool = False) -> list[a
     out = []
     for st in stmts:
         if isinstance(st, ast.For):
-            st.body = _rewrite_view_stores(st.body, True)
+            st.body = _rewrite_view_stores(st.body, True, filename)
             out.append(st)
+            continue
+        appended = _append_site(st)
+        if appended is not None:
+            out.extend(_rewrite_append_site(st, appended, in_loop, filename))
             continue
         site = _method_site(st)
         if site is not None:

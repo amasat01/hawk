@@ -59,6 +59,8 @@ def _member(body, name: str, position: dict) -> dict:
     if planes is not None:
         declared = [_slot(slot) for slot in _declared(planes)]
         declared += [_slot(slot) for slot in _mixes(body)]
+        declared += [{**_slot(_ir.Slot("plane_out", name, plane.ttype), plane.axes), "counts": plane.counts}
+                     for name, plane in planes.items() if getattr(plane, "counts", "")]
     else:
         axes = _leaf_axes(body.walk)
         declared = [_slot(_ir.Slot(role, slot, _ir.slot_type(body.walk, role, slot)), axes.get((role, slot), ()))

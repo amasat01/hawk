@@ -234,6 +234,8 @@ class Plane:
     #: ``(parameter, field, form)`` of a plane that is one field of a :class:`Record` parameter (form ``"record"``) or
     #: one of the two planes of a :class:`Rows` parameter (form ``"rows"``), else empty.
     group: tuple = ()
+    #: The name of the appended plane a one-element count belongs to (``hawk.append``), else empty.
+    counts: str = ""
 
     def __call__(self, *args: object, **kwargs: object) -> object:
         """Never called: a declaration is only annotated. Defined so that ``typing.Annotated``

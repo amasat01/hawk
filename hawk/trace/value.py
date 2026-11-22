@@ -1064,12 +1064,14 @@ _FOLDS = ("add", "min", "max", "and", "or", "xor")
 
 def by_key(
     ref: Any, indices: list, value: Any, op: str, contract: str = "auto", *, conflict: str = "unique",
-    expected: Any = None, returns_old: bool = False,
+    expected: Any = None, returns_old: bool = False, edge: str = "unchecked", several: bool = False,
 ) -> Any:
     """One update by key into ``ref`` at ``indices``, one per axis of the sink: an ``Update`` of the operation ``op``
     (``store``, ``add``, ``min``, ``max``, ``and``, ``or``, ``xor``, ``exchange`` or ``compare_exchange``, which also takes the
     ``expected`` value). Returns the old value the element held, as a value, when ``returns_old``. A vector or matrix payload
-    into a sink declared with named axes is summed per key, payload first."""
+    into a sink declared with named axes is summed per key, payload first. ``edge`` is the rule for a key outside the plane
+    (``zero`` drops the update); ``several`` states that this is one of many updates of one operation into the plane, which
+    the plane then holds together (an append is one of them)."""
     where = f"hawk.scatter({ref.name})[key]"
     if any(not _ir.is_a(k, "update") for k in ref.sinks):
         raise HawkError(
@@ -1090,7 +1092,9 @@ def by_key(
             f"named axes (Mutable[Vector[w], \"bin\":n]); a flat sink takes one "
             f"Mutable[Scalar] plane per component ({ref.name}0, ...) and "
             f"hawk.scatter({ref.name}0)[key] += u[0]")
-    if ref.by_key_kind is not None and (ref.by_key_kind != kind or op not in _FOLDS or ref.by_key_op != op):
+    repeated = several and (ref.by_key_kind, ref.by_key_op) == (kind, op)
+    if ref.by_key_kind is not None and not repeated and (
+            ref.by_key_kind != kind or op not in _FOLDS or ref.by_key_op != op):
         raise HawkError(
             f"{ref.name!r} is written by key twice with different operations, or twice by an operation that is not a "
             "fold: one plane takes one by-key statement, or several of one of += , .min, .max, .and_, .xor, |=")
@@ -1105,9 +1109,9 @@ def by_key(
             if returns_old:
                 fields["summation"] = "plain"
         operands = [typed, *([ref._typed(expected)] if op == "compare_exchange" else []), *indices]
-        node = _ir.make_node("Update", ref.ttype, operands, name=ref.name, **fields, reduced=None, edge="unchecked",
+        node = _ir.make_node("Update", ref.ttype, operands, name=ref.name, **fields, reduced=None, edge=edge,
                              axes=ref.axes)
-        ref.sinks = [node] if op in ("store", "exchange", "compare_exchange") else [*ref.sinks, node]
+        ref.sinks = [node] if op in ("store", "exchange", "compare_exchange") and not several else [*ref.sinks, node]
     ref.by_key_kind, ref.by_key_op = kind, op
     return Value(node) if returns_old else None
 
@@ -1166,12 +1170,14 @@ class _SinkRef:
     """Shared write-side state: the sinks a body commits through one plane.
     ``axes`` are the sink's declared named axes ``((label, extent), ...)``."""
 
-    __slots__ = ("name", "ttype", "sinks", "by_key_kind", "by_key_op", "axes")
+    __slots__ = ("name", "ttype", "sinks", "by_key_kind", "by_key_op", "axes", "counts")
 
-    def __init__(self, name: str, ttype: _ir.TensorType, axes: tuple = ()) -> None:
+    def __init__(self, name: str, ttype: _ir.TensorType, axes: tuple = (), counts: str = "") -> None:
         self.name = name
         self.ttype = ttype
         self.axes = axes
+        #: The name of the appended plane this one counts (``hawk.append`` makes it), else empty.
+        self.counts = counts
         self.sinks: list[Any] = []
         self.by_key_kind: str | None = None
         self.by_key_op: str | None = None

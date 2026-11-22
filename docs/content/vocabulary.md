@@ -87,6 +87,11 @@ Declaring the shape of your lanes brings a few more words; the [glossary](glossa
   and `.xor(bits)` combine every lane's value with the plane's start value in any order. `hawk.scatter(y, conflict="any")[k] = v`
   lets lanes share a key (some lane's value wins). `old = hawk.scatter(y)[k].exchange(v)`, `.compare_exchange(expected, v)` and
   `.add(v, old=True)` return what the cell held, in the order the lanes arrived. None of them has a derivative.
+- **`slot = hawk.append(out, value=v, when=cond)`** adds `v` to the list `out` (a plane declared with one axis, whose extent is
+  its capacity) for each lane whose `when` holds, in no promised order, and gives the lane's place as an integer (`-1` when it
+  asked for none). The run counts the lanes that asked in a one-element plane made with it: `plan.bind(...).count("out")` after
+  a launch. More lanes than the capacity is not an error: the values past it are dropped and the count says how many asked.
+  `jvp` stores the tangent at the place of its value; `vjp` of an appending kernel is refused by name.
 - An **index set** (`Kind("screen", lanes=IndexSet())`) runs a list of lanes you built: launch lane `t` runs lane
   `map[t]`, with the map and its count bound as `active_map` and `active_count`. `hawk.sample_position()` is `t`
   where `hawk.math.sample_index()` is `map[t]`. See [Run only the lanes you list](howto_index_set).
