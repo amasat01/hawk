@@ -38,20 +38,20 @@ def test_lookup_at_read_is_cross_sample_read():
     assert _ir.access_class(walk) == "cross_sample_read"
 
 
-def test_scattered_accum_write_is_cross_sample_write():
-    walk = _ir.canonical((_ir.accum_write("e", _ir.make("norm", (_X,)), indices=(_THREE,)),))
+def test_scattered_add_update_is_cross_sample_write():
+    walk = _ir.canonical((_ir.update("e", _ir.make("norm", (_X,)), indices=(_THREE,)),))
     assert _ir.access_class(walk) == "cross_sample_write"
 
 
-def test_own_column_accum_write_is_not_cross_sample():
+def test_own_column_add_update_is_not_cross_sample():
     """ classifies on the FORM: an accum whose target lane is ``i`` is not
     a scatter."""
-    walk = _ir.canonical((_ir.accum_write("e", _ir.make("norm", (_X,))),))
+    walk = _ir.canonical((_ir.update("e", _ir.make("norm", (_X,))),))
     assert _ir.access_class(walk) == "sample_local"
 
 
-def test_own_column_wide_write_is_not_cross_sample():
-    walk = _ir.canonical((_ir.make_node("WideWrite", V3, (_ir.make("neg", (_X,)),), name="g"),))
+def test_own_column_store_update_is_not_cross_sample():
+    walk = _ir.canonical((_ir.make_node("Update", V3, (_ir.make("neg", (_X,)),), name="g", op="store"),))
     assert _ir.access_class(walk) == "sample_local"
 
 
@@ -68,7 +68,7 @@ def test_arg_spec_follows_hawks_canonical_role_order():
     assert ranks == sorted(ranks), _ir.arg_spec(walk)
     assert _ir.arg_spec(walk) == (
         ("mutable", "acc"),
-        ("accum_out", "energy"),
+        ("plane_out", "energy"),
         ("plane_in", "sc__state__pos"),
         ("plane_in", "sc__state__vel"),
         ("lookup", "grav"),

@@ -348,7 +348,7 @@ def test_a_gather_loops_reverse_scatters_once_per_iteration_in_the_same_scope():
     assert len(derived) == 1 and _ir.is_a(derived[0], "loop")
     assert [s.field_text("name") for s in derived[0].field_nodes("body_sinks")] == ["bar_t"]
     walk = _ir.canonical(derived)
-    assert ("accum_out", "bar_t") in _ir.arg_spec(walk)
+    assert ("plane_out", "bar_t") in _ir.arg_spec(walk)
     assert _ir.access_class(walk) == "cross_sample_write"
     table = (np.arange(ROWS * COLS, dtype=float) * 0.5 + 1.0).reshape(ROWS, COLS)
     got = evaluate(derived, {"t": table, "bar_y": 1.0}, lanes=ROWS * COLS, shapes={"bar_t": (ROWS, COLS)})["bar_t"]

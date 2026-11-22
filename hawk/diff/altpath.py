@@ -251,7 +251,7 @@ def _zero(context):
 
 def _keyed_indices(sink):
     """Return the indices a keyed scatter commits at, one per axis; empty for a commit at the lane's own cell."""
-    if _ir.is_a(sink, "accum_write", "wide_write"):
+    if _ir.is_a(sink, "update"):
         return tuple(sink.operands[1:])
     return ()
 

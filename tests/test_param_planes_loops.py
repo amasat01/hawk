@@ -106,7 +106,7 @@ TARGETS = ["host", pytest.param("cuda", marks=pytest.mark.gpu)]
 
 def _summed(built, kernel) -> set:
     """The names of the planes a kernel sums per 32 samples: the targets of the sidecar's ``cells``. The compensation plane
-    beside each is an ``accum_out`` slot too, but it is nobody's target."""
+    beside each is an ``zeroed plane_out`` slot too, but it is nobody's target."""
     return set(sidecar_of(built, kernel.name).get("cells", {}))
 
 
@@ -119,7 +119,7 @@ def _run(built, kernel, target, values, dtype):
     for role, name in kernel.arg_spec:
         if role == "mutable":
             outs[name] = bound[name] = xp.zeros(N, dtype=dtype)
-        elif role == "accum_out":
+        elif role == "plane_out" and name in sidecar_of(built, kernel.name)["zeroed_outputs"]:
             if name in summed:       # the host library folds the rows into the one cell and owns the compensation plane
                 outs[name] = bound[name] = xp.full(1 if target == "host" else -(-N // 32), np.nan, dtype=dtype)
             elif target != "host":

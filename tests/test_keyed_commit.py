@@ -195,7 +195,7 @@ def test_a_step_kernel_never_holds_a_keyed_commit():
         terminated = kn >= 3.0
 
     assert stepped.one_step is None
-    with pytest.raises(HawkError, match="accum_out sink"):
+    with pytest.raises(HawkError, match="plane_out sink"):
         hawk.steps(stepped, "auto")
 
 
@@ -401,7 +401,7 @@ def test_a_default_keyed_sum_is_delivered_in_the_target_alone(target, keys, mode
     xp = _xp(target)
     key, x, planes = _big_planes(keys, mode, xp)
     names = [nm for _, nm in _ir.arg_spec(kernel.walk) if nm != "acc_c"]
-    assert ("accum_out", "acc_c") in _ir.arg_spec(kernel.walk)
+    assert ("plane_out", "acc_c") in _ir.arg_spec(kernel.walk)
     plan = _plan(kernel, target, mode, tmp_path, cache_dir)
     bound = plan.bind(**{k: planes[k] for k in names})
     bound.launch()
@@ -459,7 +459,7 @@ def test_the_owned_companion_is_not_returned_and_not_asked_for(target, tmp_path,
     plan = _plan(ksrt_a, target, "float64", tmp_path, cache_dir)
     got = plan.run(x=planes["x"], seg=planes["seg"], acc=planes["acc"])
     assert not isinstance(got, dict) and got.shape == (NB,)
-    assert ("accum_out", "acc_c") in _ir.arg_spec(ksrt_a.walk)
+    assert ("plane_out", "acc_c") in _ir.arg_spec(ksrt_a.walk)
     made = plan.run(x=planes["x"], seg=planes["seg"])      # the run makes the target too
     for out in (got, made):
         out = np.asarray(out.get() if hasattr(out, "get") else out)[:NB]
@@ -506,7 +506,7 @@ def test_a_compensated_keyed_sum_is_delivered_in_the_target_alone(target, keys, 
     xp = _xp(target)
     key, x, planes = _big_planes(keys, mode, xp)
     names = [nm for _, nm in _ir.arg_spec(kernel.walk) if nm != "acc_c"]
-    assert ("accum_out", "acc_c") in _ir.arg_spec(kernel.walk)
+    assert ("plane_out", "acc_c") in _ir.arg_spec(kernel.walk)
     plan = _plan(kernel, target, mode, tmp_path, cache_dir)
     with pytest.raises((HawkError, ValueError), match="companion or compensation plane"):
         plan.bind(**{k: planes[k] for k in names}, acc_c=xp.zeros(NB, mode))
@@ -519,8 +519,8 @@ def test_a_compensated_keyed_sum_is_delivered_in_the_target_alone(target, keys, 
 
 
 def test_a_compensated_reverse_declares_its_companion():
-    assert ("accum_out", "bar_th_c") in _ir.arg_spec(VREAD_C.walk)
-    assert ("accum_out", "bar_th_c") not in _ir.arg_spec(VREAD.walk)
+    assert ("plane_out", "bar_th_c") in _ir.arg_spec(VREAD_C.walk)
+    assert ("plane_out", "bar_th_c") not in _ir.arg_spec(VREAD.walk)
     assert type(VREAD_C.sinks).__name__ == "Derived" and VREAD_C.sinks.wrt == ("th",)
 
 
@@ -543,8 +543,8 @@ def test_the_reverse_of_a_sorted_read_commits_once_per_run(target, compensated, 
     key = _mixed_runs(N)
     slots = int(key.max()) + 1
     x, by = rng.uniform(0.5, 1.5, N), rng.uniform(0.5, 1.5, N)   # positive terms: no cancellation
-    planes = {"x": xp.asarray(x), "seg": xp.asarray(key), "bar_y": xp.asarray(by), "th": xp.zeros(slots),
-              "bar_th": xp.zeros(slots)}     # th: the clamp of the read reads its length
+    planes = {"x": xp.asarray(x), "seg": xp.asarray(key), "bar_y": xp.asarray(by),
+              "bar_th": xp.zeros(slots)}     # the reverse reads no primal table: the adjoint's length is the clamp's
     if compensated:     # the kind names ``bar_th_c`` as its own companion: the caller's, not one the library makes
         planes["bar_th_c"] = xp.zeros(slots)
     counts = _launch(bundle, kernel.name, target, planes)

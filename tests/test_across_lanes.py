@@ -494,15 +494,19 @@ def test_every_contract_is_accepted_on_a_full_sum(contract):
 
 
 def test_compensated_marks_the_sink_and_binds_its_companion():
-    assert [s.field_text("contract") for s in COMP.sinks if s.field_text("name") == "out"] == ["compensated"]
-    assert ("accum_out", "out_c") in COMP.arg_spec
-    assert ("accum_out", "out_c") not in AUTO.arg_spec
+    marked = [(s.field_text("op"), s.field_text("summation")) for s in COMP.sinks if s.field_text("name") == "out"]
+    assert marked == [("add", "compensated")]
+    assert ("plane_out", "out_c") in COMP.arg_spec
+    assert ("plane_out", "out_c") not in AUTO.arg_spec
 
     @kernel
     def k(x: Scalar, key: Index, acc: Mutable[Scalar]):
         hawk.scatter(acc, contract="compensated")[key] += x
 
-    assert [(s.field_text("name"), s.field_text("contract")) for s in k.sinks] == [("acc", "compensated"), ("acc_c", "auto")]
+    assert [(s.field_text("name"), s.field_text("op"), s.field_text("summation")) for s in k.sinks] == [
+        ("acc", "add", "compensated"),
+        ("acc_c", "add", "auto"),
+    ]
 
 
 # ---- refusals: one named test each, the text that migrates the author ------
@@ -527,12 +531,12 @@ def test_ordered_over_some_axes_is_a_block_sum_and_an_ordered_scatter_is_a_keyed
     def k2(x: Scalar, key: Index, acc: Mutable[Scalar]):
         hawk.scatter(acc, contract="ordered")[key] += x
 
-    assert [(s.field_text("name"), s.field_text("contract")) for s in k2.sinks] == [("acc", "ordered")]
+    assert [(s.field_text("name"), s.field_text("op"), s.field_text("order")) for s in k2.sinks] == [("acc", "add", "lane")]
     @kernel
     def k3(x: Vector[3], key: Index, acc: Mutable[Vector[3], "bin":4]):
         hawk.scatter(acc, contract="ordered")[key] += x
 
-    assert {s.field_text("contract") for s in k3.sinks} == {"ordered"} and len(k3.sinks) == 3
+    assert {s.field_text("order") for s in k3.sinks} == {"lane"} and len(k3.sinks) == 3
 
 
 def test_refuses_a_contract_on_a_store():
@@ -675,7 +679,7 @@ def test_a_vector_by_key_into_a_named_axis_sink_is_payload_first():
         hawk.scatter(acc)[lane] += u
 
     entries = [s for s in k.sinks if s.field_text("name") == "acc"]
-    assert len(entries) == 3 and all(_ir.is_a(s, "accum_write") and len(s.operands) == 3 for s in entries)
+    assert len(entries) == 3 and all(_ir.is_accumulate(s) and len(s.operands) == 3 for s in entries)
 
 
 def test_masked_mean_names_the_count():
@@ -725,7 +729,7 @@ def test_at_adjoint_is_a_scatter_add_of_the_seed():
     np.testing.assert_allclose(want, ref, rtol=1e-6)
     d = vjp(grad_gather, wrt=("x",))
     names = [k.cls + ":" + k.field_text("name") for k in d]
-    assert any(nm.startswith("AccumWrite") for nm in names), names
+    assert any(nm.startswith("Update") for nm in names), names
 
 
 @pytest.mark.gpu
@@ -750,7 +754,7 @@ def test_contraction_backward_key_runs_along_the_sample_axis():
     """Every component's key is invariant along ``sample`` (64 lanes): one commit
     per warp."""
     for s in contract_bwd_static.sinks:
-        assert _ir.is_a(s, "accum_write")
+        assert _ir.is_accumulate(s)
         run = key_run(contract_bwd_static.sinks, s, (32, 1024))
         assert run is not None and (run.form, run.width) == ("proven", 32)
 
@@ -770,5 +774,5 @@ def test_scatter_by_the_kept_coordinates_is_the_sum_over_the_rest():
 
     assert _ir.digest(summed.walk) == _ir.digest(scattered.walk)
     (sink,) = summed.sinks
-    assert _ir.is_a(sink, "accum_write") and sink.field_text("contract") == "auto"
+    assert _ir.is_accumulate(sink) and sink.field_text("summation") == "auto"
     assert key_run(summed.sinks, sink, (32, 1024)).form == "proven"

@@ -60,7 +60,7 @@ __all__ = ["Guard", "IndexSet", "Kind", "Output", "PLAIN", "ATOMIC", "DEFAULT_GU
 class SinkPolicy:
     """How a sink commits, plus the accumulate target's companion role.
     ``id`` is the declared vocabulary value; ``compensation`` names the
-    ``accum_out`` slot a ``compensated`` commit writes its correction to."""
+    zeroed ``plane_out`` slot a ``compensated`` commit writes its correction to."""
 
     id: str
     compensation: str | None = None
@@ -86,7 +86,7 @@ def compensated(into: str) -> SinkPolicy:
     """A Neumaier-compensated accumulate whose correction lands in ``into``.
     The total is always ``target + into``, but what's committed depends
     on the kernel's output: a scattered write commits through the
-    target's atomic add, with ``into`` an ``accum_out`` plane the kernel
+    target's atomic add, with ``into`` a zeroed ``plane_out`` plane the kernel
     declares beside it. An own-column write stops being a store and
     becomes an accumulate into the plane's prior value — each launch adds
     one more term on top of whatever it already held. The host must zero

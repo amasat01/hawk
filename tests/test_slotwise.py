@@ -144,7 +144,7 @@ def _shapes(sinks):
     for node in _ir.canonical_nodes(tuple(sinks))[0]:
         stored = node.field_nodes("body_sinks") if _ir.is_a(node, "loop") else [node]
         for sink in stored:
-            if _ir.is_a(sink, "accum_write", "wide_write") and len(sink.operands) > 1:
+            if _ir.is_a(sink, "update") and len(sink.operands) > 1:
                 axes = _ir.field_pairs(sink, "axes")
                 shapes[sink.field_text("name")] = tuple(64 if e is None else e for _label, e in axes) or (64,)
     return shapes

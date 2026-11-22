@@ -113,18 +113,18 @@ def test_a_raw_block_literal_is_written_as_a_record_and_distinct_blocks_are_dist
 
 
 @pytest.mark.parametrize("indexed", [False, True])
-def test_accum_write_builds_a_keyed_accumulate_of_its_name_contract_value_and_optional_lane_index(
+def test_an_add_update_builds_a_keyed_accumulate_of_its_name_summation_value_and_optional_lane_index(
     ctx, indexed
 ):
-    """The node has class ``AccumWrite``, the value (then the lane index) as operands, and the name and contract as text."""
+    """The node has class ``Update``, the value (then the lane index) as operands, and the name and summation as text."""
     value = _ir.leaf(ctx, "vocab_read", "plane_in", "x", F64)
     lane = _ir.leaf(ctx, "vocab_read", "plane_in", "k", I32)
-    node = _ir.accum_write(
-        "e", value, indices=(lane,) if indexed else (), contract="compensated"
+    node = _ir.update(
+        "e", value, indices=(lane,) if indexed else (), summation="compensated"
     )
     operands = (LEAF_F64, ("Leaf", I32, ())) if indexed else (LEAF_F64,)
-    assert shape(node) == ("AccumWrite", F64, operands)
-    assert (node.field_text("name"), node.field_text("contract")) == (
+    assert shape(node) == ("Update", F64, operands)
+    assert (node.field_text("name"), node.field_text("summation")) == (
         "e",
         "compensated",
     )
@@ -198,8 +198,8 @@ def accum_with_reduced_edge(ctx, indexed):
         refs.append(_ir.const(ctx, 0, I32))
         index = ", ('indices', (#1, ))"
     refs.append(_ir.const(ctx, 3, I32))
-    fields = f"(('name', 'a'), ('value', #0){index}, ('contract', 'keyed_auto'), ('reduced', #{len(refs) - 1}))"
-    return ctx.new("AccumWrite", fields, refs)
+    fields = f"(('name', 'a'), ('value', #0){index}, ('op', 'add'), ('summation', 'compensated'), ('reduced', #{len(refs) - 1}))"
+    return ctx.new("Update", fields, refs)
 
 
 @pytest.mark.parametrize("indexed", [False, True])
@@ -211,7 +211,7 @@ def test_unreduced_drops_the_reduced_edge_where_rebuild_keeps_it(ctx, indexed):
     got = _ir.unreduced(accum, operands)
     assert got.field_kind("reduced") == 0
     assert got.operands[0] == other
-    assert (got.field_text("name"), got.field_text("contract")) == ("a", "keyed_auto")
+    assert (got.field_text("name"), got.field_text("summation")) == ("a", "compensated")
     assert _ir.rebuild(accum, list(operands)).field_kind("reduced") != 0
     plain = _ir.make_node("Assign", F64, [other], name="y")
     assert shape(_ir.unreduced(plain, [other])) == shape(_ir.rebuild(plain, [other]))
@@ -284,7 +284,7 @@ def ordered_logs(ctx, width=None):
                 ttype,
                 [value, ordinal, key],
                 name="g",
-                role="accum_out",
+                role="plane_out",
                 kept=(("net", None),),
             )
         )

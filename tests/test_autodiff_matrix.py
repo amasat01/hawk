@@ -307,7 +307,7 @@ class Rig:
             own = set(art.sidecar.get("companions", {})) | set(art.sidecar.get("keyed", {}))
             for role, name in art.arg_spec:           # a compensation plane the caller supplies
                 base = name.removeprefix(prefix).removesuffix("_c")
-                if role == "accum_out" and name not in outs and name not in own and base in shapes:
+                if role == "plane_out" and name in art.sidecar["zeroed_outputs"] and name not in outs and name not in own and base in shapes:
                     outs[name] = np.zeros(shapes[base], dt)
             rt.run(art, **{k: cast(v) for k, v in planes.items()}, **outs, **(case.dext if prefix else case.ext))
             return {k: v.astype(np.float64) for k, v in outs.items()}

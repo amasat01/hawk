@@ -7,7 +7,7 @@ slot, inputs included — not the output-only ``arg_widths`` shipped with
 that module's docstring first).
 
 A v2 consumer previously had ``arg_widths`` for a ``mutable``/``out``/
-``wide_out``/``accum_out`` plane and NOTHING for a ``plane_in``/``plane_in``/
+``plane_out`` plane and NOTHING for a ``plane_in``/``plane_in``/
 ``plane_in``/``lookup``/``terminated``/``wide_in`` one — eagle's OWN
 ``Plan.bind`` docstring says so in as many words ("a v2 sidecar declares
 widths for its OUTPUT planes only... that gap belongs to the producer's
@@ -33,7 +33,7 @@ and that function is reached NOT ONLY through ``hawk.artifact.plan_view``
 (``eagle.registry.load_manifest``), which reads a deployed sidecar's
 ``arg_widths`` key directly. Measured via ``tests/mpi/check_hawk_rank_bed.sh``
 (eagle's OWN rank bed, driven against a real HAWK artifact) turning RED on
-the ``mapreduce`` unit's ``accum_out`` plane::
+the ``mapreduce`` unit's ``zeroed plane_out`` plane::
 
     TypeError: int() argument must be a string, a bytes-like object or a real
     number, not 'NoneType'
@@ -90,7 +90,7 @@ because this file never drives eagle's OTHER loader::
     GATE RED: eagle's rank bed came out RED against this HAWK artifact
     (see this module's docstring for the TypeError). The row
     test_declared_widths_never_sees_a_runtime_length_none reproduces it
-    directly, on the SAME accum_out shape (``energy``'s ``total``), so a
+    directly, on the SAME zeroed plane_out shape (``energy``'s ``total``), so a
     future change cannot reintroduce it without this file noticing on its own.
 """
 
@@ -111,7 +111,7 @@ N = 8
 #: ``hawk/artifact/sidecar.py``'s ``_RUNTIME_LENGTH_ROLES``, restated
 #: independently here (not imported) so this row cannot pass by testing the
 #: implementation against itself.
-_RUNTIME_LENGTH_ROLES = ("lookup", "wide_in", "wide_out", "accum_out")
+_RUNTIME_LENGTH_ROLES = ("lookup", "wide_in", "plane_out")
 _PLANE_ROLES = ("plane_in", "plane_in", "plane_in", "terminated", "mutable", "out",
                 *_RUNTIME_LENGTH_ROLES)
 
@@ -228,7 +228,7 @@ def test_an_integer_per_sample_plane_is_told_apart_from_a_real_one(built):
 
 def test_declared_widths_never_sees_a_runtime_length_none(built):
     """THE REGRESSION, reproduced directly (this module's docstring's second
-    RED). ``energy``'s ``total`` is an ``accum_out`` plane (a sum over samples)
+    RED). ``energy``'s ``total`` is an ``zeroed plane_out`` plane (a sum over samples)
     — the SAME role shape as the ``mapreduce`` unit whose ``eagle.plan._declared_widths`` call turned eagle's OWN MPI rank bed red the first
     time this fix tried to put ``None`` in ``arg_widths``. Both the raw
     sidecar's ``arg_widths`` and ``hawk.artifact.plan_view``'s projection of
@@ -243,7 +243,7 @@ def test_declared_widths_never_sees_a_runtime_length_none(built):
 
     sc = sidecar_of(built["energy"], "energy")
     assert sc["arg_shapes"]["total"] is None, (
-        "this row's premise: 'total' must be the runtime-length accum_out "
+        "this row's premise: 'total' must be the runtime-length zeroed plane_out "
         "plane the regression was measured on"
     )
     assert "total" not in sc["arg_widths"]

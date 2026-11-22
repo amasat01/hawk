@@ -305,13 +305,13 @@ def evaluate(sinks, env: dict, lanes: int = 1, lane: int = 0, shapes: dict | Non
             out[name] = target
             continue
         value = _value(value_node, env, memo_here)
-        if _ir.is_a(sink, "accum_write", "wide_write") and len(sink.operands) > 1:
+        if _ir.is_a(sink, "update") and len(sink.operands) > 1:
             indices = [int(_value(i, env, memo_here)) for i in sink.operands[1:]]
             shape = (shapes or {}).get(name, (lanes,))
             target = np.asarray(out.get(name, np.zeros(shape)), dtype=float)
             where = _address(indices, shape[len(shape) - len(indices):], sink.field_text("edge"))
             # the bound array is (*value shape, *axes): the axes are its last dimensions
-            if where is not None and _ir.is_a(sink, "accum_write"):
+            if where is not None and _ir.is_accumulate(sink):
                 target[(..., *where)] += value
             elif where is not None:
                 target[(..., *where)] = value

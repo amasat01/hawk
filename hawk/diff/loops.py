@@ -132,14 +132,14 @@ def _tape_read(loop: Any, slot: int, index: Any) -> Any:
     return _ir.make_node("TapeRead", ttype, [loop, index], literal=slot, slot=slot)
 
 
-def _accum_write(plane: str, value: Any, indices: Sequence[Any], edge: str, axes: Sequence[Any]) -> Any:
+def _scatter_add(plane: str, value: Any, indices: Sequence[Any], edge: str, axes: Sequence[Any]) -> Any:
     """The scatter-add of ``value`` into the plane ``plane`` at ``indices``, under the edge rule of the read it transposes."""
     return _ir.make_node(
-        "AccumWrite",
+        "Update",
         _ir.type_of(value),
         [value, *indices],
         name=plane,
-        contract="auto",
+        op="add",
         reduced=None,
         edge=edge,
         axes=tuple(axes),
@@ -261,7 +261,7 @@ def _pullback(
             if plane in inputs:
                 scattered.add(plane.field_text("name"))
                 scatters.append(
-                    _accum_write(
+                    _scatter_add(
                         name(plane.field_text("name")), g, indices, node.field_text("edge"),
                         _ir.field_pairs(plane, "axes"),
                     )
@@ -406,7 +406,7 @@ def _dispatch_pullback(
             if plane in inputs:
                 scattered.add(plane.field_text("name"))
                 scatters.append(
-                    _accum_write(
+                    _scatter_add(
                         name(plane.field_text("name")),
                         combined,
                         _taken_indices(node, target, per_branch),

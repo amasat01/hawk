@@ -40,7 +40,7 @@ from hawk import _ir
 
 #: The IR node constructors a raw-IR workaround would have to name.
 _RAW_IR_NAMES = frozenset({"Leaf", "Op", "Const", "At", "Select", "Assign",
-                           "AccumWrite", "WideWrite"})
+                           "Update"})
 
 
 def test_the_quantitys_wires_are_namespaced_and_contiguous():

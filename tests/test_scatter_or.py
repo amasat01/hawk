@@ -142,3 +142,33 @@ def test_many_lanes_into_a_plane_with_two_axes_equal_bitwise_or_at_on_the_host(t
 def test_a_derivative_of_a_bit_mask_with_axes_is_refused_by_name(derive):
     with pytest.raises(HawkError, match=r"sets bits by key.*no derivative"):
         derive(mark_two_axes)
+
+
+def _two_axis_or_inputs():
+    rng = np.random.default_rng(11)
+    i = rng.integers(0, 3, N).astype(np.int32)
+    k = rng.integers(0, 4, N).astype(np.int32)
+    bit = (np.uint32(1) << (np.arange(N) % 32).astype(np.uint32)).astype(np.uint32)
+    return i, k, bit
+
+
+def test_the_device_text_of_a_two_axis_or_commits_through_the_element_helper():
+    from hawk.artifact import emit_source
+
+    assert "hawk_abi::accum_or_at(" in emit_source(mark_two_axes, targets=("cuda",)).sources["cuda"].text
+
+
+@pytest.mark.gpu
+def test_the_device_two_axis_or_equals_bitwise_or_at(tmp_path, cache_dir):
+    """Oracle: ``np.bitwise_or.at`` over the pair of keys."""
+    import cupy as cp
+
+    i, k, bit = _two_axis_or_inputs()
+    bundle = build_bundle([mark_two_axes], tmp_path, mode="float64", targets=("cuda",), cache_dir=cache_dir)
+    mask = cp.zeros((3, 4), np.uint32)
+    _launch(bundle, "mark_two_axes", "cuda", {"i": cp.asarray(i), "k": cp.asarray(k), "bit": cp.asarray(bit),
+                                              "mask": mask}).launch()
+    cp.cuda.Device().synchronize()
+    want = np.zeros((3, 4), np.uint32)
+    np.bitwise_or.at(want, (i, k), bit)
+    assert mask.get().tobytes() == want.tobytes()

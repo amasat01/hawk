@@ -672,7 +672,7 @@ class JumpPlan:
 
 def _runtime_indices(node: Any) -> tuple:
     """The runtime rows or keys ``node`` reads or commits at (one per axis), else none."""
-    if _ir.is_a(node, "accum_write", "wide_write"):
+    if _ir.is_a(node, "update"):
         return tuple(node.operands[1:])
     if _ir.is_a(node, "at"):
         return tuple(node.operands[1:])

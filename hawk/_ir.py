@@ -18,6 +18,7 @@ from __future__ import annotations
 import functools
 from dataclasses import dataclass
 from fractions import Fraction
+from types import MappingProxyType
 from typing import Any, Callable, Iterable, Iterator, Mapping, NamedTuple, Sequence
 
 import _osprey
@@ -30,23 +31,23 @@ _CONTEXT_OF_CONSTANTS = _osprey.Ctx()
 # The constants a one-element answer stands for as a plain string (the library answers every
 # constant as a tuple).
 _STRING_CONSTANTS = (
-    "KEYED_AUTO", "NAMESPACE_SEP", "PARAM_CELL", "RAW_KIND", "CELL_PLANE", "RAW_LANGUAGE",
+    "NAMESPACE_SEP", "PARAM_CELL", "RAW_KIND", "CELL_PLANE", "RAW_LANGUAGE",
     "COMPANION_SUFFIX", "ADJOINT_PREFIX", "REDUCE_KIND", "PRIMITIVE_KIND", "SAMPLE_SUM_COMP_SUFFIX",
 )  # fmt: skip
 _TUPLE_CONSTANTS = (
-    "COMPARE", "LOGICAL", "PREDICATE", "CONTRACTS", "SCATTER_CONTRACTS", "LEAF_ROLES",
+    "COMPARE", "LOGICAL", "PREDICATE", "CONTRACTS", "LEAF_ROLES",
     "INT_PLANE_DTYPES", "GATHER_ROLES", "PER_SAMPLE_ROLES", "ACCESS_CLASSES",
     "LINALG_FACTORISATIONS",
 )  # fmt: skip
 
-COMPARE, LOGICAL, PREDICATE, CONTRACTS, SCATTER_CONTRACTS = (
-    _CONTEXT_OF_CONSTANTS.const_names(name) for name in _TUPLE_CONSTANTS[:5]
+COMPARE, LOGICAL, PREDICATE, CONTRACTS = (
+    _CONTEXT_OF_CONSTANTS.const_names(name) for name in _TUPLE_CONSTANTS[:4]
 )
 (LEAF_ROLES, INT_PLANE_DTYPES, GATHER_ROLES, PER_SAMPLE_ROLES, ACCESS_CLASSES,
  LINALG_FACTORISATIONS) = (
-    _CONTEXT_OF_CONSTANTS.const_names(name) for name in _TUPLE_CONSTANTS[5:]
+    _CONTEXT_OF_CONSTANTS.const_names(name) for name in _TUPLE_CONSTANTS[4:]
 )  # fmt: skip
-(KEYED_AUTO, NAMESPACE_SEP, PARAM_CELL, RAW_KIND, CELL_PLANE, RAW_LANGUAGE, COMPANION_SUFFIX,
+(NAMESPACE_SEP, PARAM_CELL, RAW_KIND, CELL_PLANE, RAW_LANGUAGE, COMPANION_SUFFIX,
  ADJOINT_PREFIX, REDUCE_KIND, PRIMITIVE_KIND, SAMPLE_SUM_COMP_SUFFIX) = (
     _CONTEXT_OF_CONSTANTS.const_names(name)[0] for name in _STRING_CONSTANTS
 )  # fmt: skip
@@ -408,16 +409,63 @@ def loop(
     )  # fmt: skip
 
 
+#: The fields of an ``Update`` that each contract an author names on an accumulate states: the operation, and the summation and
+#: the order where the contract says one. ``auto`` states none, so the lowering is free to choose.
+_CONTRACT_FIELDS = MappingProxyType(
+    {
+        "auto": {"op": "add"},
+        "compensated": {"op": "add", "summation": "compensated"},
+        "ordered": {"op": "add", "order": "lane"},
+        "plain": {"op": "add", "summation": "plain"},
+        "or": {"op": "or"},
+    }
+)
+#: The contracts an author may name on a scatter, in the order the refusals list them.
+SCATTER_CONTRACTS = tuple(_CONTRACT_FIELDS)
+
+
+def contract_fields(contract: str) -> dict:
+    """The ``Update`` fields the accumulate contract ``contract`` states."""
+    return dict(_CONTRACT_FIELDS[contract])
+
+
+def is_store(sink: Any) -> bool:
+    """Whether ``sink`` is an update of the operation ``store``."""
+    return is_a(sink, "update") and sink.field_text("op") == "store"
+
+
+def is_accumulate(sink: Any) -> bool:
+    """Whether ``sink`` is an update that accumulates into its plane (any operation but ``store``)."""
+    return is_a(sink, "update") and sink.field_text("op") != "store"
+
+
+def sets_bits(sink: Any) -> bool:
+    """Whether ``sink`` is an update of the operation ``or``."""
+    return is_a(sink, "update") and sink.field_text("op") == "or"
+
+
+def operation_fields(sink: Any) -> dict:
+    """The operation, summation and order of the update ``sink``, as fields to state on a node that does the same."""
+    return {name: sink.field_text(name) for name in ("op", "summation", "order")}
+
+
 @_as_hawk_error
-def accum_write(
-    name: str, value: Any, *, indices: Sequence[Any] = (), contract: str = "auto", edge: str = "unchecked",
-    axes: Sequence[tuple[str, int | None]] = (),
+def update(
+    name: str, value: Any, *, indices: Sequence[Any] = (), op: str = "add", summation: str = "auto",
+    order: str = "any", edge: str = "unchecked", axes: Sequence[tuple[str, int | None]] = (), reduced: Any = None,
 ) -> Any:
-    """Make the keyed accumulate of ``value`` into the plane ``name`` (at ``indices``, one per axis of ``axes``; none: the lane's cell)."""
+    """Make the update of ``value`` into the plane ``name`` (at ``indices``, one per axis of ``axes``; none: the lane's cell).
+
+    ``reduced`` is the sum over samples this update stores one entry of, which states the flat key of the lane's run."""
     refs = [value, *indices]
     at = f", ('indices', ({''.join(f'#{k + 1}, ' for k in range(len(indices)))}))"
-    fields = f"(('name', {name!r}), ('value', #0){at}, ('contract', {contract!r}), ('edge', {edge!r}), ('axes', {tuple(axes)!r}))"
-    return value.ctx.new("AccumWrite", fields, refs)
+    fields = f"(('name', {name!r}), ('value', #0){at}, ('op', {op!r}), ('summation', {summation!r}), "
+    fields += f"('order', {order!r}), "
+    if reduced is not None:
+        refs.append(reduced)
+        fields += f"('reduced', #{len(refs) - 1}), "
+    fields += f"('edge', {edge!r}), ('axes', {tuple(axes)!r}))"
+    return value.ctx.new("Update", fields, refs)
 
 
 @_as_hawk_error
@@ -481,9 +529,9 @@ def param_cell_names(nodes: Iterable[Any]) -> tuple:
 
 
 @_as_hawk_error
-def compensates(context: Any, contract: str) -> bool:
-    """Whether an accumulate under ``contract`` commits through a companion plane."""
-    return context.compensates(contract)
+def compensates(sink: Any) -> bool:
+    """Whether the update ``sink`` commits through a companion plane: an add under the compensated summation."""
+    return sink.ctx.compensates(sink)
 
 
 @_as_hawk_error
@@ -549,13 +597,14 @@ def unreduced(sink: Any, operands: Sequence[Any]) -> Any:
     Only a keyed accumulate has that edge; any other sink is rebuilt as :func:`rebuild` does.
     """
     context = sink.ctx
-    if sink.cls != "AccumWrite":
+    if not is_accumulate(sink):
         return rebuild(sink, operands)
     refs = list(operands)
     indices = f", ('indices', ({''.join(f'#{k}, ' for k in range(1, len(refs)))}))"
     fields = f"(('name', {sink.field_text('name')!r}), ('value', #0){indices}, "
-    fields += f"('contract', {sink.field_text('contract')!r}), ('edge', {sink.field_text('edge')!r}), ('axes', {field_pairs(sink, 'axes')!r}))"
-    return context.new("AccumWrite", fields, refs)
+    fields += f"('op', {sink.field_text('op')!r}), ('summation', {sink.field_text('summation')!r}), "
+    fields += f"('order', {sink.field_text('order')!r}), ('edge', {sink.field_text('edge')!r}), ('axes', {field_pairs(sink, 'axes')!r}))"
+    return context.new("Update", fields, refs)
 
 
 @_as_hawk_error
@@ -564,9 +613,10 @@ def addressed(sink: Any, indices: Sequence[Any], axes: Sequence[tuple]) -> Any:
     refs = [sink.operands[0], *indices, sink.field_nodes("reduced")[0]]
     named = "".join(f"#{k}, " for k in range(1, len(refs) - 1))
     fields = f"(('name', {sink.field_text('name')!r}), ('value', #0), ('indices', ({named})), "
-    fields += f"('contract', {sink.field_text('contract')!r}), ('reduced', #{len(refs) - 1}), "
+    fields += f"('op', {sink.field_text('op')!r}), ('summation', {sink.field_text('summation')!r}), "
+    fields += f"('order', {sink.field_text('order')!r}), ('reduced', #{len(refs) - 1}), "
     fields += f"('edge', {sink.field_text('edge')!r}), ('axes', {tuple(axes)!r}))"
-    return sink.ctx.new("AccumWrite", fields, refs)
+    return sink.ctx.new("Update", fields, refs)
 
 
 @_as_hawk_error

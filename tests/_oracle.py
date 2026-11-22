@@ -34,7 +34,7 @@ from hawk import runtime
 
 #: The roles eagle ALLOCATES an output plane for and returns, in ``arg_spec``
 #: order (``eagle.plan._OUTPUT_ROLES``).
-OUTPUT_ROLES = ("out", "mutable", "wide_out", "accum_out")
+OUTPUT_ROLES = ("out", "mutable", "plane_out")
 
 #: The roles the caller supplies an input plane for (``eagle.plan._INPUT_ROLES``).
 INPUT_ROLES = ("plane_in", "plane_in", "plane_in", "terminated", "lookup", "wide_in")
@@ -56,8 +56,7 @@ def planes(kernel, n: int, kw: dict) -> dict:
     dtype = np.dtype(_NP_DTYPE[kernel.scalar_type])
     # `arg_widths` covers input roles too (plane_in/plane_in/
     # plane_in/terminated, alongside the output roles this already had), but
-    # it stays INT-ONLY: a runtime-length role (lookup/wide_in/wide_out/
-    # accum_out) is simply ABSENT here, never `None` (hawk/artifact/
+    # it stays INT-ONLY: a runtime-length role (lookup/wide_in/plane_out) is simply ABSENT here, never `None` (hawk/artifact/
     # sidecar.py documents why an `int(v)` cast over this
     # field may never see one) -- `widths.get(name, 1)` below already handles
     # an undeclared role by falling back to width 1.

@@ -29,7 +29,7 @@ constraint. ``eagle.plan._declared_widths`` reads a plugin's
 ``arg_widths`` through an unconditional ``int(v)`` on every value,
 including straight off a deployed sidecar with no HAWK projection in
 between; a ``None`` for a runtime-length role (``lookup``, ``wide_in``,
-``wide_out``, ``accum_out``) crashes that path with a ``TypeError``. So
+``plane_out``) crashes that path with a ``TypeError``. So
 ``arg_widths`` widens to cover every statically-width-known role, but a
 runtime-length role stays OMITTED — an absent key, not a ``None`` value,
 which every existing reader already treats as "no declared width".
@@ -200,10 +200,10 @@ _SAMPLE_SHAPED_ROLES = ("plane_in", "terminated", "mutable", "out")
 #: in the walk knows. Omitted from ``arg_widths`` (never a guessed number,
 #: never ``None`` either — see the module docstring); declared ``None`` in
 #: ``arg_shapes`` instead.
-_RUNTIME_LENGTH_ROLES = ("lookup", "wide_in", "wide_out", "accum_out")
+_RUNTIME_LENGTH_ROLES = ("lookup", "wide_in", "plane_out")
 
 #: The roles a body writes.
-_SINK_ROLES = ("mutable", "out", "wide_out", "accum_out")
+_SINK_ROLES = ("mutable", "out", "plane_out")
 
 #: The wire dtype an ``i32``/``i64`` or ``bool`` leaf carries, fixed
 #: regardless of the compiled scalar mode; ``None`` for ``f64``/``f32``
@@ -416,8 +416,8 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str, steps: int | st
         "arg_dtypes": _arg_dtypes(walk, scalar_type),
         "slot_shapes": _slot_shapes(walk),
         "wide_inputs": _names(walk, "wide_in"),
-        "wide_outputs": _names(walk, "wide_out"),
-        "accum_outputs": _names(walk, "accum_out"),
+        "plane_outputs": _names(walk, "plane_out"),
+        "zeroed_outputs": [name for name in _names(walk, "plane_out") if name in walk.zeroed],
         "dispatch": _dispatches(walk.dispatches),
         "planes_written": list(walk.planes_written),
         **({"plane_names": names} if (names := _joined_names(walk)) else {}),
@@ -491,7 +491,7 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str, steps: int | st
 #: above works with. A name missing here is a KeyError on the first record that carries it.
 _RECORD_DTYPES = MappingProxyType({"Real": "f64", "Int64": "i64", "Int32": "int32", "Uint32": "uint32", "Bool": "bool",
                                    "BandPartial": "band_partial"})
-_SLOT_PRIOR, _SLOT_PARAM_PLANE, _SLOT_GATHER = 1, 2, 4
+_SLOT_PRIOR, _SLOT_PARAM_PLANE, _SLOT_GATHER, _SLOT_ZEROED = 1, 2, 4, 16
 _FINISH_ENTRY_COUNTS = 1
 
 
@@ -536,7 +536,8 @@ def _unit_walk(unit: dict, planes: dict, kernel, family: list) -> SimpleNamespac
         cells={c["name"]: {"op": _snake(c["op"]), "columns": c["columns"]} for c in body["cells"]},
         companions={names[c["slot"]]: names[c["target_slot"]] for c in body["companions"]},
         gradient_of={g: x for g, x in kernel.gradients.items() if g in names},
-        adjoint_like={g: x for g, x in kernel.gradients.items() if ("accum_out", g) in arg_spec and x in reads},
+        adjoint_like={g: x for g, x in kernel.gradients.items() if ("plane_out", g) in arg_spec and x in reads},
+        zeroed=frozenset(s["name"] for s in slots if s["flags"] & _SLOT_ZEROED),
         cotangent_of=cotangent_of,
         next_of=next_of,
         tangent_of={t: x for t, x in kernel.tangents.items() if t in names},

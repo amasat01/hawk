@@ -159,11 +159,11 @@ def test_a_compensation_plane_the_caller_binds_is_refused_by_the_library(built):
         rt.run(kernel, v=v, total=np.zeros(rows), total_comp=np.zeros(rows), n_samples=N)
 
 
-def test_a_scattered_accum_out_plane_is_not_shape_checked(built):
+def test_a_scattered_zeroed_plane_is_not_shape_checked(built):
     """A by-key store target (``scatter``'s ``acc``) is NOT forced to
     ``n_samples``. ``scatter``'s fixture happens to use ``N`` lanes too, so
     this row sizes ``acc`` to HALF that on purpose, to prove the validator
-    does not assume an own-column length for every ``accum_out`` plane."""
+    does not assume an own-column length for every ``zeroed plane_out`` plane."""
     kernel = _scatter(built)
     x = np.arange(N, dtype=float) + 1.0
     lane = (np.arange(N) % (N // 2)).astype(np.int32)

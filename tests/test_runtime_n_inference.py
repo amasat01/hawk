@@ -2,23 +2,23 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """`hawk.runtime`'s n_samples inference votes ONLY per-sample roles, never a
-`lookup`/`wide_in`/`wide_out`/`accum_out` plane's own runtime length.
+`lookup`/`wide_in`/`plane_out` plane's own runtime length.
 
 **The finding.** `_n_from` used to return the trailing extent of the FIRST
 plane present in `arg_spec` order, full stop -- correct for every fixture
 whose `arg_spec` leads with a `mutable`/`out` sink (the canonical role
 order), silently wrong for a kernel whose FIRST bound plane is a
-`lookup`/`wide_in`/`wide_out`/`accum_out` plane, because those four roles'
+`lookup`/`wide_in`/`plane_out` plane, because those four roles'
 own length is a runtime quantity UNRELATED to the sample count. This was hit
 for real by a spline fold's reverse pass -- whose `arg_spec` leads with a
-SCATTERED `accum_out` plane -- reading that plane's length as n_samples,
+SCATTERED `zeroed plane_out` plane -- reading that plane's length as n_samples,
 over-running the correctly-sized cotangent plane the launch then read, and
 returning `6.94e-310` (a pointer's bytes, read back as a double) in the first
 two output slots, with no error anywhere.
 
 **The exact real shape, reproduced here without a spline layer.** `_deployable.gather`'s own VJP (`hawk.diff.vjp(D.gather, wrt=("table"))`) is the SAME
 transpose-of-a-gather-is-a-scatter shape: its `arg_spec` is
-`[(accum_out, "bar_table"), (plane_in, "bar_y"), (plane_in, "where")]` --
+`[(plane_out, "bar_table"), (plane_in, "bar_y"), (plane_in, "where")]` --
 `bar_table` (the scatter target, sized to the ORIGINAL table's row count) is
 first, and its length has nothing to do with n_samples. This module builds
 that exact kernel once (the `gather_vjp_unit` fixture) and the real
@@ -41,7 +41,7 @@ of merely citing the original pointer-bytes number.
 **Why the lookup-led and disagreement rows call `hawk.runtime._n_from`
 directly, with a HAND-BUILT `arg_spec`.** The canonical role order
 (`ROLE_ORDER` in `raptor/ir/nodes.py`) puts every sink
-(`mutable`/`out`/`wide_out`/`accum_out`) BEFORE `lookup` -- no real
+(`mutable`/`out`/`plane_out`) BEFORE `lookup` -- no real
 single-sink kernel's OWN `arg_spec` can ever put a `lookup` slot first, so
 proving the role-based filter is POSITION-independent (not merely "the
 second-ranked slot, which happens never to be a table in this corpus") needs
@@ -123,15 +123,15 @@ def test_a_lookup_led_arg_spec_infers_from_the_per_sample_plane_not_the_table():
 
 
 def test_an_accum_led_arg_spec_infers_from_the_per_sample_plane_not_the_scatter_target():
-    """`accum_out` first -- the shape a real kernel CAN produce ( puts
-    every sink first, and a kernel whose only sink is `accum_out` has nothing
+    """`zeroed plane_out` first -- the shape a real kernel CAN produce ( puts
+    every sink first, and a kernel whose only sink is `zeroed plane_out` has nothing
     ranked before it -- exactly `gather`'s own VJP). The scatter target is 5
     slots wide; the per-sample planes are 8 samples: the right answer is 8.
 
     Without that, the scatter target's own length (5) would be used instead
     of the sample count -- `test_an_accum_led_kernel_is_silently_wrong_
     before_the_fix` below is this exact shape's real-kernel consequence."""
-    arg_spec = (("accum_out", "bar_table"), ("plane_in", "bar_y"),
+    arg_spec = (("plane_out", "bar_table"), ("plane_in", "bar_y"),
                ("plane_in", "where"))
     arrays = {"bar_table": _mem(range(5)), "bar_y": _mem(range(8)),
              "where": _mem(range(8))}
@@ -149,10 +149,10 @@ def test_disagreeing_per_sample_planes_are_refused_naming_both():
 
 
 def test_a_kernel_with_no_per_sample_plane_requires_explicit_n_samples():
-    """Every declared role is `accum_out`/`lookup`/`uniform` -- nothing
+    """Every declared role is `zeroed plane_out`/`lookup`/`uniform` -- nothing
     `_PER_SAMPLE_ROLES` allows a vote from -- so this must refuse rather than
     guess, naming `n_samples` as the way out."""
-    arg_spec = (("accum_out", "bar_table"), ("lookup", "table"), ("uniform", "k"))
+    arg_spec = (("plane_out", "bar_table"), ("lookup", "table"), ("uniform", "k"))
     arrays = {"bar_table": _mem(range(5)), "table": _mem(range(20)), "k": 2.0}
     with pytest.raises(HawkError, match="n_samples"):
         R._n_from(arg_spec, arrays)

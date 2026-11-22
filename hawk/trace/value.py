@@ -1042,10 +1042,10 @@ def _is_stored(value: Any) -> bool:
 
 def by_key(ref: Any, indices: list, value: Any, accumulate: bool, contract: str = "auto") -> None:
     """One store by key into ``ref`` at ``indices``, one per axis of the sink: an accumulate
-    (``AccumWrite``) or a store (``WideWrite``). A vector or matrix payload into
+    (an ``Update`` that adds) or a store (an ``Update`` that stores). A vector or matrix payload into
     a sink declared with named axes is summed per key (``ReduceSamples``), payload first."""
     where = f"hawk.scatter({ref.name})[key]"
-    if any(not _ir.is_a(k, "accum_write", "wide_write") for k in ref.sinks):
+    if any(not _ir.is_a(k, "update") for k in ref.sinks):
         raise HawkError(
             f"{ref.name!r} is written per lane (locked) and by key ({where}): one "
             "plane has one extent")
@@ -1069,16 +1069,21 @@ def by_key(ref: Any, indices: list, value: Any, accumulate: bool, contract: str 
             f"{ref.name!r} is stored by key twice (or both accumulated and stored): "
             "one plane takes one by-key statement, or several `+=`")
     if not accumulate:
-        ref.sinks = [_ir.make_node("WideWrite", ref.ttype, [ref._typed(value), *indices], name=ref.name,
-                                   edge="unchecked", axes=ref.axes)]
+        ref.sinks = [_ir.make_node("Update", ref.ttype, [ref._typed(value), *indices], name=ref.name,
+                                   op="store", edge="unchecked", axes=ref.axes)]
     elif ref.ttype.shape:
         ref.sinks.extend(_payload_sums(ref, indices, value, contract))
     else:
-        contract = _ir.KEYED_AUTO if contract == "auto" else contract
-        ref.sinks.append(_ir.make_node("AccumWrite", ref.ttype, [ref._typed(value), *indices],
-                                       name=ref.name, contract=contract, reduced=None, edge="unchecked",
+        ref.sinks.append(_ir.make_node("Update", ref.ttype, [ref._typed(value), *indices],
+                                       name=ref.name, **_keyed_fields(contract), reduced=None, edge="unchecked",
                                        axes=ref.axes))
     ref.by_key_kind = kind
+
+
+def _keyed_fields(contract: str) -> dict:
+    """The fields of the keyed accumulate an author's ``contract`` states: a keyed sum the author left to the library is
+    compensated."""
+    return _ir.contract_fields("compensated" if contract == "auto" else contract)
 
 
 def _payload_axes(ref: Any) -> tuple:
@@ -1098,15 +1103,14 @@ def _payload_sums(ref: Any, indices: list, value: Any, contract: str) -> list:
     """The sum of a vector or matrix payload into a sink with axes: one accumulate per payload entry, at the entry's
     coordinates followed by the key's, into the plane whose axes are the payload's then the sink's."""
     node = ref._typed(value)
-    contract = _ir.KEYED_AUTO if contract == "auto" else contract
     scalar = _ir.TensorType((), ref.ttype.dtype)
     axes = _payload_axes(ref) + ref.axes
     sums = []
     for entry in itertools.product(*(range(extent) for extent in ref.ttype.shape)):
         part = _ir.make("component", (node,), literal=entry if len(entry) > 1 else entry[0])
         coordinates = [_ir.const(part.ctx, k, _ir.type_of(indices[0])) for k in entry]
-        sums.append(_ir.make_node("AccumWrite", scalar, [part, *coordinates, *indices], name=ref.name,
-                                  contract=contract, reduced=None, edge="unchecked", axes=axes))
+        sums.append(_ir.make_node("Update", scalar, [part, *coordinates, *indices], name=ref.name,
+                                  **_keyed_fields(contract), reduced=None, edge="unchecked", axes=axes))
     return sums
 
 
@@ -1230,7 +1234,7 @@ class MutableRef(_SinkRef):
 
         if _is_stored(value):
             return
-        if any(_ir.is_a(k, "accum_write", "wide_write") for k in self.sinks):
+        if any(_ir.is_a(k, "update") for k in self.sinks):
             raise HawkError(
                 f"{self.name!r} is written per lane (locked) and by key "
                 f"(hawk.scatter({self.name})[key]): one plane has one extent")
@@ -1245,12 +1249,23 @@ class MutableRef(_SinkRef):
         else:
             self.sinks = [_ir.make_node("Assign", self.ttype, [node], name=self.name, axes=tuple(self.axes))]
 
-    def _addressed(self, sink: Any, coordinates: tuple) -> Any:
-        """The accumulate ``sink`` of a sum over some lane axes at the lane's coordinate on each kept axis, as the scatter
-        ``hawk.scatter(plane)[coordinates]`` states it; a payload entry keeps its flat key."""
-        if not _ir.is_a(sink, "accum_write") or self.ttype.shape:
-            return sink
-        return _ir.addressed(sink, coordinates, self.axes)
+    def _addressed(self, sinks: list, coordinates: tuple, reduction: Any) -> list:
+        """The accumulates ``sinks`` of a sum over some lane axes at the lane's coordinate on each kept axis, as the scatter
+        ``hawk.scatter(plane)[coordinates]`` states it. A vector or matrix payload keeps one sink per entry, addressed at the
+        entry's own coordinates first: the plane's axes are the payload's, then the kept ones. Each entry names the
+        ``reduction`` it stores, as a scalar sum does, so the library reads one flat key for the lane's run."""
+        if not self.ttype.shape:
+            return [_ir.addressed(sink, coordinates, self.axes) if _ir.is_accumulate(sink) else sink for sink in sinks]
+        entries = itertools.product(*(range(extent) for extent in self.ttype.shape))
+        axes = _payload_axes(self) + tuple(self.axes)
+        key_type = _ir.type_of(coordinates[0])
+        return [
+            _ir.update(
+                self.name, sink.operands[0], axes=axes, reduced=reduction, **_ir.operation_fields(sink),
+                indices=[*(_ir.const(sink.ctx, k, key_type) for k in entry), *coordinates],
+            )
+            for sink, entry in zip(sinks, entries)
+        ]
 
     def _reduced(self, value: Any) -> None:
         """``out = hawk.sum(x, over=...)``: ``out`` declares the kept axes."""
@@ -1279,13 +1294,13 @@ class MutableRef(_SinkRef):
                 key_type = _ir.type_of(node.field_nodes("key")[0])
                 node = _ir.recount(node, _ir.const(node.ctx, extent, key_type))
         self.sinks = ([_block_write(self, node)] if _ir.is_a(node, "block_sum")
-                      else [self._addressed(sink, value.coordinates) for sink in _ir.cells_stored(node, self.name)])
+                      else self._addressed(_ir.cells_stored(node, self.name), value.coordinates, node))
         self.by_key_kind = "accum"
 
 
 class WideOutRef(_SinkRef):
     """A ``WideOut[...]`` parameter: ``buf = v`` or
-    ``hawk.scatter(buf)[k] = v`` (the ``wide_write``)."""
+    ``hawk.scatter(buf)[k] = v`` (an ``Update`` that stores)."""
 
     __slots__ = ()
 
@@ -1301,4 +1316,4 @@ class WideOutRef(_SinkRef):
         """Commit ``value`` to the own column."""
         if _is_stored(value):
             return
-        self.sinks = [_ir.make_node("WideWrite", self.ttype, [self._typed(value)], name=self.name)]
+        self.sinks = [_ir.make_node("Update", self.ttype, [self._typed(value)], name=self.name, op="store")]

@@ -27,13 +27,13 @@ _PER_SAMPLE_ROLES = _ir.PER_SAMPLE_ROLES
 
 #: Roles that NEVER vote on n_samples, whatever their trailing extent
 #: happens to be. A ``lookup``/``wide_in`` plane's length is cross-sample
-#: by construction. ``wide_out``/``accum_out`` are subtler: when written
+#: by construction. ``plane_out`` is subtler: when written
 #: at their own column their plane genuinely IS n_samples long, but that
 #: fact lives in the walk's per-sink ``.index``, invisible to a deployed
-#: artifact's flat sidecar — so both roles are excluded categorically.
+#: artifact's flat sidecar — so the role is excluded categorically.
 #: Refusing to vote fails loudly; voting on an unrelated buffer's length
 #: fails silently (see :func:`_n_from`'s docstring).
-_NEVER_VOTES = ("lookup", "wide_in", "wide_out", "accum_out")
+_NEVER_VOTES = ("lookup", "wide_in", "plane_out")
 
 assert set(_PER_SAMPLE_ROLES) | set(_NEVER_VOTES) | {"uniform", "nsamples"}\
     == set(_ir.ROLE_ORDER), (
@@ -50,7 +50,7 @@ def _n_from(arg_spec, arrays: dict, arg_shapes: dict | None = None,
     An earlier version read the trailing extent of the FIRST plane in
     ``arg_spec`` order, full stop — silently wrong whenever that plane
     wasn't per-sample. A spline fold's reverse pass leads its ``arg_spec``
-    with a scattered ``accum_out`` plane whose own length has nothing to
+    with a scattered ``plane_out`` plane whose own length has nothing to
     do with the sample count; reading its length as ``n_samples`` over-ran
     the correctly-sized cotangent plane and returned garbage with no error
     — the "computes, does not crash" failure mode this module warns about.
@@ -90,7 +90,7 @@ def _n_from(arg_spec, arrays: dict, arg_shapes: dict | None = None,
         raise HawkError(
             "hawk.runtime.run: no bound PER-SAMPLE plane to read the sample "
             f"count from (arg_spec carries none of {_PER_SAMPLE_ROLES} bound "
-            "in arrays) — a lookup/wide_in/wide_out/accum_out plane's own "
+            "in arrays) — a lookup/wide_in/plane_out plane's own "
             "length is a runtime quantity unrelated to n_samples and never "
             "votes; pass n_samples= explicitly"
         )

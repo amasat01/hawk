@@ -49,7 +49,7 @@ def _gather_primal():
 def test_the_reverse_of_a_gather_is_a_scatter_add_classified_cross_sample_write():
     _, sinks = _gather_primal()
     derived = vjp(sinks)
-    scatter = [s for s in derived if _ir.is_a(s, "accum_write")]
+    scatter = [s for s in derived if _ir.is_accumulate(s)]
     assert len(scatter) == 1 and scatter[0].field_text("name") == "bar_tab"
     assert len(scatter[0].operands) == 2, "the scatter targets the gathered lane"
     assert _ir.access_class(_ir.canonical(derived)) == "cross_sample_write", (
@@ -91,7 +91,7 @@ def test_the_gather_jvp_reads_a_tangent_lookup_plane():
 def test_the_reverse_of_a_scattered_accumulate_is_a_gather():
     idx = _leaf("vocab_read", "plane_in", "idx", I32)
     x = _leaf("vocab_read", "plane_in", "x", F64)
-    sinks = (_ir.accum_write("energy", _ir.make("mul", (x, x)), indices=(idx,)),)
+    sinks = (_ir.update("energy", _ir.make("mul", (x, x)), indices=(idx,)),)
     derived = vjp(sinks)
     walk = _ir.canonical(derived)
     assert ("lookup", "bar_energy") in _ir.slot_of(walk), (
@@ -105,7 +105,7 @@ def test_the_reverse_of_a_scattered_accumulate_is_a_gather():
 
 def test_the_seed_of_an_own_column_accumulate_is_a_plain_read():
     x = _leaf("vocab_read", "plane_in", "x", F64)
-    sinks = (_ir.accum_write("energy", _ir.make("mul", (x, _ir.const(CTX, 3.0, F64)))),)
+    sinks = (_ir.update("energy", _ir.make("mul", (x, _ir.const(CTX, 3.0, F64)))),)
     walk = _ir.canonical(vjp(sinks))
     assert ("plane_in", "bar_energy") in _ir.slot_of(walk)
     assert _ir.access_class(walk) == "sample_local"

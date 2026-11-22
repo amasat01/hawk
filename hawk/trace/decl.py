@@ -582,7 +582,7 @@ def resolve(param: str, annotation: object) -> Plane | _ir.Quantity:
 
 _FORM_ROLE = {"uniform": "uniform", "table": "lookup", "mutable": "mutable",
               "terminated": "terminated", "wide": "wide_in",
-              "wide_out": "wide_out"}
+              "wide_out": "plane_out"}
 
 
 def role_of(plane: Plane) -> str:

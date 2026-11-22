@@ -134,18 +134,18 @@ def test_a_read_equals_numpy_indexing_under_each_edge_rule(axes, edge):
         assert got == _expected(table, where, edge), (where, edge)
 
 
-def _store(kind, edge=None):
+def _store(op, edge=None):
     value = _ir.leaf(CTX, "vocab_read", "plane_in", "v", F64)
     i, k = _index_leaves(2)
-    fields = {"name": "y", "axes": SINK_AXES, **({"contract": "auto", "reduced": None} if kind == "AccumWrite" else {})}
+    fields = {"name": "y", "axes": SINK_AXES, "op": op, **({"reduced": None} if op == "add" else {})}
     if edge is not None:
         fields["edge"] = edge
-    return (_ir.make_node(kind, F64, [value, i, k], **fields),)
+    return (_ir.make_node("Update", F64, [value, i, k], **fields),)
 
 
 @pytest.mark.parametrize("edge", [None, "zero"], ids=["unchecked_by_default", "zero"])
 def test_an_accumulate_at_two_indices_equals_add_at(edge):
-    shape, sinks = (3, 4), _store("AccumWrite", edge)
+    shape, sinks = (3, 4), _store("add", edge)
     got, expected = np.zeros(shape), np.zeros(shape)
     for _ in range(60):
         where, value = _draw(shape, edge or "unchecked"), RNG.normal()
@@ -156,7 +156,7 @@ def test_an_accumulate_at_two_indices_equals_add_at(edge):
 
 
 def test_a_store_at_two_indices_equals_assignment():
-    shape, sinks = (3, 4), _store("WideWrite")
+    shape, sinks = (3, 4), _store("store")
     got, expected = np.zeros(shape), np.zeros(shape)
     for _ in range(60):
         where, value = _draw(shape, "unchecked"), RNG.normal()
@@ -168,7 +168,7 @@ def test_a_store_at_two_indices_equals_assignment():
 
 def test_a_traced_keyed_store_is_an_accumulate_with_one_index_per_axis():
     stores = [n for n in _elements(_store_two_axes)
-              if _ir.is_a(n, "accum_write") and n.field_text("name") == "y"]
+              if _ir.is_accumulate(n) and n.field_text("name") == "y"]
     assert len(stores) == 1 and len(stores[0].operands) == 3
     assert stores[0].field_text("edge") == "unchecked"
 
@@ -237,14 +237,14 @@ def _vector_sum(i: Index, k: Index, v: Vector[2], y: Mutable[Vector[2], "bin":3,
 def test_a_store_with_a_wrong_index_count_is_refused_naming_the_sink_and_the_axes():
     value, (i, k) = _ir.leaf(CTX, "vocab_read", "plane_in", "v", F64), _index_leaves(2)
     with pytest.raises(HawkError, match=r'sink "y" has 2 axes .*"bin".*"slot".*got 1'):
-        _ir.make_node("AccumWrite", F64, [value, i], name="y", contract="auto", reduced=None, axes=SINK_AXES)
+        _ir.make_node("Update", F64, [value, i], name="y", op="add", reduced=None, axes=SINK_AXES)
     real = _ir.leaf(CTX, "vocab_read", "plane_in", "x", F64)
     with pytest.raises(HawkError, match=r'sink "y" axis "slot": the index must be a rank-0 integer'):
-        _ir.make_node("WideWrite", F64, [value, i, real], name="y", axes=SINK_AXES)
+        _ir.make_node("Update", F64, [value, i, real], name="y", op="store", axes=SINK_AXES)
 
 
 def test_the_reverse_of_a_two_index_store_reads_the_adjoint_by_the_real_axes():
-    adjoint = [n for n in vjp(_store("AccumWrite")) for n in _ir.canonical_nodes((n,))[0] if _ir.is_a(n, "at")]
+    adjoint = [n for n in vjp(_store("add")) for n in _ir.canonical_nodes((n,))[0] if _ir.is_a(n, "at")]
     assert len(adjoint) == 1
     assert _ir.field_pairs(adjoint[0].operands[0], "axes") == SINK_AXES
 
@@ -252,7 +252,7 @@ def test_the_reverse_of_a_two_index_store_reads_the_adjoint_by_the_real_axes():
 def test_a_keyed_vector_sum_into_a_two_axis_sink_equals_add_at():
     shape = (2, 3, 4)
     sinks = _vector_sum.sinks
-    stores = [n for n in _elements(_vector_sum) if _ir.is_a(n, "accum_write") and n.field_text("name") == "y"]
+    stores = [n for n in _elements(_vector_sum) if _ir.is_accumulate(n) and n.field_text("name") == "y"]
     assert len(stores) == 2 and all(len(s.operands) == 4 for s in stores)
     assert _ir.field_pairs(stores[0], "axes") == (("component", 2), ("bin", 3), ("slot", 4))
     got, expected = np.zeros(shape), np.zeros(shape)
@@ -416,3 +416,31 @@ def test_the_forward_derivative_of_a_flat_lookup_vector_read_equals_numpy():
     for where in (-2, 0, 4, 8, 11):
         got = evaluate(jvp(sinks), {"p": table, "i0": where, "dot_p": tangent})["dot_y"]
         np.testing.assert_array_equal(got, _flat_expected(tangent, where, "clamp"))
+
+
+def test_the_device_text_of_a_zero_edge_vector_read_names_the_item_view_and_the_zero_item():
+    from hawk.artifact import emit_source
+
+    text = emit_source(hawk.Kernel("read_zero", _vector_read("zero")), targets=("cuda",)).sources["cuda"].text
+    assert "hawk_abi::view_item<" in text and "aether::constant<aether::extents<" in text
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("edge", EDGES)
+def test_a_vector_read_from_a_plane_with_two_axes_equals_numpy_on_the_device(tmp_path, cache_dir, edge):
+    """Oracle: ``_vector_expected``, the NumPy indexing under the edge rule (zeros outside under ``zero``)."""
+    import cupy as cp
+    from conftest import _launch
+
+    from hawk.artifact import build_bundle
+
+    lanes = 40
+    where = np.array([_draw(FIELD.shape[1:], edge) for _ in range(lanes)], dtype=np.int32)
+    bundle = build_bundle([hawk.Kernel(f"read_{edge}", _vector_read(edge))], tmp_path, targets=("cuda",),
+                          cache_dir=cache_dir)
+    out = cp.zeros((3, lanes))
+    planes = {"p": cp.asarray(FIELD), "i0": cp.asarray(where[:, 0].copy()), "i1": cp.asarray(where[:, 1].copy()), "y": out}
+    _launch(bundle, f"read_{edge}", "cuda", planes).launch()
+    cp.cuda.Device().synchronize()
+    for lane in range(lanes):
+        np.testing.assert_array_equal(out.get()[:, lane], _vector_expected(FIELD, list(where[lane]), edge))

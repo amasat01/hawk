@@ -720,7 +720,7 @@ def _zero_accumulate(name: str, like: Any) -> Any:
     """An accumulate of a zero into the plane ``name``, at the key and of the type of the sink ``like``."""
     ttype = _ir.type_of(like)
     zero = _ir.const(like.ctx, 0.0, _ir.TensorType((), ttype.dtype))
-    return _ir.make_node("AccumWrite", ttype, [zero, *like.operands[1:]], name=name, contract="auto",
+    return _ir.make_node("Update", ttype, [zero, *like.operands[1:]], name=name, op="add",
                           reduced=None, edge=like.field_text("edge"), axes=_ir.field_pairs(like, "axes"))
 
 
@@ -751,10 +751,10 @@ def _contract_companions(name: str, planes: dict[str, Any], sinks: tuple[Any, ..
     lands there; the target writes it, not this sink). Declared like its plane."""
     out: dict = {}
     for s in sinks:
-        if _ir.is_a(s, "accum_write") and _ir.compensates(s.ctx, s.field_text("contract")):
+        if _ir.compensates(s):
             comp = s.field_text("name") + _ir.COMPANION_SUFFIX
             if comp in planes and comp not in out and not any(
-                    _ir.is_a(c, "accum_write") and c.field_text("name") == comp for c in sinks):
+                    _ir.is_accumulate(c) and c.field_text("name") == comp for c in sinks):
                 raise HawkError(
                     f"kernel {name!r}: {s.field_text('name')!r} is added under contract='compensated', "
                     f"whose correction lands in {comp!r}, which names a parameter; "

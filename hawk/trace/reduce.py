@@ -425,8 +425,8 @@ def _key_indices(ref: Any, key: Any, where: str) -> list:
 def scatter_store(refs: dict, name: str, key: Any, value: Any, op: str, current: Any,
                   contract: str = "auto") -> Any:
     """``hawk.scatter(name, contract=...)[key] (op)= value``, as the ast pass
-    reaches it: ``+=`` accumulates (``accum_write``), ``=`` stores
-    (``wide_write``)."""
+    reaches it: ``+=`` accumulates (an ``Update`` that adds), ``=`` stores
+    (an ``Update`` that stores)."""
     from .value import MutableRef, _SinkRef, by_key
 
     where = f"hawk.scatter({name})[key] {op} v"

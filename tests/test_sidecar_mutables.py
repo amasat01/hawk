@@ -53,12 +53,14 @@ def test_the_stated_mirror_of_every_slot_is_what_eagles_classify_arg_resolves(bu
     """Each slot's ``arg_mirrors`` entry equals the shape eagle's argument class gives that role; a writable slot is
     classified by the sidecar's vector and matrix declarations, as eagle does."""
     from eagle.roles import classify_arg
+    from eagle.sidecar import internal_roles
 
     sidecar = sidecar_of(built[name], kernel)
     mutables = {m["name"]: m["dtype"] for m in sidecar["mutables"]}
     vectors = frozenset(n for n, d in mutables.items() if d == "vector")
     matrices = frozenset(n for n, d in mutables.items() if d == "matrix")
-    for role, slot in sidecar["arg_spec"]:
+    # eagle classifies the roles it names itself: the sidecar's one read role is read by the package's one rule first
+    for role, slot in internal_roles(sidecar, name=name)["arg_spec"]:
         tag = classify_arg(role, slot, vec_mutables=vectors, mat_mutables=matrices)
         assert sidecar["arg_mirrors"][slot] == _SHAPE_OF_TAG[tag], (role, slot, tag)
 
@@ -81,18 +83,20 @@ def test_the_declaration_is_what_makes_the_box_forty_bytes(built):
     import ctypes
 
     from eagle.plan import _pack_args
+    from eagle.sidecar import internal_roles
 
     from hawk import _contracts
 
     sc = sidecar_of(built["vec3"], "vec3_scale")
     view = plan_view(sc)
+    arg_spec = internal_roles(view, name="vec3_scale")["arg_spec"]
     arrays = {"y": np.zeros((3, 8)), "x": np.ones((3, 8))}
-    boxes, _addrs = _pack_args(view["arg_spec"], arrays, {"a": 1.0}, 8, 1,
+    boxes, _addrs = _pack_args(arg_spec, arrays, {"a": 1.0}, 8, 1,
                                vec_mutables=view["vec_mutables"],
                                mat_mutables=view["mat_mutables"], dtype=np.float64)
     assert ctypes.sizeof(boxes[0]) == _contracts.GREF_MIRROR_SIZE == 40
 
-    undeclared, _ = _pack_args(view["arg_spec"], arrays, {"a": 1.0}, 8, 1,
+    undeclared, _ = _pack_args(arg_spec, arrays, {"a": 1.0}, 8, 1,
                                dtype=np.float64)
     assert ctypes.sizeof(undeclared[0]) == _contracts.SCALAR_HANDLE_SIZE == 32
 

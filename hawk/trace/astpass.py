@@ -1043,7 +1043,7 @@ def _rewrite_mutable_stores(stmts: list[ast.stmt], sinks: frozenset[str],
                         written.append(t.id)
                     node.targets = [ast.copy_location(
                         ast.Name(id=_mutable_name(t.id), ctx=ast.Store()), t)]
-                return node          # a mutable/wide_out/ordinary local: untouched
+                return node          # a mutable/WideOut/ordinary local: untouched
                                      # here, bulk-renamed below if it is own-column
             if not isinstance(t, ast.Subscript) or not isinstance(t.value, ast.Name):
                 return node

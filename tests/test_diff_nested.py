@@ -173,7 +173,7 @@ def _run(built, kernel, target, values: dict, dtype) -> dict:
     for role, name in kernel.arg_spec:
         if role == "mutable":
             outs[name] = bound[name] = xp.zeros(_shape(widths, name), dtype=dtype)
-        elif role == "accum_out":
+        elif role == "plane_out" and name in sidecar["zeroed_outputs"]:
             if name in summed:       # the library folds the rows into the one cell and makes the compensation plane
                 outs[name] = bound[name] = xp.full(1, np.nan, dtype=dtype)
         elif role == "terminated":

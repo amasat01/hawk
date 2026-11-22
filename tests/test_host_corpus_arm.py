@@ -211,9 +211,9 @@ def test_a_finishing_kernel_under_two_masks_keeps_a_flagged_samples_value(tmp_pa
 
 
 def _gp() -> Kernel:
-    """Own-column partials under the default mask guard, built as IR (the ``AccumWrite`` a sum sink makes)."""
+    """Own-column partials under the default mask guard, built as IR (the ``Update`` that adds, which a sum sink makes)."""
     x = _ir.leaf(_ir.new_context(), "vocab_read", "plane_in", "x", _ir.TensorType((), "f64"))
-    return Kernel("gp", (_ir.accum_write("acc", _ir.make("mul", (x, x))),), {"terminated": Terminated})
+    return Kernel("gp", (_ir.update("acc", _ir.make("mul", (x, x))),), {"terminated": Terminated})
 
 
 def test_an_own_column_partial_is_written_where_live_and_kept_where_masked(tmp_path, cache_dir):

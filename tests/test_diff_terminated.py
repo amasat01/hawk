@@ -76,7 +76,7 @@ def _gather_masked(table: Table[Scalar], where: Index, terminated: Terminated,
 
 def test_vjp_scatter_adds_nothing_from_a_terminated_sample():
     """The gather/scatter transpose (module docstring, ``hawk/diff/transform.py``):
-    ``table.at(where)``'s reverse is an ``AccumWrite`` scattered at ``where`` —
+    ``table.at(where)``'s reverse is an ``Update`` that adds, scattered at ``where`` —
     exactly the "Param/by-key sums included" shape the gap names. A terminated
     sample must add exactly 0 at its own target lane; a live one adds its
     seeded adjoint there."""

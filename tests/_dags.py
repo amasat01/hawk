@@ -21,7 +21,7 @@ Wire = _ir.Wire
 def _accumulate(name, value, lane, ttype):
     """A keyed accumulate of ``value`` into ``name`` at ``lane``."""
     return _ir.make_node(
-        "AccumWrite", ttype, (value, lane), name=name, contract="auto", reduced=None
+        "Update", ttype, (value, lane), name=name, op="add", reduced=None
     )
 
 

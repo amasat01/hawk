@@ -68,8 +68,7 @@ def test_the_derived_arg_spec_is_a_superset_of_the_primal_read_side(name, transf
     primal = drag.walk
     derived = _ir.canonical(transform(drag))
     reads = {entry for entry in _ir.arg_spec(primal) if entry[0] not in ("mutable", "out",
-                                                                    "wide_out",
-                                                                    "accum_out")}
+                                                                    "plane_out")}
     assert reads <= set(_ir.arg_spec(derived)), (
         f"the {name} of a kernel whose derivative reaches every input must keep "
         f"every primal wire bound: {sorted(reads - set(_ir.arg_spec(derived)))} are gone"

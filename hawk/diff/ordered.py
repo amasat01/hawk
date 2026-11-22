@@ -31,14 +31,14 @@ def kept_of(primal_sinks) -> tuple | None:
 
 def _is_scatter(sink: Any) -> bool:
     """Whether ``sink`` is an accumulate (a scatter-add into a plane)."""
-    return _ir.is_a(sink, "accum_write")
+    return _ir.is_accumulate(sink)
 
 
 def order(sinks, held) -> tuple:
     """``sinks`` with each accumulate stated as an ordered accumulate of the keyed sum ``held`` (``(kept, key)``)."""
     kept, key = held
     for sink in sinks:
-        if _is_scatter(sink) and (_ir.type_of(sink).shape or sink.field_text("contract") == "or"):
+        if _is_scatter(sink) and (_ir.type_of(sink).shape or _ir.sets_bits(sink)):
             raise HawkError(
                 f"an ordered gradient accumulates scalars; {sink.field_text('name')!r} is not one"
             )
@@ -51,7 +51,7 @@ def order(sinks, held) -> tuple:
             _ir.type_of(value),
             [value, *row, key],
             name=sink.field_text("name"),
-            role="accum_out",
+            role="plane_out",
             kept=tuple(kept),
             edge=sink.field_text("edge"),
             axes=_ir.field_pairs(sink, "axes"),

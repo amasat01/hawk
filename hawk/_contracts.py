@@ -66,7 +66,7 @@ GREF_MIRROR_SIZE = 40
 
 #: Byte size of the by-value ``ScalarHandle`` POD: the aether
 #: ``View<Real, extents<dyn>, layout_stride>`` mirror a ``plane_in`` (rank 0)/
-#: ``lookup``/``terminated``/``wide_in``/``wide_out``/``accum_out``/
+#: ``lookup``/``terminated``/``wide_in``/``plane_out``/
 #: scalar-mutable role crosses as. Copy of
 #: ``eagle.host_launch.ScalarHandle`` and of the C++
 #: ``static_assert(sizeof(ScalarHandle) == 32, ...)``.

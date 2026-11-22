@@ -314,7 +314,7 @@ def _swap(sinks, mapping: dict) -> tuple:
         part = roots[at:at + len(s.operands)]
         at += len(s.operands)
         out.append(
-            _ir.replace(s, operands=part) if _ir.is_a(s, "accum_write") else _ir.with_value(s, part[0])
+            _ir.replace(s, operands=part) if _ir.is_accumulate(s) else _ir.with_value(s, part[0])
         )
     return tuple(out)
 

@@ -90,7 +90,7 @@ def _forms_present(walk) -> set:
     for node in _ir.walk_order(walk):
         if node.cls == "At":
             forms.add("cross_sample_read")
-        elif node.cls in ("WideWrite", "AccumWrite") and len(node.operands) > 1:
+        elif node.cls == "Update" and len(node.operands) > 1:
             forms.add("cross_sample_write")
     return forms
 

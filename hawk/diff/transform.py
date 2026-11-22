@@ -13,7 +13,7 @@ Reverse mode seeds one adjoint plane per primal sink and accumulates
 contributions from the rule table, un-broadcasting a rank-0 operand's adjoint
 with a ``sum``. Forward mode seeds one tangent plane per ``wrt`` input and
 pushes tangents along the same traversal. A ``lookup`` gather ``at(e)`` and a
-scatter-add ``AccumWrite`` are each other's reverse-mode transpose.
+scatter-add ``Update`` are each other's reverse-mode transpose.
 """
 
 from __future__ import annotations
@@ -258,13 +258,13 @@ def _indices_of(node: Any) -> tuple:
 
 
 def _scatter(
-    name: str, value: Any, indices: Sequence[Any], ttype: Any, contract: str = "auto",
+    name: str, value: Any, indices: Sequence[Any], ttype: Any, fields: dict | None = None,
     edge: str = "unchecked",
     axes: Sequence[Any] = (),
 ) -> Any:
     """An accumulating commit of ``value`` into plane ``name``, whose axes are ``axes``, at ``indices`` (none: the lane's own cell)."""
     return _ir.make_node(
-        "AccumWrite", ttype, [value, *indices], name=name, contract=contract, reduced=None, edge=edge,
+        "Update", ttype, [value, *indices], name=name, **(fields or {"op": "add"}), reduced=None, edge=edge,
         axes=tuple(axes),
     )
 
@@ -523,10 +523,10 @@ def _compensated(scatters: Sequence[Any], planes: set) -> list:
     over the lane axes a broadcast input does not vary along."""
     out: list = []
     for s in scatters:
-        if _ir.is_a(s, "accum_write") and s.field_text("name") in planes:
+        if _ir.is_accumulate(s) and s.field_text("name") in planes:
             name, ttype, indices = s.field_text("name"), _ir.type_of(s), _indices_of(s)
             edge, axes = s.field_text("edge"), _ir.field_pairs(s, "axes")
-            out.append(_scatter(name, s.operands[0], indices, ttype, "compensated", edge, axes))
+            out.append(_scatter(name, s.operands[0], indices, ttype, _ir.contract_fields("compensated"), edge, axes))
             zero = _ir.const(s.ctx, 0.0, _ir.TensorType((), ttype.dtype))
             out.append(_scatter(name + _ir.COMPANION_SUFFIX, zero, indices, ttype, edge=edge, axes=axes))
         else:
@@ -1005,7 +1005,7 @@ def _dispatch_vjp(
     ``overrides``' strategy for this node when :func:`vjp` was given one), so a
     node reached through multiple paths sums correctly. A reached
     gather (``at``) is the one exception: its combined value
-    becomes one scattered ``AccumWrite`` here, since a scatter is a sink, not
+    becomes one scattered ``Update`` that adds here, since a scatter is a sink, not
     something a downstream node could read further. ``kind`` itself is never
     seeded and receives no adjoint.
 
@@ -1150,7 +1150,7 @@ def _sets_bits(node: Any) -> bool:
     """Whether ``node`` is an OR-scatter, or a loop whose body holds one."""
     if _ir.is_a(node, "loop"):
         return any(_sets_bits(s) for s in node.field_nodes("body_sinks"))
-    return _ir.is_a(node, "accum_write") and node.field_text("contract") == "or"
+    return _ir.sets_bits(node)
 
 
 def _sinks_of(primal: Any) -> tuple[Any, ...]:
@@ -1313,7 +1313,7 @@ def _seed(sink: Any, name: _Namer) -> Any:
         # the reverse of a sum over samples is a broadcast of its adjoint
         return _ir.leaf(context, "uniform", "uniform", derived, t)
     indices = _indices_of(sink)
-    if _ir.is_a(sink, "accum_write", "wide_write") and indices:
+    if _ir.is_a(sink, "update") and indices:
         # the transpose of a scatter-add is a gather of the adjoint plane, at the same indices under the same edge rule
         plane = _ir.leaf(context, "table_read", "lookup", derived, t, axes=_ir.field_pairs(sink, "axes"))
         return _ir.make_node("At", t, [plane, *indices], edge=sink.field_text("edge"))
@@ -1327,14 +1327,14 @@ def _tangent_sink(sink: Any, tangent: Any, name: _Namer, indices: Any = None) ->
     value = tangent if tangent is not None else _ir.zero_like(sink.ctx, ttype)
     derived = name(sink.field_text("name"))
     indices = _indices_of(sink) if indices is None else indices
-    if _ir.is_a(sink, "accum_write"):
+    if _ir.is_accumulate(sink):
         return _scatter(
-            derived, value, indices, ttype, sink.field_text("contract"), sink.field_text("edge"),
+            derived, value, indices, ttype, _ir.operation_fields(sink), sink.field_text("edge"),
             _ir.field_pairs(sink, "axes"),
         )
-    if _ir.is_a(sink, "wide_write"):
+    if _ir.is_store(sink):
         return _ir.make_node(
-            "WideWrite", ttype, [value, *indices], name=derived, edge=sink.field_text("edge"),
+            "Update", ttype, [value, *indices], name=derived, op="store", edge=sink.field_text("edge"),
             axes=_ir.field_pairs(sink, "axes"),
         )
     if _ir.is_a(sink, "sample_sum"):

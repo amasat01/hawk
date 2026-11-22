@@ -41,11 +41,11 @@ a matrix read at lane indices   ``(R*C, m)`` compact                        ``(R
 table (``lookup``)              any contiguous array; a shared parameter    as passed
                                 in its declared shape
 wide plane (``wide_in``,        any contiguous array; a flat ``(W*N,)``     as passed, never reshaped (the
-``wide_out``)                   holds element ``(e, c)`` at ``e*W + c``     door's handle takes its trailing
+``plane_out``)                  holds element ``(e, c)`` at ``e*W + c``     door's handle takes its trailing
                                                                             extent)
 cell of a sum over samples      ``(columns,)``, one value per column        one ``(1,)`` view per column slot
 (``cells``)
-scatter target (``accum_out``)  ``(*payload, *axes)`` as declared           as passed
+zeroed scatter target           ``(*payload, *axes)`` as declared           as passed
 uniform                         a Python number or a 0-d array              its bytes at the wire dtype
 ==============================  ==========================================  ==================================
 
@@ -341,7 +341,8 @@ class LoadedKernel:
             if adjoint.get(name) in arrays:     # the gradient of a lookup plane is as large as that plane
                 made[name] = make.zeros(describe(arrays[adjoint[name]]).shape, sidecar["arg_dtypes"][name])
                 continue
-            if roles[name] == "wide_out" and name not in (sidecar.get("plane_axes") or {}):
+            if (roles[name] == "plane_out" and name not in sidecar["zeroed_outputs"]
+                    and name not in (sidecar.get("plane_axes") or {})):
                 raise HawkError(f"kernel {sidecar.get('kernel', '?')!r}: argument {name!r}: the extent of a wide plane is the "
                                 "caller's, so it is not made; bind it")
             width = int(sidecar.get("arg_shapes", {}).get(name) or 1)

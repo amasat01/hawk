@@ -258,7 +258,7 @@ def test_vjp_broadcast_input_sums_broadcast_axes(tmp_path_factory, cache_dir, rn
     kept = B.kept_axes((A, 1, NC), (), axes, A)
     var = B.twin(square, {"x": kept})
     d = Kernel("square_vjp", vjp(var, wrt=("x",)))
-    assert [s.field_text("contract") for s in d.sinks if _ir.is_a(s, "accum_write") and s.field_text("name") == "bar_x"] == ["compensated"]
+    assert [s.field_text("summation") for s in d.sinks if _ir.is_accumulate(s) and s.field_text("name") == "bar_x"] == ["compensated"]
     root = tmp_path_factory.mktemp("bc_vjp")
     art = _derived(var, vjp, "x", root, cache_dir)
     assert art.sidecar["companions"] == {"bar_x_c": "bar_x"}
@@ -447,9 +447,9 @@ def test_a_compensated_scatter_stays_compensated_under_a_terminated_mask():
     mask = _ir.leaf(ctx, "terminated", "terminated", "terminated", ((), "bool", None))
     value = _ir.leaf(ctx, "vocab_read", "plane_in", "v", ((), "f64", None))
     index = _ir.leaf(ctx, "vocab_read", "plane_in", "k", ((), "i32", None))
-    scatter = _ir.accum_write("acc", value, indices=(index,), contract="compensated")
+    scatter = _ir.update("acc", value, indices=(index,), summation="compensated")
     masked = _masked_sink(scatter, mask)
-    assert masked.field_text("contract") == "compensated"
+    assert (masked.field_text("op"), masked.field_text("summation")) == ("add", "compensated")
     plain = _ir.make_node("Assign", ((), "f64", None), (value,), name="y")
     assert _ir.is_a(_masked_sink(plain, mask), "assign")
 

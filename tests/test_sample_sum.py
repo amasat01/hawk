@@ -177,7 +177,7 @@ def test_sidecar_lists_the_cells(built):
     sidecar = sidecar_of(built[0], "law_ss")
     assert "sample_sums" not in sidecar
     assert list(sidecar["cells"]) == ["bar_k", "bar_b"]
-    assert {"bar_k", "bar_k_comp", "bar_b", "bar_b_comp"} <= set(sidecar["accum_outputs"])
+    assert {"bar_k", "bar_k_comp", "bar_b", "bar_b_comp"} <= set(sidecar["zeroed_outputs"])
     assert sidecar["exec_access"] == sidecar_of(built[0], "law_params")["exec_access"]
 
 
@@ -343,4 +343,4 @@ def test_the_companion_plane_is_a_slot_of_the_walk():
     @hawk.kernel
     def one(x: Scalar, t: Mutable[Scalar]):
         t = hawk.sum(x * x)
-    assert ("accum_out", "t_comp") in _ir.arg_spec(one.walk)
+    assert ("plane_out", "t_comp") in _ir.arg_spec(one.walk)

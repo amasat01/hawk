@@ -152,7 +152,7 @@ def _input_name(sidecar) -> str:
 
 def _output_name(sidecar) -> str:
     names = [n for r, n in sidecar["arg_spec"]
-             if r in ("out", "mutable", "wide_out", "accum_out")]
+             if r in ("out", "mutable", "plane_out")]
     assert len(names) == 1, f"this unit declares {names} output planes"
     return names[0]
 

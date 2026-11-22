@@ -26,7 +26,7 @@ _S = TensorType((), "f64")
 _MIRROR_OF = {
     "out": "GRefMirror", "lookup": "ScalarHandle",
     "terminated": "ScalarHandle", "wide_in": "ScalarHandle",
-    "wide_out": "ScalarHandle", "accum_out": "ScalarHandle",
+    "plane_out": "ScalarHandle",
     "uniform": "value", "nsamples": "value",
 }
 

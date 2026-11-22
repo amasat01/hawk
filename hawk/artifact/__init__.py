@@ -50,7 +50,7 @@ def plan_view(sidecar: dict) -> dict:
 
     Exactly the attributes ``eagle.plan`` looks for on a plugin —
     ``arg_spec``, ``exec_access``/``exec_op``, ``scalar_type``,
-    ``arg_widths``, and the vector-/matrix-shaped ``mutable`` name sets
+    ``arg_widths``, ``zeroed_outputs`` (the planes the run zeroes), and the vector-/matrix-shaped ``mutable`` name sets
     — projected with zero eagle import, plus ``derivative`` (the
     sidecar's derivative tag, ``None`` for a primal). The consumer adds the loaded
     entry point; HAWK holds no launch path.
@@ -69,6 +69,7 @@ def plan_view(sidecar: dict) -> dict:
         "exec_op": sidecar.get("exec_op"),
         "scalar_type": sidecar.get("scalar_type", "float64"),
         "arg_widths": dict(sidecar.get("arg_widths", {})),
+        "zeroed_outputs": tuple(sidecar.get("zeroed_outputs", ())),
         "arg_shapes": dict(sidecar.get("arg_shapes", {})),
         # the value shape of every slot, which tells a scalar, a vector and a matrix input apart
         "slot_shapes": {name: tuple(shape) for name, shape in sidecar.get("slot_shapes", {}).items()},
