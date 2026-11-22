@@ -499,7 +499,8 @@ def append(out: Any, value: Any = None, when: Any = True) -> Any:
     count with the capacity. A count made with the run starts at zero; a bound count keeps what it holds, so a second launch
     continues the list where the first stopped. The places are a permutation of ``0 .. count - 1`` in an order no launch promises. Two appends to one
     ``out`` in one kernel share its count. A vector value is stored whole. ``slot`` and the count have no derivative; the
-    tangent of ``v`` is stored at the place its value takes. Written only as a statement of the kernel body."""
+    tangent of ``v`` is stored at the place its value takes, and the reverse derivative reads the adjoint at the place a lane took, which
+    the kernel states by storing ``slot`` into an integer ``Mutable`` plane that the reverse kernel takes as an input. Written only as a statement of the kernel body."""
     raise HawkError(
         "hawk.append(out, value=v, when=cond) is a statement of the kernel body: write "
         "slot = hawk.append(out, value=v) inside the kernel")

@@ -91,7 +91,7 @@ Declaring the shape of your lanes brings a few more words; the [glossary](glossa
   its capacity) for each lane whose `when` holds, in no promised order, and gives the lane's place as an integer (`-1` when it
   asked for none). The run counts the lanes that asked in a one-element plane made with it: `plan.bind(...).count("out")` after
   a launch. More lanes than the capacity is not an error: the values past it are dropped and the count says how many asked.
-  `jvp` stores the tangent at the place of its value; `vjp` of an appending kernel is refused by name.
+  `jvp` stores the tangent at the place of its value. `vjp` reads the adjoint of the list at the place each lane took, which only the primal run knows: store the slot in an integer plane (`place = slot` with `place: Mutable[Int32]`) and bind that plane, as the primal run left it, to the reverse kernel; a kernel that stores no slot is refused by name.
 - An **index set** (`Kind("screen", lanes=IndexSet())`) runs a list of lanes you built: launch lane `t` runs lane
   `map[t]`, with the map and its count bound as `active_map` and `active_count`. `hawk.sample_position()` is `t`
   where `hawk.math.sample_index()` is `map[t]`. See [Run only the lanes you list](howto_index_set).

@@ -306,9 +306,253 @@ def test_the_tangent_of_an_appended_value_sits_at_the_place_of_the_value(
     assert np.allclose(order(got), order(want), rtol=1e-14, atol=0.0)
 
 
-def test_the_reverse_derivative_of_an_appending_kernel_is_refused_by_name():
+@kernel
+def place_squares(
+    x: Scalar,
+    out: Mutable[Scalar, "item":CAPACITY],  # noqa: F821 axis labels
+    place: Mutable[Int32],
+):
+    slot = hawk.append(out, value=3.0 * x * x, when=x > 0.0)
+    place = slot
+
+
+@kernel
+def place_squares_few(
+    x: Scalar,
+    out: Mutable[Scalar, "item":SMALL],  # noqa: F821 axis labels
+    place: Mutable[Int32],
+):
+    slot = hawk.append(out, value=3.0 * x * x, when=x > 0.0)
+    place = slot
+
+
+@kernel
+def place_pairs(
+    v: Vector[2],
+    out: Mutable[Vector[2], "item":CAPACITY],  # noqa: F821 axis labels
+    place: Mutable[Int32],
+):
+    slot = hawk.append(out, value=v * v[0], when=v[0] > 0.0)
+    place = slot
+
+
+@kernel
+def place_both_signs(
+    x: Scalar,
+    out: Mutable[Scalar, "item":CAPACITY],  # noqa: F821 axis labels
+    above: Mutable[Int32],
+    below: Mutable[Int32],
+):
+    first = hawk.append(out, value=3.0 * x * x, when=x > 0.0)
+    second = hawk.append(out, value=x * x * x, when=x < 0.0)
+    above = first
+    below = second
+
+
+def _reverse(primal, tmp_path, cache_dir):
+    """The bundles of ``primal`` and of its reverse derivative (a bundle holds one execution axis), and the derivative's name."""
+    derived = Kernel(f"{primal.name}_vjp", vjp(primal, primal_unit="0" * 64))
+    both = (
+        build_bundle(
+            [k],
+            tmp_path / k.name,
+            mode="float64",
+            targets=("host",),
+            cache_dir=cache_dir,
+        )
+        for k in (primal, derived)
+    )
+    return (*both, derived.name)
+
+
+def _gradient(built, primal, derived, structure, x, capacity, seed):
+    built, reverse_built = built
+    """Run ``primal`` for the places its lanes took, then its reverse with ``seed`` as the adjoint of the list."""
+    place = np.zeros(len(x), np.int32)
+    _bound(
+        built, primal, structure, x=x, out=np.full(capacity, np.nan), place=place
+    ).launch()
+    bar_x = np.zeros(len(x))
+    _bound(
+        reverse_built, derived, structure, x=x, place=place, bar_out=seed, bar_x=bar_x
+    ).launch()
+    return place, bar_x
+
+
+@STRUCTURES
+def test_the_gradient_of_an_appended_value_is_its_derivative_times_the_seed_at_the_place_the_lane_took(
+    tmp_path, cache_dir, structure
+):
+    # oracle: the closed form, d(3 x^2)/dx = 6 x, times the seed at the lane's own place; 0 for a lane that appended nothing
+    primal_built, reverse_built, derived = _reverse(place_squares, tmp_path, cache_dir)
+    x = _inputs(14)
+    seed = np.random.default_rng(15).normal(size=CAPACITY)
+    place, got = _gradient(
+        (primal_built, reverse_built),
+        "place_squares",
+        derived,
+        structure,
+        x,
+        CAPACITY,
+        seed,
+    )
+    asked = x > 0.0
+    want = np.where(asked, 6.0 * x * seed[np.where(asked, place, 0)], 0.0)
+    assert np.allclose(got, want, rtol=1e-13, atol=0.0)
+
+
+@STRUCTURES
+def test_a_lane_dropped_by_overflow_gets_a_zero_gradient(
+    tmp_path, cache_dir, structure
+):
+    # oracle: the same closed form; a place at or past the capacity reads a zero adjoint under the zero edge rule
+    primal_built, reverse_built, derived = _reverse(
+        place_squares_few, tmp_path, cache_dir
+    )
+    x = _inputs(16)
+    seed = np.random.default_rng(17).normal(size=SMALL)
+    place, got = _gradient(
+        (primal_built, reverse_built),
+        "place_squares_few",
+        derived,
+        structure,
+        x,
+        SMALL,
+        seed,
+    )
+    kept = (x > 0.0) & (place < SMALL)
+    assert kept.sum() == SMALL and ((x > 0.0) & (place >= SMALL)).any()
+    want = np.where(kept, 6.0 * x * seed[np.where(kept, place, 0)], 0.0)
+    assert np.allclose(got, want, rtol=1e-13, atol=0.0)
+
+
+@STRUCTURES
+def test_the_gradient_of_an_appended_vector_value_reads_the_seed_of_each_component(
+    tmp_path, cache_dir, structure
+):
+    # oracle: the closed form of d(v * v0)/dv: component 0 gets 2 v0 s0 + v1 s1, component 1 gets v0 s1
+    primal_built, reverse_built, derived = _reverse(place_pairs, tmp_path, cache_dir)
+    v = np.random.default_rng(18).normal(size=(N, 2))
+    seed = np.random.default_rng(19).normal(size=(2, CAPACITY))
+    place = np.zeros(N, np.int32)
+    given = np.ascontiguousarray(v.T)
+    _bound(
+        primal_built,
+        "place_pairs",
+        structure,
+        v=given,
+        out=np.full((2, CAPACITY), np.nan),
+        place=place,
+    ).launch()
+    bar_v = np.zeros((2, N))
+    _bound(
+        reverse_built,
+        derived,
+        structure,
+        v=given,
+        place=place,
+        bar_out=seed,
+        bar_v=bar_v,
+    ).launch()
+    asked = v[:, 0] > 0.0
+    at = np.where(asked, place, 0)
+    s0, s1 = seed[0, at], seed[1, at]
+    want = np.stack([2 * v[:, 0] * s0 + v[:, 1] * s1, v[:, 0] * s1]) * asked
+    assert np.allclose(bar_v, want, rtol=1e-13, atol=1e-13)
+
+
+@STRUCTURES
+def test_two_appends_to_one_list_each_read_the_place_of_their_own_ticket(
+    tmp_path, cache_dir, structure
+):
+    # oracle: the closed forms 6 x (lanes above zero) and 3 x^2 (lanes below), each times the seed at the lane's own place
+    primal_built, reverse_built, derived = _reverse(
+        place_both_signs, tmp_path, cache_dir
+    )
+    x = _inputs(22)[:CAPACITY]
+    x = x[x != 0.0]
+    seed = np.random.default_rng(23).normal(size=CAPACITY)
+    above, below = np.zeros(len(x), np.int32), np.zeros(len(x), np.int32)
+    _bound(
+        primal_built,
+        "place_both_signs",
+        structure,
+        x=x,
+        out=np.full(CAPACITY, np.nan),
+        above=above,
+        below=below,
+    ).launch()
+    bar_x = np.zeros(len(x))
+    _bound(
+        reverse_built,
+        derived,
+        structure,
+        x=x,
+        above=above,
+        below=below,
+        bar_out=seed,
+        bar_x=bar_x,
+    ).launch()
+    positive = x > 0.0
+    want = np.where(
+        positive,
+        6.0 * x * seed[np.where(positive, above, 0)],
+        3.0 * x**2 * seed[np.where(positive, 0, below)],
+    )
+    assert np.allclose(bar_x, want, rtol=1e-13, atol=0.0)
+
+
+def test_the_device_text_of_the_reverse_reads_the_place_and_takes_no_ticket():
+    derived = Kernel("place_squares_vjp", vjp(place_squares, primal_unit="0" * 64))
+    text = emit_source(derived, targets=("cuda",)).sources["cuda"].text
+    assert "fetchAddAt" not in text and "aether::edge::" in text
+
+
+@pytest.mark.gpu
+def test_the_device_gradient_of_an_appended_value_is_its_derivative_times_the_seed(
+    tmp_path, cache_dir
+):
+    import cupy as cp
+
+    derived = Kernel("place_squares_vjp", vjp(place_squares, primal_unit="0" * 64))
+    built = build_bundle(
+        [place_squares, derived],
+        tmp_path,
+        mode="float64",
+        targets=("cuda", "host"),
+        cache_dir=cache_dir,
+    )
+    x = _inputs(20)
+    seed = np.random.default_rng(21).normal(size=CAPACITY)
+    place = cp.zeros(N, cp.int32)
+    _launch(
+        built,
+        "place_squares",
+        "cuda",
+        {"x": cp.asarray(x), "out": cp.full(CAPACITY, cp.nan), "place": place},
+    ).launch()
+    bar_x = cp.zeros(N)
+    _launch(
+        built,
+        derived.name,
+        "cuda",
+        {
+            "x": cp.asarray(x),
+            "place": place,
+            "bar_out": cp.asarray(seed),
+            "bar_x": bar_x,
+        },
+    ).launch()
+    cp.cuda.Device().synchronize()
+    asked = x > 0.0
+    at = np.where(asked, place.get(), 0)
+    assert np.allclose(
+        bar_x.get(), np.where(asked, 6.0 * x * seed[at], 0.0), rtol=1e-13, atol=0.0
+    )
+
+
+def test_the_reverse_derivative_of_an_appending_kernel_that_stores_no_slot_is_refused_by_name():
     with pytest.raises(
-        HawkError,
-        match=r"appends to \['out'\] \(`hawk.append`\): the reverse derivative reads the adjoint",
+        HawkError, match=r"appends to 'out' without storing the slot the lane took"
     ):
         vjp(keep_squares)

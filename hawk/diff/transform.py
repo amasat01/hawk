@@ -1197,17 +1197,38 @@ def _appended(primal: Any) -> dict:
     return {name: plane.counts for name, plane in planes.items() if getattr(plane, "counts", "")}
 
 
+def _recorded_places(primal: Any, kept: tuple, appended: dict) -> tuple:
+    """``kept`` for a reverse derivative of a kernel that appends. The adjoint of an appended value is the adjoint of its list
+    read at the place the lane took, and the places are the primal run's arrival order, which a reverse run cannot take again.
+    Each store into a list is therefore rebuilt to read its place from the integer plane the kernel stored it into (the
+    author's ``place = slot``), which the reverse kernel takes as an input beside the seeds. The tickets and the planes holding
+    them are dropped from the sinks: nothing of the reverse takes a ticket. A kernel that does not store a slot is refused."""
+    lists = set(appended.values())
+    stores = [s for s in kept if s.field_text("name") in lists]
+    places: dict = {}
+    holders: list = []
+    for store in stores:
+        index = store.operands[1]
+        # the store's index is the slot cast to an index type, or the slot itself
+        holder = next((h for h in kept if _ir.is_a(h, "assign") and h.operands[0] in (index, *index.operands[:1])), None)
+        if holder is None:
+            raise HawkError(
+                f"{primal!r} appends to {store.field_text('name')!r} without storing the slot the lane took: the reverse "
+                "derivative reads the adjoint at the primal run's places, so store the slot in an integer plane: "
+                "`slot = hawk.append(...)` then `place = slot` with `place: Mutable[Int32]`")
+        holders.append(holder)
+        slot = holder.operands[0]
+        places[slot] = _ir.leaf(slot.ctx, "vocab_read", "plane_in", holder.field_text("name"), _ir.type_of(slot))
+    swapped = iter(_ir.substitute(stores, places))
+    dropped = [*holders, *(s for s in kept if s.field_text("name") in appended)]
+    return tuple(next(swapped) if s in stores else s for s in kept if s not in dropped)
+
+
 def _sinks_of(primal: Any, forward: bool = False) -> tuple[Any, ...]:
     """The sinks of ``primal`` to differentiate, refusing by name an update that has no derivative. The ticket an append takes
     is an integer and carries none; the forward derivative keeps the append (one ticket stores a value and its tangent), and
-    the reverse derivative refuses it: the adjoint of a value is read at the place the primal run gave it, and the primal run's
-    places are not recorded for it yet."""
+    the reverse derivative reads the places the primal run gave (:func:`_recorded_places`)."""
     appended = _appended(primal)
-    if appended and not forward:
-        raise HawkError(
-            f"{primal!r} appends to {sorted(set(appended.values()))} (`hawk.append`): the reverse derivative reads the adjoint "
-            "of each value at the place the primal run gave it, which needs those places recorded in a plane by the primal "
-            "run; that is not written yet. Its forward derivative (`jvp`) is")
     sinks = tuple(getattr(primal, "sinks", primal))
     if not sinks or not all(_ir.is_a(s, "sink", "loop") for s in sinks):
         raise HawkError(
@@ -1222,6 +1243,8 @@ def _sinks_of(primal: Any, forward: bool = False) -> tuple[Any, ...]:
     if refused:
         what, why = refused
         raise HawkError(f"{primal!r} {what}: {why}; differentiate a kernel that does not write it")
+    if appended and not forward:
+        kept = _recorded_places(primal, kept, appended)
     if not kept:
         raise HawkError(
             f"{primal!r} only finishes its sample — it commits no plane to differentiate"
