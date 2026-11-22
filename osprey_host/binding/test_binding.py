@@ -934,7 +934,7 @@ assert c.wide_element_kind(resident) == RW_ELEMENT["proxy"]
 for edge, clamps in (("(('edge', 'unchecked'),)", False), ("()", True)):
     reads = [c.make("At", "f64", [], None, [wide_in[0], ints(k)], edge) for k in (2, 4, 6)]
     run3 = c.make("Op", "f64", [3], None, reads, "(('kind', 'vec'), ('literal', None))")
-    assert c.wide_gather(run3) == (wide_in[0], None, 2, 2, clamps)  # indices 2, 4, 6
+    assert c.wide_gather(run3) == (wide_in[0], None, 2, 2, clamps, ())  # indices 2, 4, 6, no lead index
 assert c.wide_gather(wide_sum) is None
 done.append(
     "wide_place, wide_is_resident, wide_is_scratch, wide_is_tiled, wide_is_prior, wide_record, "

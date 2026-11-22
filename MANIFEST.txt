@@ -12,7 +12,7 @@ Every file with its line count (this file excluded):
      95  osprey_host/binding/fixture/auto_set_meta.c
       8  osprey_host/binding/fixture/contract0.c
      11  osprey_host/binding/gen/Cargo.toml
-   1408  osprey_host/binding/gen/src/main.rs
+   1425  osprey_host/binding/gen/src/main.rs
    2459  osprey_host/binding/template/door.c
      45  osprey_host/binding/template/module.h
     116  osprey_host/binding/template/types.c
