@@ -312,6 +312,9 @@ class LoadedKernel:
         made = self._made_counts(arrays, make)
         given |= made
         arrays = {**arrays, **made}
+        made = self._made_winners(arrays, make)
+        given |= made
+        arrays = {**arrays, **made}
         _refuse_unbound_names(self, arrays, self._plane_names())
         return self._checked(arrays, n_samples, layout, keep=keep, running=running, make=make)._replace(given=given, extents=stated)
 
@@ -335,8 +338,9 @@ class LoadedKernel:
         roles = {name: role for role, name in self.bind_spec}
         adjoint = sidecar.get("adjoint_like") or {}
         made = {}
+        winners = sidecar.get("winners") or {}
         for name in self.output_names():
-            if name in arrays:
+            if name in arrays or name in winners:
                 continue
             if name in cells:
                 made[name] = make.zeros((cells[name]["columns"],), self.scalar_type)
@@ -376,6 +380,26 @@ class LoadedKernel:
         counts into them and :meth:`BoundPlan.count` reads them."""
         counts = self.declared.get("counts") or {}
         return {name: make.zeros((1,), self.declared["arg_dtypes"][name]) for name in counts if name not in arrays}
+
+    def _made_winners(self, arrays: dict, make: Maker) -> dict:
+        """The planes of winner lanes that the caller did not bind, each as large as the plane it ranks and all ones (no winner):
+        the run records into them and :meth:`BoundPlan.winner` reads them. A plane whose ranked plane is not bound is left out;
+        the refusal of an unbound name comes with the ranked plane. A bound one of another shape than its ranked plane is
+        refused: the run would drop the winners of the elements it does not hold."""
+        import numpy
+
+        made = {}
+        for name, ranked in (self.declared.get("winners") or {}).items():
+            if ranked not in arrays:
+                continue
+            shape = describe(arrays[ranked]).shape
+            if name not in arrays:
+                made[name] = make.copy_of(numpy.full(shape, numpy.iinfo(numpy.uint32).max, dtype=numpy.uint32))
+            elif describe(arrays[name]).shape != shape:
+                raise HawkError(
+                    f"{self.path.name}: {name!r} records one winner per element of {ranked!r}, which has shape {tuple(shape)}; "
+                    f"got shape {tuple(describe(arrays[name]).shape)}. Bind a uint32 plane of that shape, or leave it out")
+        return made
 
     def _made_for_running(self, arrays: dict, n_samples: int, make: Maker) -> dict:
         """What a runner starts from when the caller left it out: an all-false ``terminated`` mask."""
@@ -769,6 +793,22 @@ class BoundPlan:
                             f"the lists are {sorted(set(counts.values()))}")
         return int(self.planes[found[0]][0])
 
+    def winner(self, ranked: str):
+        """The lane that won each element of the plane ``ranked``, which an ordered minimum or maximum
+        (``hawk.scatter(ranked, contract="ordered")[key].min(v)``) wrote: the lowest lane whose value equals the element's
+        finished value, as an ``int32`` NumPy array of the plane's shape, ``-1`` for an element no lane reached (and for one
+        that holds a NaN, which no lane's value equals). It is the plane the unit states as the winners of ``ranked``, whatever
+        it is named."""
+        import numpy
+
+        winners = (self._kernel.sidecar.get("winners") or {})
+        found = [plane for plane, ranks in winners.items() if ranks == ranked]
+        if not found:
+            raise HawkError(f"{self._kernel.path.name}: {ranked!r} is not a plane with winners (an ordered minimum or maximum "
+                            f"records them); the planes are {sorted(set(winners.values()))}")
+        plane = self.planes[found[0]]
+        return (plane if isinstance(plane, numpy.ndarray) else _place.to_host(plane)).view(numpy.int32)
+
     @property
     def door(self):
         """The runtime door this plan and its planes belong to: the door of the place the planes live in."""
@@ -860,7 +900,7 @@ def _load_unit(door, path: Path, sidecar: dict, deps=()):
 
 #: The declarations of a split kernel's stages that are dicts keyed by plane name, lists of records named by plane, and lists of names.
 _DICT_DECLARATIONS = ("arg_dtypes", "arg_shapes", "arg_widths", "slot_shapes", "param_shapes",
-                      "plane_axes", "gather_mats", "adjoint_like", "companions", "counts")
+                      "plane_axes", "gather_mats", "adjoint_like", "companions", "counts", "winners")
 _RECORD_DECLARATIONS = ("mutables", "params")
 _NAME_DECLARATIONS = ("index_planes", "sorted_inputs", "unused_planes")
 

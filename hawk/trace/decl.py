@@ -236,6 +236,8 @@ class Plane:
     group: tuple = ()
     #: The name of the appended plane a one-element count belongs to (``hawk.append``), else empty.
     counts: str = ""
+    #: The name of the plane a plane of winner lanes ranks (``hawk.scatter(y, contract="ordered")[k].min(v)`` makes one), else empty.
+    winner_of: str = ""
 
     def __call__(self, *args: object, **kwargs: object) -> object:
         """Never called: a declaration is only annotated. Defined so that ``typing.Annotated``

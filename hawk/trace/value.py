@@ -1116,6 +1116,8 @@ def by_key(
             fields.update(_keyed_fields(contract))
             if returns_old:
                 fields["summation"] = "plain"
+        elif op in ("min", "max") and contract == "ordered":
+            fields["order"] = "lane"
         operands = [typed, *([ref._typed(expected)] if op == "compare_exchange" else []), *indices]
         node = _ir.make_node("Update", ref.ttype, operands, name=ref.name, **fields, reduced=None, edge=edge,
                              axes=ref.axes)
@@ -1178,14 +1180,16 @@ class _SinkRef:
     """Shared write-side state: the sinks a body commits through one plane.
     ``axes`` are the sink's declared named axes ``((label, extent), ...)``."""
 
-    __slots__ = ("name", "ttype", "sinks", "by_key_kind", "by_key_op", "axes", "counts")
+    __slots__ = ("name", "ttype", "sinks", "by_key_kind", "by_key_op", "axes", "counts", "winner_of")
 
-    def __init__(self, name: str, ttype: _ir.TensorType, axes: tuple = (), counts: str = "") -> None:
+    def __init__(self, name: str, ttype: _ir.TensorType, axes: tuple = (), counts: str = "", winner_of: str = "") -> None:
         self.name = name
         self.ttype = ttype
         self.axes = axes
         #: The name of the appended plane this one counts (``hawk.append`` makes it), else empty.
         self.counts = counts
+        #: The name of the plane this one ranks (a minimum or maximum in lane order makes it), else empty.
+        self.winner_of = winner_of
         self.sinks: list[Any] = []
         self.by_key_kind: str | None = None
         self.by_key_op: str | None = None

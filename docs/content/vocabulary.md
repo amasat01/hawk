@@ -88,6 +88,10 @@ Declaring the shape of your lanes brings a few more words; the [glossary](glossa
   and `.xor(bits)` combine every lane's value with the plane's start value in any order. `hawk.scatter(y, conflict="any")[k] = v`
   lets lanes share a key (some lane's value wins). `old = hawk.scatter(y)[k].exchange(v)`, `.compare_exchange(expected, v)` and
   `.add(v, old=True)` return what the cell held, in the order the lanes arrived. None of them has a derivative.
+  `hawk.scatter(y, contract="ordered")[k].min(v)` (or `.max(v)`, scalar planes) fixes which lane wins each element: the lowest lane
+  among those whose value equals the finished element. The plane is the one the unordered fold gives; the winners are made with
+  the run (`<y>_winner`, unsigned, all ones where no lane wrote) and `plan.bind(...).winner("y")` reads them after a launch as an
+  `int32` array with `-1` for none. A NaN element has no winner, and `+0.0` and `-0.0` tie.
 - **`slot = hawk.append(out, value=v, when=cond)`** adds `v` to the list `out` (a plane declared with one axis, whose extent is
   its capacity) for each lane whose `when` holds, in no promised order, and gives the lane's place as an integer (`-1` when it
   asked for none). The run counts the lanes that asked in a one-element plane made with it: `plan.bind(...).count("out")` after

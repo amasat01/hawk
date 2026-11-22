@@ -515,12 +515,16 @@ def test_the_device_gradient_of_an_appended_value_is_its_derivative_times_the_se
     import cupy as cp
 
     derived = Kernel("place_squares_vjp", vjp(place_squares, primal_unit="0" * 64))
-    built = build_bundle(
-        [place_squares, derived],
-        tmp_path,
-        mode="float64",
-        targets=("cuda", "host"),
-        cache_dir=cache_dir,
+    # the primal and its reverse run over different execution axes, so each is a bundle of its own
+    built, built_reverse = (
+        build_bundle(
+            [member],
+            tmp_path / member.name,
+            mode="float64",
+            targets=("cuda", "host"),
+            cache_dir=cache_dir,
+        )
+        for member in (place_squares, derived)
     )
     x = _inputs(20)
     seed = np.random.default_rng(21).normal(size=CAPACITY)
@@ -533,7 +537,7 @@ def test_the_device_gradient_of_an_appended_value_is_its_derivative_times_the_se
     ).launch()
     bar_x = cp.zeros(N)
     _launch(
-        built,
+        built_reverse,
         derived.name,
         "cuda",
         {

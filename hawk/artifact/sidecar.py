@@ -438,6 +438,8 @@ def sidecar_meta(name: str, walk, *, fmt: str, scalar_type: str, steps: int | st
         **({"companions": walk.companions} if walk.companions else {}),
         # a one-element count beside each appended plane, as {count plane: the plane it counts}: the run makes it and hands it back
         **({"counts": walk.counts} if getattr(walk, "counts", None) else {}),
+        # a plane of winner lanes beside each plane a minimum or maximum in lane order writes, as {winner plane: the plane it ranks}
+        **({"winners": walk.winners} if getattr(walk, "winners", None) else {}),
         # a reverse derivative's gradient planes, each with the input it is the gradient of
         **({"gradient_of": walk.gradient_of} if walk.gradient_of else {}),
         # the gradients accumulated at lookup indices: an adjoint plane is its lookup plane's size, not the lane count
@@ -538,6 +540,7 @@ def _unit_walk(unit: dict, planes: dict, kernel, family: list) -> SimpleNamespac
         cells={c["name"]: {"op": _snake(c["op"]), "columns": c["columns"]} for c in body["cells"]},
         companions={names[c["slot"]]: names[c["target_slot"]] for c in body["companions"]},
         counts={names[c["slot"]]: names[c["of_slot"]] for c in body["counts"]},
+        winners={names[c["slot"]]: names[c["of_slot"]] for c in body["winners"]},
         gradient_of={g: x for g, x in kernel.gradients.items() if g in names},
         adjoint_like={g: x for g, x in kernel.gradients.items() if ("plane_out", g) in arg_spec and x in reads},
         zeroed=frozenset(s["name"] for s in slots if s["flags"] & _SLOT_ZEROED),

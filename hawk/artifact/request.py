@@ -61,6 +61,8 @@ def _member(body, name: str, position: dict) -> dict:
         declared += [_slot(slot) for slot in _mixes(body)]
         declared += [{**_slot(_ir.Slot("plane_out", name, plane.ttype), plane.axes), "counts": plane.counts}
                      for name, plane in planes.items() if getattr(plane, "counts", "")]
+        declared += [{**_slot(_ir.Slot("plane_out", name, plane.ttype), plane.axes), "winner_of": plane.winner_of}
+                     for name, plane in planes.items() if getattr(plane, "winner_of", "")]
     else:
         axes = _leaf_axes(body.walk)
         declared = [_slot(_ir.Slot(role, slot, _ir.slot_type(body.walk, role, slot)), axes.get((role, slot), ()))

@@ -357,6 +357,7 @@ def _trace(fn: Callable[..., None], kind: Any) -> Kernel:
         with tracing(lane_space(planes), fn.__name__) as reads:
             out = _call_finishing(traced, fn, {**args, **_group_views(planes, args)})
         _declare_counts(planes, args)
+        _declare_winners(planes, args)
         _retag_by_key(planes, args)
         _check_axis_sinks(fn.__name__, planes, args)
         finished = _finished(fn.__name__, params, args, finishes, resolved_kind)
@@ -402,6 +403,14 @@ def _declare_counts(planes: dict[str, Any], args: dict[str, Any]) -> None:
             planes[name] = Plane("accum", ref.ttype, axes=ref.axes, counts=ref.counts)
 
 
+def _declare_winners(planes: dict[str, Any], args: dict[str, Any]) -> None:
+    """The plane of winner lanes each ordered minimum or maximum made in the body: a written plane of the ranked plane's axes that
+    states the plane it ranks."""
+    for name, ref in args.items():
+        if getattr(ref, "winner_of", ""):
+            planes[name] = Plane("accum", ref.ttype, axes=ref.axes, winner_of=ref.winner_of)
+
+
 def _retag_by_key(planes: dict[str, Any], args: dict[str, Any]) -> None:
     """A plane a body wrote by key (``hawk.scatter(y)[key] (+)= v``, or
     ``y = hawk.sum(x, over=...)``) is shared, so its declaration becomes the
@@ -409,7 +418,8 @@ def _retag_by_key(planes: dict[str, Any], args: dict[str, Any]) -> None:
     for name, ref in args.items():
         kind = getattr(ref, "by_key_kind", None)
         if kind is not None:
-            planes[name] = Plane(kind, planes[name].ttype, axes=planes[name].axes, counts=planes[name].counts)
+            planes[name] = Plane(kind, planes[name].ttype, axes=planes[name].axes, counts=planes[name].counts,
+                                winner_of=planes[name].winner_of)
 
 
 def _check_axis_sinks(name: str, planes: dict[str, Any], args: dict[str, Any]) -> None:

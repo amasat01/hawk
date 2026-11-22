@@ -401,7 +401,10 @@ def scatter(sink: Any, contract: str = "auto", conflict: str = "unique") -> Any:
     every lane's value with the plane's initial value, in any order (the result is that of ``np.minimum.at``,
     ``np.maximum.at``, ``np.bitwise_and.at``, ``np.bitwise_xor.at``): ``hawk.scatter(y)[k].min(v)``, ``.max(v)``,
     ``.and_(b)`` and ``.xor(b)`` (the integer planes take ``and_`` and ``xor``, the ordered types ``min`` and
-    ``max``; a NaN absorbs). The plane keeps the value the caller gave it as the fold's start. Two
+    ``max``; a NaN absorbs). The plane keeps the value the caller gave it as the fold's start. ``contract="ordered"`` on
+    ``.min`` and ``.max`` of a scalar plane also records the winner of each element, the lowest lane whose value equals the
+    finished element (``+0.0`` and ``-0.0`` tie; a NaN element has none), in a plane the run makes beside it and
+    :meth:`hawk.runtime.BoundPlan.winner` reads. Two
     methods return the value the element held before this lane's update, which depends on the order the lanes arrive
     in: ``old = hawk.scatter(y)[k].exchange(v)`` and
     ``old = hawk.scatter(y)[k].compare_exchange(expected, v)`` (the lane that finds ``expected`` there installs
@@ -468,9 +471,13 @@ def scatter_store(refs: dict, name: str, key: Any, value: Any, op: str, current:
     if conflict != "unique" and op != "=":
         raise HawkError(f"{where}: conflict= is for a store, hawk.scatter(y, conflict='any')[key] = v; "
                         "the other operations resolve their conflicts themselves")
-    if op not in ("+=", "add") and contract != "auto":
+    ordered_fold = op in ("min", "max") and contract == "ordered"
+    if op not in ("+=", "add") and contract != "auto" and not ordered_fold:
         kind = {"=": "store", "|=": "bit-or"}.get(op, f".{op}")
-        raise HawkError(f"{where}: a {kind} has no sum contract; contract= is for += and .add only")
+        raise HawkError(f"{where}: a {kind} has no sum contract; contract= is for += and .add, and 'ordered' for .min and .max")
+    if ordered_fold and ref.ttype.shape:
+        raise HawkError(f"{where}: contract='ordered' records the winning lane of each element of a scalar plane; "
+                        f"{name!r} is declared {ref.ttype!r}")
     if op == "|=":
         contract = "or"
     if contract == "ordered" and op == "+=" and len(ref.ttype.shape) > 1:
@@ -483,8 +490,24 @@ def scatter_store(refs: dict, name: str, key: Any, value: Any, op: str, current:
     operation = {"=": "store", "+=": "add", "|=": "or"}.get(op, op)
     returned = by_key(ref, _key_indices(ref, key, where), value, operation, contract, conflict=conflict,
                       expected=expected, returns_old=operation in _RETURNING or old)
+    if ordered_fold:
+        _winner_ref(refs, ref, where)
     marker = current if isinstance(current, _Stored) else _Stored(name)
     return (marker, returned) if method else marker
+
+
+def _winner_ref(refs: dict, ranked: Any, where: str) -> None:
+    """The plane of winner lanes of the ordered minimum or maximum into ``ranked``, made once: an unsigned integer plane of the
+    ranked plane's axes that states the plane it ranks, which the run makes with every element all ones (no winner) when the caller
+    leaves it out."""
+    from .value import _SinkRef
+
+    name = f"{ranked.name}_winner"
+    held = refs.get(name)
+    if held is not None and getattr(held, "winner_of", "") != ranked.name:
+        raise HawkError(f"{where}: {name!r} is a parameter, the name of the winner plane of {ranked.name!r}; rename the parameter")
+    if held is None:
+        refs[name] = _SinkRef(name, _ir.TensorType((), "uint32"), ranked.axes, winner_of=ranked.name)
 
 
 def append(out: Any, value: Any = None, when: Any = True) -> Any:
