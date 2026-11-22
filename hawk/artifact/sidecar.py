@@ -641,7 +641,8 @@ def _counted(finish: dict | None, key: str) -> int | None:
 
 def _stated_plane_axes(body: dict, launch: dict, planes: dict) -> dict:
     """``{name: {payload, axes}}`` of the output planes the library states axes for in the unit's launch record: the plane's
-    value components come first as labelled axes (one per dimension of the declared payload), then the named ones. A plane
+    value components come first, then the named axes. The components are the slot's own shape where the slot holds the
+    value whole, and otherwise the leading stated axes (one per dimension of the declared payload). A plane
     whose stated axes are all payload is not listed, since any compact array of its elements binds; a plane no declaration
     covers (a derivative's) is listed whole, its axes taken as stated. The unit that lists the stages states the axes of the outputs a later stage writes."""
     slots = body["slots"]
@@ -653,7 +654,9 @@ def _stated_plane_axes(body: dict, launch: dict, planes: dict) -> dict:
         axes = [{"label": label, "extent": None if extent < 0 else extent}
                 for label, extent in zip(stated["labels"], stated["extents"])]
         declared = planes.get(slot["name"])
-        components = len(declared.ttype.shape) if declared is not None else 0
+        declared_rank = len(declared.ttype.shape) if declared is not None else 0
+        # The value dimensions the slot's shape does not carry are the leading stated axes.
+        components = max(declared_rank - len(slot["shape"]), 0)
         if len(axes) == components:
             continue
         out[slot["name"]] = {"payload": [axis["extent"] for axis in axes[:components]] + list(slot["shape"]),

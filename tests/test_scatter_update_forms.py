@@ -107,10 +107,112 @@ def test_the_device_text_stores_under_any_through_one_exchange(primal, helper):
     assert f"aether::accum::atomic::{helper}(wout_y(" in text
 
 
-@pytest.mark.parametrize("primal", [swap, claim, ticket], ids=["exchange", "compare_exchange", "add_old"])
-def test_an_update_that_returns_the_old_value_is_refused_by_name_until_it_is_written(primal, tmp_path, cache_dir):
-    with pytest.raises(HawkError, match=r"returns the old value"):
-        build_bundle([primal], tmp_path, mode="float64", targets=("host",), cache_dir=cache_dir)
+@kernel
+def swap_i(key: Index, x: Int32, y: Mutable[Int32], seen: Mutable[Int32]):
+    old = hawk.scatter(y)[key].exchange(x)
+    seen = old
+
+
+@kernel
+def ticket_i(key: Index, one: Int32, y: Mutable[Int32], seen: Mutable[Int32]):
+    old = hawk.scatter(y)[key].add(one, old=True)
+    seen = old
+
+
+@kernel
+def claim_i(key: Index, x: Int32, zero: Int32, y: Mutable[Int32], seen: Mutable[Int32]):
+    old = hawk.scatter(y)[key].compare_exchange(zero, x)
+    seen = old
+
+
+@pytest.fixture(scope="module")
+def old_bundle(tmp_path_factory, cache_dir):
+    return build_bundle([swap, claim, ticket, swap_i, ticket_i, claim_i], tmp_path_factory.mktemp("old_values"),
+                        mode="float64", targets=("cuda", "host"), cache_dir=cache_dir)
+
+
+def _run(bundle, name, **planes):
+    _launch(bundle, name, "host", planes).launch()
+
+
+def test_an_exchange_chain_returns_every_stored_value_once(old_bundle):
+    # order-free property: the old values returned plus the final cells are the initial cells plus every stored value
+    rng = np.random.default_rng(7)
+    key = rng.integers(0, CELLS, N).astype(np.int32)
+    x = rng.normal(size=N)
+    y, seen = np.full(CELLS, 100.0), np.zeros(N)
+    _run(old_bundle, "swap", key=key, x=x, y=y, seen=seen)
+    for cell in range(CELLS):
+        got = np.sort(np.append(seen[key == cell], y[cell]))
+        want = np.sort(np.append(x[key == cell], 100.0))
+        assert got.tobytes() == want.tobytes()
+
+
+def test_an_integer_exchange_chain_returns_every_stored_value_once(old_bundle):
+    key = np.zeros(N, np.int32)
+    x = np.arange(1, N + 1, dtype=np.int32)
+    y, seen = np.zeros(1, np.int32), np.zeros(N, np.int32)
+    _run(old_bundle, "swap_i", key=key, x=x, y=y, seen=seen)
+    assert np.array_equal(np.sort(np.append(seen, y)), np.arange(0, N + 1))
+
+
+def test_a_compare_exchange_on_a_fresh_cell_has_one_winner_whose_value_stays(old_bundle):
+    x = np.arange(1, N + 1, dtype=np.float64)
+    y, seen = np.zeros(1), np.full(N, -1.0)
+    _run(old_bundle, "claim", key=np.zeros(N, np.int32), x=x, y=y, seen=seen)
+    winners = np.flatnonzero(seen == 0.0)
+    assert len(winners) == 1 and y[0] == x[winners[0]]
+
+
+def test_an_integer_compare_exchange_on_a_fresh_cell_has_one_winner(old_bundle):
+    x = np.arange(1, N + 1, dtype=np.int32)
+    y, seen = np.zeros(1, np.int32), np.full(N, -1, np.int32)
+    _run(old_bundle, "claim_i", key=np.zeros(N, np.int32), x=x, zero=np.zeros(N, np.int32), y=y, seen=seen)
+    winners = np.flatnonzero(seen == 0)
+    assert len(winners) == 1 and y[0] == x[winners[0]]
+
+
+def test_a_ticket_add_returns_a_permutation_of_the_counts(old_bundle):
+    y, seen = np.zeros(1, np.int32), np.full(N, -1, np.int32)
+    _run(old_bundle, "ticket_i", key=np.zeros(N, np.int32), one=np.ones(N, np.int32), y=y, seen=seen)
+    assert y[0] == N and np.array_equal(np.sort(seen), np.arange(N))
+
+
+def test_a_ticket_add_into_several_cells_counts_each_cell_and_equals_add_at(old_bundle):
+    # oracle for the final plane: np.add.at; per cell the tickets are a permutation of 0..count-1
+    rng = np.random.default_rng(8)
+    key = rng.integers(0, CELLS, N).astype(np.int32)
+    y, seen = np.zeros(CELLS), np.zeros(N)
+    _run(old_bundle, "ticket", key=key, x=np.ones(N), y=y, seen=seen)
+    want = np.zeros(CELLS)
+    np.add.at(want, key, np.ones(N))
+    assert np.array_equal(y, want)
+    for cell in range(CELLS):
+        assert np.array_equal(np.sort(seen[key == cell]), np.arange(int(want[cell])))
+
+
+@pytest.mark.gpu
+def test_the_device_ticket_add_returns_a_permutation_of_the_counts(old_bundle):
+    import cupy as cp
+
+    y, seen = cp.zeros(1, cp.int32), cp.full(N, -1, cp.int32)
+    _launch(old_bundle, "ticket_i", "cuda", {"key": cp.zeros(N, cp.int32), "one": cp.ones(N, cp.int32), "y": y, "seen": seen}).launch()
+    cp.cuda.Device().synchronize()
+    assert int(y[0]) == N and np.array_equal(np.sort(seen.get()), np.arange(N))
+
+
+@pytest.mark.parametrize(
+    "primal, helper", [(swap, "exchangeAt"), (claim, "compareExchangeAt"), (ticket, "fetchAddAt")],
+    ids=["exchange", "compare_exchange", "add_old"],
+)
+@pytest.mark.parametrize("target", ["host", "cuda"])
+def test_an_update_that_returns_the_old_value_calls_its_helper_once_and_its_readers_read_the_name(primal, helper, target):
+    text = emit_source(primal, targets=(target,)).sources[target].text
+    assert text.count(f"aether::accum::atomic::{helper}(") == 1
+    (declaration,) = [line for line in text.splitlines() if f"atomic::{helper}(" in line]
+    assert declaration.strip().startswith("const auto hawk_old_")
+    name = declaration.split("=")[0].split()[-1]
+    assert any(name in line and "atomic::" not in line for line in text.splitlines())
 
 
 def test_the_forms_of_the_methods_are_listed_in_a_misuse():

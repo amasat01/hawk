@@ -1084,9 +1084,9 @@ def by_key(
             f"{where}: |= sets bits of an Int32 or UInt32 plane (a word per key), "
             f"{ref.name!r} is declared {ref.ttype!r}")
     kind = "wide_out" if op == "store" else "accum"
-    if ref.ttype.shape and not (op == "add" and ref.axes):
+    if ref.ttype.shape and not ref.axes:
         raise HawkError(
-            f"{where}: a vector payload is added by key into a sink declared with "
+            f"{where}: a vector payload is written by key into a sink declared with "
             f"named axes (Mutable[Vector[w], \"bin\":n]); a flat sink takes one "
             f"Mutable[Scalar] plane per component ({ref.name}0, ...) and "
             f"hawk.scatter({ref.name}0)[key] += u[0]")
