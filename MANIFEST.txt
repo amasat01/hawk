@@ -49,7 +49,7 @@ Every file with its line count (this file excluded):
     776  osprey_host/components/lowering/src/lower/derived.rs
     199  osprey_host/components/lowering/src/lower/events.rs
      83  osprey_host/components/lowering/src/lower/fused.rs
-    559  osprey_host/components/lowering/src/lower/group.rs
+    600  osprey_host/components/lowering/src/lower/group.rs
     154  osprey_host/components/lowering/src/lower/image.rs
     335  osprey_host/components/lowering/src/lower/links.rs
     178  osprey_host/components/lowering/src/lower/merge.rs

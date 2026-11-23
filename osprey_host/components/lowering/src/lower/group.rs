@@ -5,7 +5,7 @@ use super::meta_fill::Parts;
 use super::real_bytes;
 use super::request::{Body, KernelRequest};
 use super::unit_meta as m;
-use aether_writers::contract::types::Role;
+use aether_writers::contract::types::{Role, Target};
 use aether_writers::refuse::{bad, fault, not_written, Refusal};
 use raptor_ir::record::Ctx;
 use raptor_ir::value::{text_val, Val};
@@ -18,8 +18,12 @@ pub(super) fn group_of(ctx: &Ctx, sinks: &[u32]) -> Option<u32> {
         .find(|&sink| ctx.table.is_a(ctx.nodes[sink as usize].class, "Group"))
 }
 
-/// Refuses a request whose body holds a group: its text is not written for any backend yet, so no unit of it is lowered.
+/// Refuses a request for the device whose body holds a group: the device text of a group is not written yet, so no unit of it is
+/// lowered. The host text is written by the writers, which refuse by name the forms of a group they do not write.
 pub(super) fn refuse_unwritten(ctx: *mut Ctx, request: &KernelRequest) -> Result<(), Refusal> {
+    if !request.targets.contains(&Target::Device) {
+        return Ok(());
+    }
     // SAFETY: `ctx` is the live context the caller holds; it is only read here.
     let context = unsafe { &*ctx };
     let members = match &request.body {
@@ -531,8 +535,18 @@ mod tests {
     }
 
     #[test]
-    fn asking_for_the_text_of_a_group_is_refused_by_name_on_each_backend() {
-        for target in [Target::Host, Target::Device] {
+    fn asking_for_the_text_of_a_group_is_refused_by_name_where_it_is_not_written() {
+        // `tile` holds a group reduce: the host writers refuse it by name, the device refuses every group body
+        for (target, stem) in [
+            (
+                Target::Host,
+                "\"tile\": a group reduce is not written on the host yet",
+            ),
+            (
+                Target::Device,
+                "\"tile\": a group body is not written for this backend yet",
+            ),
+        ] {
             let (ctx, group) = loaded(TILE);
             let request = request_for("tile", group, &[], target);
             let json = request.to_json();
@@ -550,10 +564,37 @@ mod tests {
                 "{target:?}: {}",
                 why.reason
             );
-            assert_eq!(
-                why.reason, "\"tile\": a group body is not written for this backend yet",
-                "{target:?}"
-            );
+            assert_eq!(why.reason, stem, "{target:?}");
         }
+    }
+
+    #[test]
+    fn the_host_text_of_a_group_without_a_reduce_is_written_with_its_record() {
+        let (ctx, group) = loaded(RING);
+        let request = request_for("ring", group, &[], Target::Host);
+        let answer = lower(&TestHost, ctx, &request.to_json(), &shipped());
+        // SAFETY: `ctx` is the live context made above and is not used after.
+        unsafe { rx_ctx_free(ctx) };
+        let answer = answer.expect("the host text of ring");
+        let text = &answer.units[0].texts[0].text;
+        assert!(text.contains("for (std::int64_t hawk_g = base;"), "{text}");
+        // the phase that reads the next lane's element is cut: an interior loop with plain indices and the edge lanes beside it
+        assert!(
+            text.contains("hawk_rank < hawk_hi1; ++hawk_rank) {"),
+            "{text}"
+        );
+        assert!(text.contains("scr_t[hawk_rank + 1]"), "{text}");
+        assert!(
+            text.contains("scr_t[aether::edge::wrap(hawk_rank + 1, "),
+            "{text}"
+        );
+        assert!(
+            !text.lines().any(|l| l.contains("scr_t") && l.contains('%')),
+            "no remainder in a scratch index: {text}"
+        );
+        assert_eq!(
+            answer.units[0].meta.group.as_ref().map(|g| g.phases),
+            Some(2)
+        );
     }
 }
