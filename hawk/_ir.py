@@ -509,6 +509,11 @@ def group_element(context: Any, kind: str) -> Any:
     return context.new(kind, "()", [])
 
 
+def group_body(group: Any) -> tuple:
+    """The sinks of the body of ``group`` (a ``Group`` node), in the order the library keeps them."""
+    return tuple(group.field_nodes("body_sinks"))
+
+
 @_as_hawk_error
 def group_reduce(op: str, value: Any, order: str) -> Any:
     """Make the group-wide reduce ``op`` (``sum``, ``min``, ``max``, ``any`` or ``all``) of ``value``, added in ``order`` when it is a sum."""

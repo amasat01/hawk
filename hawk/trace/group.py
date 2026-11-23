@@ -147,8 +147,9 @@ class GroupScope:
             self._outer._body.append(group)
             self._outer._written.extend(self._written)
         else:
+            held = set(self._body)
             for ref in self._written:
-                ref.sinks = [group]
+                ref.sinks = [*(k for k in ref.sinks if k not in held), group]
         return False
 
     def _build(self) -> Any:
@@ -191,17 +192,38 @@ class GroupScope:
         self._body.append(sink)
         return sink
 
+    def adopt(self, ref: Any, sink: Any) -> None:
+        """Take ``sink``, an update of the plane ``ref`` the body just wrote by key, as the next sink of the body: it
+        runs in the group, in the author's order."""
+        self._record(sink)
+        if ref not in self._written:
+            self._written.append(ref)
+
     def commit(self, ref: Any, value: Any) -> Any:
-        """The store of ``value`` into the lane's own element of the output plane ``ref``, as the next sink of the body."""
+        """The commit of ``value`` to the lane's own element of the output plane ``ref``, as the next sink of the body: the sink an
+        output has outside a scope."""
         if ref.axes:
             raise _named(
                 HawkError(
                     f"{ref.name!r}: a group commits the lane's own element of an output plane, so the plane declares no named axes"
                 )
             )
-        with _library():
-            sink = self._record(_ir.update(ref.name, ref._typed(value), op="store"))
+        sink = self._record(self._ordinary_sink(ref, value))
         self._written.append(ref)
+        return sink
+
+    @staticmethod
+    def _ordinary_sink(ref: Any, value: Any) -> Any:
+        """The sink the kernel builds for ``ref = value`` outside a scope: the plane's own ``write`` builds it, with this scope
+        closed for the moment so that the write is not handed back to the scope."""
+        outer = _trace.group
+        _trace.group = None
+        try:
+            with _library():
+                ref.write(value)
+        finally:
+            _trace.group = outer
+        (sink,) = ref.sinks
         return sink
 
     # ---- what the body uses ----

@@ -95,14 +95,14 @@ def test_the_phases_of_a_traced_group_are_the_library_s(kernel, phases):
 @pytest.mark.parametrize(
     ("kernel", "slots"),
     [
-        (ring, (("plane_out", "y"), ("plane_in", "x"))),
-        (tile, (("plane_out", "y"), ("plane_in", "x"))),
+        (ring, (("mutable", "y"), ("plane_in", "x"))),
+        (tile, (("mutable", "y"), ("plane_in", "x"))),
         (
             rows,
             (
-                ("plane_out", "least"),
-                ("plane_out", "place"),
-                ("plane_out", "total"),
+                ("mutable", "least"),
+                ("mutable", "place"),
+                ("mutable", "total"),
                 ("plane_in", "x"),
             ),
         ),
@@ -307,9 +307,7 @@ def test_not_exactly_one_membership_argument_is_refused_by_name(stated):
 
 
 def test_a_branch_inside_the_scope_is_refused_by_name():
-    with pytest.raises(
-        HawkError, match=r"a group's scope holds straight-line statements"
-    ):
+    with pytest.raises(HawkError, match=r"g\.sum\(\.\.\.\) inside an `if` or a `for`"):
 
         @hawk.kernel
         def branching(x: Scalar, y: Mutable[Scalar]):

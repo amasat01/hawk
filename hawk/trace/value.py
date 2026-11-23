@@ -1080,6 +1080,8 @@ def by_key(
     into a sink declared with named axes is summed per key, payload first. ``edge`` is the rule for a key outside the plane
     (``zero`` drops the update); ``several`` states that this is one of many updates of one operation into the plane, which
     the plane then holds together (an append is one of them)."""
+    from .group import open_scope
+
     where = f"hawk.scatter({ref.name})[key]"
     if any(not _ir.is_a(k, "update") for k in ref.sinks):
         raise HawkError(
@@ -1119,6 +1121,9 @@ def by_key(
                          axes=ref.axes)
     ref.sinks = [node] if op in ("store", "exchange", "compare_exchange") and not several else [*ref.sinks, node]
     ref.by_key_kind, ref.by_key_op = kind, op
+    scope = open_scope()
+    if scope is not None:
+        scope.adopt(ref, node)
     return Value(node) if returns_old else None
 
 

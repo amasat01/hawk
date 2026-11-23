@@ -657,16 +657,14 @@ def _lower_row_loops(stmts: list[ast.stmt], filename: str) -> list[ast.stmt]:
 
 
 def _validate(stmts: list[ast.stmt], filename: str, sinks: frozenset[str],
-              in_branch: bool, in_loop: bool = False, in_group: bool = False) -> None:
+              in_branch: bool, in_loop: bool = False, in_group: tuple | None = None) -> None:
     for st in stmts:
         if isinstance(st, ast.With) and _is_group_scope(st):
-            _check_group_scope(st, filename, in_branch or in_loop or in_group)
-            _validate(st.body, filename, sinks, False, False, True)
+            _check_group_scope(st, filename, in_branch or in_loop or in_group is not None)
+            _validate(st.body, filename, sinks, False, False, _group_names(st))
             continue
-        if in_group and isinstance(st, (ast.If, ast.For)):
-            raise _err(st, filename,
-                       "a group's scope holds straight-line statements: an `if` or a `for` inside `with hawk.group(...)` "
-                       "is not in this release; choose with m.where(cond, a, b) and hold the loop outside the group")
+        if in_group is not None and isinstance(st, (ast.If, ast.For)) and not (in_branch or in_loop):
+            _check_phase_free(st, in_group, filename)
         if isinstance(st, ast.Return):
             raise _err(st, filename, _EARLY_RETURN)
         if isinstance(st, ast.Break):
@@ -747,6 +745,43 @@ def _is_group_scope(st: ast.With) -> bool:
             and _named_call(st.items[0].context_expr.func, "group"))
 
 
+def _group_names(st: ast.With) -> tuple:
+    """``(the group's name, the names of the scratch planes its scope declares)``."""
+    group = st.items[0].optional_vars.id
+    scratch = {
+        n.targets[0].id
+        for n in ast.walk(st)
+        if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name) and isinstance(n.value, ast.Call)
+        and isinstance(n.value.func, ast.Attribute) and n.value.func.attr == "scratch"
+        and isinstance(n.value.func.value, ast.Name) and n.value.func.value.id == group}
+    return group, scratch
+
+
+#: What a group offers that every lane of the group must reach: it cannot depend on a branch or a loop.
+_EVERY_LANE = ("barrier", "scratch", "sum", "min", "max", "any", "all")
+
+
+def _check_phase_free(st: ast.stmt, names: tuple, filename: str) -> None:
+    """Refuse, inside the ``if`` or ``for`` ``st`` of a group's scope, what every lane of the group must reach (a barrier
+    ends a phase for all of them, a reduction combines all of them, a scratch plane is declared once) and a store into
+    scratch (it would run for every lane whatever the condition)."""
+    group, scratch = names
+    for n in ast.walk(st):
+        if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and isinstance(n.func.value, ast.Name)
+                and n.func.value.id == group and n.func.attr in _EVERY_LANE):
+            raise _err(n, filename,
+                       f"{group}.{n.func.attr}(...) inside an `if` or a `for`: a barrier ends a phase for every lane of the "
+                       "group, a reduction combines every lane and a scratch plane is declared once, so none may depend on "
+                       "a branch or a loop; write it at the top level of the scope")
+        stores = n.targets if isinstance(n, ast.Assign) else [n.target] if isinstance(n, ast.AugAssign) else []
+        for t in stores:
+            if isinstance(t, ast.Subscript) and isinstance(t.value, ast.Name) and t.value.id in scratch:
+                raise _err(n, filename,
+                           f"a store into the scratch plane {t.value.id!r} inside an `if` or a `for` would run for every lane "
+                           "whatever the condition; choose the value with m.where(cond, a, b) and store it at the top level "
+                           "of the scope")
+
+
 def _check_group_scope(st: ast.With, filename: str, nested: bool) -> None:
     """The static refusals of one ``with hawk.group(...) as g:`` statement."""
     if nested:
@@ -759,6 +794,27 @@ def _check_group_scope(st: ast.With, filename: str, nested: bool) -> None:
     _check_expr(item.context_expr, filename)
 
 
+def _is_seed(st: ast.stmt) -> bool:
+    """``st`` is the start value :func:`_rewrite_mutable_stores` gives a mutable plane: ``__hawk_m_y = None``, or built from
+    the plane's own name (``y.prior``, ``y.zero_cover(...)``), which no store of the author's body names any more."""
+    if not (isinstance(st, ast.Assign) and isinstance(st.targets[0], ast.Name)
+            and st.targets[0].id.startswith(MUT_PREFIX)):
+        return False
+    plane = st.targets[0].id[len(MUT_PREFIX):]
+    return (isinstance(st.value, ast.Constant) and st.value.value is None) or any(
+        isinstance(n, ast.Name) and n.id == plane for n in ast.walk(st.value))
+
+
+def _stores_in_order(stmts: list[ast.stmt]):
+    """The assignments of ``stmts`` in the order they are written, those inside an ``if`` or a ``for`` included."""
+    for st in stmts:
+        if isinstance(st, (ast.Assign, ast.AugAssign)):
+            yield st
+        elif isinstance(st, (ast.If, ast.For)):
+            yield from _stores_in_order(st.body)
+            yield from _stores_in_order(st.orelse)
+
+
 def _group_commits(stmts: list[ast.stmt], filename: str) -> list[str]:
     """Commit, at the end of every group's scope, the mutable planes (their shadow names) the scope stores, in the order
     of their first store, so that each plane's sink belongs to the group; return their raw names. A plane stored both
@@ -768,7 +824,7 @@ def _group_commits(stmts: list[ast.stmt], filename: str) -> list[str]:
         if not (isinstance(st, ast.With) and _is_group_scope(st)):
             continue
         mine: list[str] = []
-        for inner in st.body:
+        for inner in _stores_in_order(st.body):
             target = (inner.targets[0] if isinstance(inner, ast.Assign) else getattr(inner, "target", None))
             if isinstance(target, ast.Name) and target.id.startswith(MUT_PREFIX):
                 name = target.id[len(MUT_PREFIX):]
@@ -777,7 +833,7 @@ def _group_commits(stmts: list[ast.stmt], filename: str) -> list[str]:
         st.body += [_commit(name) for name in mine]
         inside += [name for name in mine if name not in inside]
     for st in stmts:
-        if isinstance(st, ast.With) and _is_group_scope(st):
+        if (isinstance(st, ast.With) and _is_group_scope(st)) or _is_seed(st):
             continue
         stored = {n[len(MUT_PREFIX):] for n in _assigned([st]) if n.startswith(MUT_PREFIX)}
         both = [name for name in inside if name in stored]
@@ -930,6 +986,10 @@ def _rewrite_view_stores(stmts: list[ast.stmt], in_loop: bool = False, filename:
     statement of its own, so the sink is not a loop-carried name."""
     out = []
     for st in stmts:
+        if isinstance(st, ast.With) and _is_group_scope(st):
+            st.body = _rewrite_view_stores(st.body, False, filename)
+            out.append(st)
+            continue
         if isinstance(st, ast.For):
             st.body = _rewrite_view_stores(st.body, True, filename)
             out.append(st)

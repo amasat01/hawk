@@ -774,10 +774,19 @@ def _scattered_companion(kind: Any, sinks: tuple[Any, ...]) -> tuple[Any, ...]:
     return out
 
 
+def _with_group_bodies(sinks: tuple[Any, ...]) -> tuple[Any, ...]:
+    """The kernel's sinks with each group replaced by the sinks of its body, as the library lists them: what a scan for
+    the updates a kernel makes (their companion planes, their zero commits) must read, since a group is one sink."""
+    return tuple(inner for s in sinks for inner in (_ir.group_body(s) if _ir.is_a(s, "group") else (s,)))
+
+
 def _contract_companions(name: str, planes: dict[str, Any], sinks: tuple[Any, ...]) -> tuple:
     """The companion plane ``<plane>_c`` of each ``contract="compensated"``
     accumulate, bound by a zero commit at the same key (the commit's correction
-    lands there; the target writes it, not this sink). Declared like its plane."""
+    lands there; the target writes it, not this sink). Declared like its plane.
+    An accumulate in the body of a group has its companion and zero commit as one outside the group would, the commit
+    beside the group."""
+    sinks = _with_group_bodies(sinks)
     out: dict = {}
     for s in sinks:
         if _ir.compensates(s):

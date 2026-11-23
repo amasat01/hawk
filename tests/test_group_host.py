@@ -112,6 +112,15 @@ def over_rows(lane: Grid["row":3, "col":5], x: Scalar, y: Mutable[Scalar]):  # n
 
 
 @hawk.kernel
+def over_lead(lane: Grid["row":8, "col":32771], x: Scalar, y: Mutable[Scalar]):  # noqa: F821 axis labels
+    with hawk.group(over="row") as g:
+        t = g.scratch("t", Scalar)
+        t[g.rank] = x
+        g.barrier()
+        y = t.at(g.rank + 1, edge="wrap") + t.at(g.rank - 1, edge="wrap")
+
+
+@hawk.kernel
 def over_two(lane: Grid["a":2, "b":3, "c":4], x: Scalar, y: Mutable[Scalar]):  # noqa: F821 axis labels
     with hawk.group(over=("a", "c")) as g:
         t = g.scratch("t", Scalar)
@@ -129,13 +138,44 @@ def fill(x: Scalar, y: Mutable[Scalar]):
         y = t[g.rank] * t[g.rank]
 
 
+@hawk.kernel
+def beside(x: Scalar, y: Mutable[Scalar], z: Mutable[Scalar]):
+    with hawk.group(lanes=8) as g:
+        t = g.scratch("t", Scalar)
+        t[g.rank] = x
+        g.barrier()
+        y = t.at(g.rank + 1, edge="wrap")
+    z = x + 1.0
+
+
+@hawk.kernel
+def beside_keyed(
+    cell: Index,
+    x: Scalar,
+    y: Mutable[Scalar],
+    acc: Mutable[Scalar, "bin":4],  # noqa: F821 axis labels
+):
+    with hawk.group(lanes=8) as g:
+        y = x * m.real(g.size)
+    hawk.scatter(acc, contract="plain")[cell] += x
+
+
+@hawk.kernel
+def beside_reads_prior(x: Scalar, y: Mutable[Scalar], z: Mutable[Scalar]):
+    z = y + x
+    with hawk.group(lanes=8) as g:
+        y = x * m.real(g.size)
+
+
 KERNELS = [_ring(edge, lanes) for edge in EDGES for lanes in (8, 64)] + [
     ranked,
     two_phase,
     over_cols,
     over_rows,
+    over_lead,
     over_two,
     fill,
+    beside,
 ]
 
 
@@ -145,6 +185,18 @@ def bundle(tmp_path_factory, cache_dir):
     return build_bundle(
         KERNELS,
         tmp_path_factory.mktemp("group_host"),
+        targets=("host",),
+        cache_dir=cache_dir,
+        host_profile="native",
+    )
+
+
+@pytest.fixture(scope="module")
+def keyed_bundle(tmp_path_factory, cache_dir):
+    """The kernel with a keyed add, built apart: a bundle holds one kind of access."""
+    return build_bundle(
+        [beside_keyed],
+        tmp_path_factory.mktemp("group_keyed"),
         targets=("host",),
         cache_dir=cache_dir,
         host_profile="native",
@@ -252,29 +304,86 @@ def test_a_group_over_two_axes_with_one_between_them_ranks_its_lanes_in_lane_ord
     np.testing.assert_array_equal(y, want)
 
 
-def test_the_same_launch_gives_the_same_bytes_on_one_four_and_seven_threads(bundle):
-    """Oracle: the result of one thread, and the NumPy slices; groups are split among the threads whole."""
-    n = 40_000 + 5
+def test_an_output_beside_a_group_is_written_for_every_lane_as_outside_a_group(bundle):
+    """Oracle: ``x + 1`` for the output beside the group, the NumPy roll of each group's slice for the group's (19 lanes)."""
+    x = RNG.normal(size=19)
+    y, z = np.zeros(19), np.zeros(19)
+    _run(bundle, "beside", x=x, y=y, z=z)
+    np.testing.assert_array_equal(z, x + 1.0)
+    np.testing.assert_array_equal(
+        y, np.concatenate([_moved(g, 1, "wrap") for g in _groups(x, 8)])
+    )
+
+
+def test_a_keyed_add_beside_a_group_adds_every_lane_once(keyed_bundle):
+    """Oracle: ``np.add.at`` of the lanes' values at their keys, and ``x`` times the length of the lane's group."""
+    n = 19
+    x, cell = RNG.normal(size=n), RNG.integers(0, 4, size=n).astype(np.int32)
+    y, acc = np.zeros(n), np.zeros(4)
+    _run(keyed_bundle, "beside_keyed", cell=cell, x=x, y=y, acc=acc)
+    want = np.zeros(4)
+    np.add.at(want, cell, x)
+    np.testing.assert_allclose(acc, want, rtol=0, atol=1e-12)
+    np.testing.assert_array_equal(y, x * np.repeat([8.0, 8.0, 3.0], [8, 8, 3]))
+
+
+def test_a_sink_beside_a_group_that_reads_a_plane_the_group_writes_is_refused_by_name():
+    refusal = _refusal(beside_reads_prior)
+    assert (
+        "a sink beside a group that shares the plane 'y' with the group's body is not written on the host yet"
+        in refusal
+    )
+    assert '"beside_reads_prior"' in refusal
+
+
+#: The groups one tile of a launch holds: a group's working set is small enough for the largest tile the host library cuts (4096
+#: samples, here groups), so a launch of more groups than this is cut into several tiles.
+GROUPS_PER_TILE = 4096
+
+
+def _determinism_cases():
+    """(kernel, planes of one launch, oracle) over more than seven tiles of groups: a flat count group and a group over the
+    leading axis of a grid of 32771 columns (4096 * 8 + 3; its groups are the columns)."""
+    groups = GROUPS_PER_TILE * 8 + 3
+    n = groups * 8 + 5
     x = RNG.normal(size=n)
-    want = np.concatenate(
+    flat = np.concatenate(
         [
             g + 2.0 * _moved(g, 1, "wrap") + 3.0 * _moved(g, -1, "wrap")
             for g in _groups(x, 8)
         ]
     )
+    columns = 32771
+    grid = RNG.normal(size=(8, columns))
+    lead = np.roll(grid, -1, axis=0) + np.roll(grid, 1, axis=0)
+    return [("ring_wrap_8", x, flat, groups), ("over_lead", grid, lead, columns)]
+
+
+@pytest.mark.parametrize(
+    "case", range(2), ids=["count group", "group over the leading axis"]
+)
+def test_the_same_launch_gives_the_same_bytes_on_one_four_and_seven_threads_over_many_tiles(
+    bundle, case
+):
+    """Oracle: the NumPy slices; the launch is cut into ``ceil(groups / 4096)`` tiles (a launch reports how many ran), more than
+    the seven threads, so the groups really are split among the threads, and every thread count gives the same bytes."""
+    name, x, want, groups = _determinism_cases()[case]
+    tiles_expected = -(-groups // GROUPS_PER_TILE)
+    assert tiles_expected > 7
     results = []
     try:
         for threads in (1, 4, 7):
             hawk.set_host_threads(threads)
-            y = np.zeros(n)
-            hawk.plan(_loaded(bundle, "ring_wrap_8"), hawk.HostTeam).bind(
-                x=x, y=y
-            ).launch()
+            y = np.zeros_like(x)
+            tiles = (
+                hawk.plan(_loaded(bundle, name), hawk.HostTeam).bind(x=x, y=y).launch()
+            )
+            assert tiles == tiles_expected
             results.append(y.tobytes())
     finally:
         hawk.set_host_threads(None)
     assert results[0] == results[1] == results[2]
-    np.testing.assert_array_equal(np.frombuffer(results[0]), want)
+    np.testing.assert_array_equal(np.frombuffer(results[0]).reshape(want.shape), want)
 
 
 def test_a_fill_and_a_read_in_two_phases_gives_x(bundle):
@@ -301,7 +410,7 @@ def test_a_phase_that_reads_a_neighbour_is_cut_into_an_interior_loop_and_the_edg
         in lines
     )
     assert any(
-        line.startswith("wout_y[i] = ") and "scr_t[hawk_rank + 1]" in line
+        line.startswith("mut_y[i] = ") and "scr_t[hawk_rank + 1]" in line
         for line in lines
     )
     assert any("scr_t[aether::edge::wrap(hawk_rank + 1, " in line for line in lines)

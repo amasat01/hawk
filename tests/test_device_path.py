@@ -210,7 +210,7 @@ def test_a_matrix_plane_of_another_library_given_component_major_is_viewed_by_it
 
 
 @hawk.kernel
-def lane_doubled(lane: hawk.Grid["u", "v":4], x: Scalar) -> Scalar:
+def lane_doubled(lane: hawk.Grid["u", "v":4], x: Scalar) -> Scalar:  # noqa: F821 axis labels
     return x + x
 
 
