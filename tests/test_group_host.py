@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 
 import hawk
-from hawk import Grid, HawkError, Index, Mutable, Scalar, Vector
+from hawk import Grid, HawkError, Index, Matrix, Mutable, Scalar, Vector
 from hawk import math as m
 from hawk.artifact import build_bundle, emit_source
 
@@ -201,6 +201,24 @@ def cycle(x: Scalar, w: Mutable[Scalar], y: Mutable[Scalar]):
     w = ahead
 
 
+@hawk.kernel
+def vector_norm(v: Vector[3], y: Mutable[Scalar]):
+    with hawk.group(lanes=16) as g:
+        s = g.scratch("s", Scalar)
+        s[g.rank] = v[0] * v[0] + v[1] * v[1] + v[2] * v[2]
+        g.barrier()
+        y = m.sqrt(s[g.rank])
+
+
+@hawk.kernel
+def matrix_mix(a: Matrix[2, 2], y: Mutable[Scalar]):
+    with hawk.group(lanes=16) as g:
+        s = g.scratch("s", Scalar)
+        s[g.rank] = a[0, 0] * a[1, 1] + 10.0 * a[0, 1] + 100.0 * a[1, 0]
+        g.barrier()
+        y = s[g.rank] + a[1, 1]
+
+
 KERNELS = [_ring(edge, lanes) for edge in EDGES for lanes in (8, 64)] + [
     ranked,
     two_phase,
@@ -209,6 +227,8 @@ KERNELS = [_ring(edge, lanes) for edge in EDGES for lanes in (8, 64)] + [
     over_lead,
     over_two,
     fill,
+    vector_norm,
+    matrix_mix,
     beside,
     before_reads_prior,
     after_writes_what_the_body_reads,
@@ -529,6 +549,25 @@ def test_a_fill_group_of_sixteen_is_right_for_a_short_only_group_a_whole_one_and
     np.testing.assert_array_equal(y, np.sqrt(x) * np.sqrt(x))
 
 
+@pytest.mark.parametrize("n", (5, 16, 100), ids=("short only", "whole", "short last"))
+def test_a_vector_input_read_in_the_phases_of_a_group_equals_the_numpy_norm(bundle, n):
+    """Oracle: ``sqrt(v0*v0 + v1*v1 + v2*v2)`` per lane, added in the kernel's order."""
+    v = RNG.normal(size=(3, n))
+    y = np.zeros(n)
+    _run(bundle, "vector_norm", v=v, y=y)
+    np.testing.assert_array_equal(y, np.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]))
+
+
+@pytest.mark.parametrize("n", (5, 16, 100), ids=("short only", "whole", "short last"))
+def test_a_matrix_input_read_in_the_phases_of_a_group_equals_the_numpy_mix(bundle, n):
+    """Oracle: the components of each lane's matrix combined as the kernel states, in NumPy."""
+    a = RNG.normal(size=(4, n))  # the matrix's components, row-major
+    y = np.zeros(n)
+    _run(bundle, "matrix_mix", a=a, y=y)
+    want = a[0] * a[3] + 10.0 * a[1] + 100.0 * a[2] + a[3]
+    np.testing.assert_array_equal(y, want)
+
+
 # ---- the text ----
 
 
@@ -568,6 +607,29 @@ def test_an_input_plane_is_read_in_the_phase_loops_through_a_hoisted_restrict_po
     )
     assert any("hawk_p_psc_x[hawk_i]" in line for line in lines)
     assert not any("psc_x[i]" in line for line in lines)
+
+
+def test_a_vector_and_a_matrix_input_plane_are_read_through_a_hoisted_pointer_and_pitch():
+    """The pointer and the component pitch are declared once before the group; the lane's row is the items read through them."""
+    for kernel, binding, components in (
+        (vector_norm, "vin_v", 3),
+        (matrix_mix, "mtx_a", 4),
+    ):
+        lines = [line.strip() for line in _host_text(kernel).splitlines()]
+        pointer = f"const auto* __restrict hawk_p_{binding} = {binding}.data();"
+        assert pointer in lines, binding
+        assert any(
+            line.startswith(f"const std::int64_t hawk_pitch_{binding} = ")
+            for line in lines
+        )
+        assert lines.index(pointer) < next(
+            k
+            for k, line in enumerate(lines)
+            if line.startswith("const auto hawk_group")
+        )
+        row = next(line for line in lines if f"hawk_p_{binding}[0 * " in line)
+        assert row.count(f"hawk_p_{binding}[") == components
+        assert f"{binding}[i]" not in " ".join(lines)
 
 
 def test_a_plane_the_body_reads_and_the_unit_writes_gets_no_restrict_pointer():
