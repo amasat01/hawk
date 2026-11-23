@@ -221,3 +221,81 @@ def test_the_reverse_derivative_of_a_vector_sum_gathers_the_adjoint_at_the_key(t
     bar_v = np.zeros((3, N))
     runtime.run(runtime.load(bundle.directory, "vector_vjp"), key=key, bar_acc=bar_acc, bar_v=bar_v)
     np.testing.assert_allclose(bar_v, bar_acc[:, key], rtol=1e-13)
+
+
+# ---- a compensated add at several indices that are the same across a warp commits once per warp run, at the element ----
+
+NET_SAMPLES = 64   # two warps per net: a run of 32 lanes shares the element (net, 2)
+
+
+def _net_sum_kernel(contract: str, column):
+    """The sum of each net's samples into a column of the plane ``acc[net, p]``: ``column`` is the second index."""
+
+    @kernel
+    def net_sum(lane: hawk.Grid["net", "sample":NET_SAMPLES], v: hawk.Scalar, acc: Mutable[hawk.Scalar, "net", "p":4]):  # noqa: F821
+        hawk.scatter(acc, contract=contract)[lane.net, column(lane)] += v
+
+    net_sum.name = f"net_sum_{contract}_{column.__name__}"
+    return net_sum
+
+
+def _fixed_column(lane):
+    return 2
+
+
+def _moving_column(lane):
+    return lane.sample % 4
+
+
+NET_KERNELS = [_net_sum_kernel("compensated", _fixed_column), _net_sum_kernel("compensated", _moving_column)]
+
+
+@pytest.fixture(scope="module")
+def net_bundle(tmp_path_factory, cache_dir):
+    return build_bundle(NET_KERNELS[:1], tmp_path_factory.mktemp("net_sum"), mode="float64", targets=("cuda", "host"),
+                        cache_dir=cache_dir)
+
+
+def _net_terms(nets, seed):
+    return _ill_conditioned(np.random.default_rng(seed), (nets, NET_SAMPLES))
+
+
+def _net_sum_want(terms):
+    """The oracle: ``math.fsum`` of each net's samples in column 2, zero elsewhere."""
+    want = np.zeros((terms.shape[0], 4))
+    want[:, 2] = [math.fsum(row) for row in terms]
+    return want
+
+
+def test_a_compensated_net_sum_equals_fsum_per_net_on_the_host(net_bundle, threads):
+    """The tolerance is the one of the compensated matrix rows of this file: 8 eps of the sum of magnitudes."""
+    terms = _net_terms(5, 7)
+    acc = np.zeros((5, 4))
+    _launch(net_bundle, NET_KERNELS[0].name, "host", {"net": 5, "v": terms.ravel(), "acc": acc}).launch()
+    scale = np.finfo(np.float64).eps * np.abs(terms).sum(axis=1, keepdims=True) * 8
+    assert np.all(np.abs(acc - _net_sum_want(terms)) <= scale)
+
+
+@pytest.mark.gpu
+def test_sixteen_thousand_compensated_net_sums_equal_fsum_per_net_on_the_device(net_bundle):
+    import cupy as cp
+
+    terms = _net_terms(16384, 8)
+    acc = cp.zeros((16384, 4))
+    _launch(net_bundle, NET_KERNELS[0].name, "cuda", {"net": 16384, "v": cp.asarray(terms.ravel()), "acc": acc}).launch()
+    cp.cuda.Device().synchronize()
+    scale = np.finfo(np.float64).eps * np.abs(terms).sum(axis=1, keepdims=True) * 8
+    assert np.all(np.abs(acc.get() - _net_sum_want(terms)) <= scale)
+
+
+def test_the_text_of_a_compensated_net_sum_commits_once_per_warp_run_with_its_companion():
+    text = emit_source(NET_KERNELS[0], targets=("cuda",), device_arch="sm_80").sources["cuda"].text
+    assert "aether::accum::run::addCompensatedAt<32>(aout_acc(" in text
+    assert ", aout_acc_c(" in text
+    assert "hawk_abi::accum_add_compensated_at(aout_acc(" not in text
+
+
+def test_the_text_of_a_compensated_net_sum_whose_column_moves_with_the_sample_commits_per_lane():
+    text = emit_source(NET_KERNELS[1], targets=("cuda",), device_arch="sm_80").sources["cuda"].text
+    assert "hawk_abi::accum_add_compensated_at(aout_acc(" in text
+    assert "addCompensatedAt<" not in text
