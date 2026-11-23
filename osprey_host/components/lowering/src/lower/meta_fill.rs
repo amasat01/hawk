@@ -761,6 +761,7 @@ pub(super) fn unit(parts: &Parts) -> Result<(m::UnitMeta, Option<m::Contraction>
         device_flags: image.map(|i| i.flags.clone()),
         device_ptx_isa: image.map_or(0, |i| i.ptx_isa),
         gemm,
+        group: super::group::record(parts)?,
         device_function: device,
         launch: launch(parts, &slots),
         finish: finish(parts, &slots)?,

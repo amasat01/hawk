@@ -6,8 +6,8 @@
 //! What the digest of a unit is: the unit's canonical walk digest (SHA-256 of the walk, 64 hex digits in the answer), decoded to
 //! its 32 bytes. The device image is named by its bytes symbol and its size symbol; its content is never part of the source.
 use super::unit_meta::{
-    BranchCost, Derived, Dispatch, DispatchStrategy, Gemm, LibraryMeta, StepsTable, ThreadBox,
-    UnitMeta, BRANCH_FLAGS, BRANCH_HAS_STORES, FINISH_FLAGS, GEMM_FLAGS, GEMM_PER_LANE,
+    BranchCost, Derived, Dispatch, DispatchStrategy, Gemm, Group, LibraryMeta, StepsTable,
+    ThreadBox, UnitMeta, BRANCH_FLAGS, BRANCH_HAS_STORES, FINISH_FLAGS, GEMM_FLAGS, GEMM_PER_LANE,
     LIBRARY_META_SYMBOL, SCHEMA_MAJOR, SLOT_FLAGS, UNIT_FLAGS,
 };
 use aether_writers::refuse::{fault, Refusal};
@@ -661,11 +661,55 @@ fn gemm(out: &mut Out, gemm: Option<&Gemm>) -> String {
     format!("&{}", out.record("eg_unit_gemm", "gemm", &members))
 }
 
+/// The group record of a unit, as a pointer to it or NULL for a unit that has none.
+fn group(out: &mut Out, group: Option<&Group>) -> String {
+    let Some(g) = group else {
+        return "NULL".into();
+    };
+    let planes: Vec<String> = g
+        .scratch
+        .iter()
+        .enumerate()
+        .map(|(at, p)| {
+            let members = [
+                ("dtype", p.dtype.c_name().into()),
+                ("rank", p.shape.len().to_string()),
+                ("reserved0", "0".into()),
+                (
+                    "shape",
+                    out.numbers("int64_t", &format!("gs{at}_shape"), &p.shape),
+                ),
+                ("elements", p.elements.to_string()),
+                ("bytes", p.bytes.to_string()),
+                ("name", lit(&p.name)),
+            ];
+            out.record("eg_unit_group_scratch", &format!("gs{at}"), &members)
+        })
+        .collect();
+    let members = [
+        ("membership", g.membership.c_name().into()),
+        ("phases", g.phases.to_string()),
+        ("n_axes", g.axes.len().to_string()),
+        ("key_slot", index(g.key_slot)),
+        ("n_scratch", planes.len().to_string()),
+        ("count", g.count.unwrap_or(0).to_string()),
+        ("max_size", g.max_size.unwrap_or(-1).to_string()),
+        ("scratch_bytes", g.scratch_bytes.to_string()),
+        ("axes", out.numbers("int32_t", "group_axes", &g.axes)),
+        (
+            "scratch",
+            out.pointers("eg_unit_group_scratch", "group_scratch", &planes),
+        ),
+    ];
+    format!("&{}", out.record("eg_unit_group", "group", &members))
+}
+
 /// One unit's objects; returns the unit record's name.
 fn unit(out: &mut Out, unit: &UnitMeta) -> Result<String, Refusal> {
     let stage_list = stages(out, unit)?;
     let derived_list = derived(out, unit.derived.as_ref());
     let gemm_record = gemm(out, unit.gemm.as_ref());
+    let group_record = group(out, unit.group.as_ref());
     let (body, launch, finish) = (body(out, unit)?, launch(out, unit), finish(out, unit));
     let members = [
         ("flags", flags(unit.flags, &UNIT_FLAGS)),
@@ -697,6 +741,7 @@ fn unit(out: &mut Out, unit: &UnitMeta) -> Result<String, Refusal> {
         // an omitted member would leave at 0, the number of a real slot
         ("fault_slot", "-1".into()),
         ("reserved2", "0".into()),
+        ("group", group_record),
     ];
     Ok(out.record("eg_unit_meta", "meta", &members))
 }

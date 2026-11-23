@@ -240,6 +240,14 @@ closed! {
     }
 }
 closed! {
+    /// Which lanes make up one group.
+    pub enum GroupMembership {
+        /** Consecutive lanes, a fixed number of them. */ Count = 0 => "EG_GROUP_COUNT",
+        /** All lanes along named lane axes. */ Axes = 1 => "EG_GROUP_AXES",
+        /** The lanes whose key is equal. */ Key = 2 => "EG_GROUP_KEY",
+    }
+}
+closed! {
     /// The shape of a plane the runtime makes.
     pub enum PlaneLayout {
         /** `(per_lane * units,)`. */ Flat = 0 => "EG_LAYOUT_FLAT",
@@ -651,6 +659,42 @@ record! {
     }
 }
 record! {
+    /// A scratch plane of a group: its values, and their count and bytes per group.
+    pub struct GroupScratch {
+        /// The type of one scalar of a value.
+        pub dtype: WireDtype,
+        /// The extents of one value, empty for a scalar.
+        pub shape: Vec<i64>,
+        /// Scalars per group: the size bound of the group times the product of `shape`.
+        pub elements: i64,
+        /// Bytes per group: `elements` times the width of `dtype`.
+        pub bytes: i64,
+        /// The declared name.
+        pub name: String,
+    }
+}
+record! {
+    /// The group of a unit: what a group is and what one costs, not how it is served.
+    pub struct Group {
+        /// Which lanes make up one group.
+        pub membership: GroupMembership,
+        /// The phases of the body, at least 1.
+        pub phases: i64,
+        /// A key group: the slot of the per-lane key.
+        pub key_slot: Option<usize>,
+        /// A count group: the lanes of a group.
+        pub count: Option<i64>,
+        /// The size bound of a group in lanes; absent when the bound is known only at run time or is not stated.
+        pub max_size: Option<i64>,
+        /// The bytes of all scratch planes of one group.
+        pub scratch_bytes: i64,
+        /// An axes group: the indices of the launch's lane axes that span a group.
+        pub axes: Vec<usize>,
+        /// The scratch planes, in declaration order.
+        pub scratch: Vec<GroupScratch>,
+    }
+}
+record! {
     /// One stage of a split unit.
     pub struct Stage {
         /// The stage unit.
@@ -857,6 +901,8 @@ record! {
         pub device_ptx_isa: i64,
         /// The matrix products the unit is, when it is one dense contraction the card routes.
         pub gemm: Option<Gemm>,
+        /// The group of lanes the unit's body runs over, when it has one.
+        pub group: Option<Group>,
     }
 }
 record! {
