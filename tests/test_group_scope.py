@@ -332,14 +332,9 @@ def test_an_output_stored_inside_and_outside_the_scope_is_refused_by_name():
             y = y + 1.0
 
 
-def test_a_kernel_with_a_group_that_is_built_ends_in_a_refusal_by_name_from_the_library(
-    tmp_path, cache_dir
-):
-    """The library writes no group body yet: the build refuses the unit by name and does not crash."""
-    with pytest.raises(
-        HawkError,
-        match=r"the OSPREY 'cpu' refuses 'ring': lower: \"ring\": a group body is not written for this backend yet",
-    ):
-        hawk.artifact.build_bundle(
-            [ring], tmp_path, targets=("host",), cache_dir=cache_dir
-        )
+def test_a_kernel_with_a_count_group_is_built_for_the_host(tmp_path, cache_dir):
+    """The host text of a group body is written: the build gives a bundle whose kernel loads."""
+    bundle = hawk.artifact.build_bundle(
+        [ring], tmp_path, targets=("host",), cache_dir=cache_dir
+    )
+    assert hawk.load(bundle.directory, "ring") is not None
