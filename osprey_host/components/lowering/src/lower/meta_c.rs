@@ -700,6 +700,12 @@ fn group(out: &mut Out, group: Option<&Group>) -> String {
             "scratch",
             out.pointers("eg_unit_group_scratch", "group_scratch", &planes),
         ),
+        (
+            "distinct_slots",
+            out.numbers("int32_t", "group_distinct", &g.distinct_slots),
+        ),
+        ("n_distinct", g.distinct_slots.len().to_string()),
+        ("reserved1", "0".into()),
     ];
     format!("&{}", out.record("eg_unit_group", "group", &members))
 }

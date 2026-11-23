@@ -7,6 +7,7 @@ use super::request::{Body, KernelRequest};
 use super::unit_meta as m;
 use aether_writers::contract::types::{Role, Target};
 use aether_writers::refuse::{bad, fault, not_written, Refusal};
+use aether_writers::unit::group::hoisted_planes;
 use raptor_ir::record::Ctx;
 use raptor_ir::value::{text_val, Val};
 
@@ -257,6 +258,7 @@ pub(super) fn record(parts: &Parts) -> Result<Option<m::Group>, Refusal> {
         other => return Err(fault(format!("a group of membership {other}"))),
     };
     let scratch = scratch_planes(ctx, group, parts)?;
+    let distinct_slots = distinct_slots(parts, group)?;
     Ok(Some(m::Group {
         membership,
         phases: whole(
@@ -269,7 +271,33 @@ pub(super) fn record(parts: &Parts) -> Result<Option<m::Group>, Refusal> {
         scratch_bytes: scratch.iter().map(|plane| plane.bytes).sum(),
         axes,
         scratch,
+        distinct_slots,
     }))
+}
+
+/// The slots of the planes the host text reaches through restrict pointers, from the writers' own decision
+/// (`aether_writers::unit::group::hoisted_planes`), in slot order. A written plane is the slot of that name that the unit writes.
+fn distinct_slots(parts: &Parts, group: u32) -> Result<Vec<usize>, Refusal> {
+    let hoisted = hoisted_planes(parts.ctx.cast(), &parts.pending.member.sinks, group)?;
+    let mut slots = vec![];
+    for plane in &hoisted {
+        let found = parts.typed.slots.iter().position(|slot| {
+            slot.name == plane.name
+                && if plane.written {
+                    matches!(slot.role, Role::Mutable | Role::PlaneOut | Role::Out)
+                } else {
+                    slot.role == Role::PlaneIn
+                }
+        });
+        slots.push(found.ok_or_else(|| {
+            fault(format!(
+                "the plane '{}' the host text reaches through a pointer is not a slot of the walk",
+                plane.name
+            ))
+        })?);
+    }
+    slots.sort_unstable();
+    Ok(slots)
 }
 
 #[cfg(test)]
@@ -458,6 +486,8 @@ mod tests {
             max_size: Some(8),
             scratch_bytes: 64,
             scratch: vec![plane_t(m::WireDtype::Real, 64)],
+            // the input plane x and the output plane y of the reference kernel, each read or written at the lane's own element
+            distinct_slots: vec![0, 1],
             ..m::Group::default()
         };
         assert_eq!(record_of(TILE, "tile", &[], Scalar::Float64), want);
@@ -485,6 +515,8 @@ mod tests {
             phases: 2,
             max_size: Some(4),
             axes: vec![1],
+            // all four planes of the reference kernel are read or written at the lane's own element
+            distinct_slots: vec![0, 1, 2, 3],
             ..m::Group::default()
         };
         let lanes = [("row", None), ("col", Some(4))];

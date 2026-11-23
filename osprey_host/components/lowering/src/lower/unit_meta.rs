@@ -692,6 +692,9 @@ record! {
         pub axes: Vec<usize>,
         /// The scratch planes, in declaration order.
         pub scratch: Vec<GroupScratch>,
+        /// The slots of the planes the unit assumes are distinct memory (those the host text reads or writes through restrict
+        /// pointers), in slot order.
+        pub distinct_slots: Vec<usize>,
     }
 }
 record! {

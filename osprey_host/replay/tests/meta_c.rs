@@ -333,6 +333,7 @@ fn full_tree() -> (LibraryMeta, UnitMeta) {
                 bytes: 120,
                 name: "t".into(),
             }],
+            distinct_slots: vec![0, 2],
         }),
         derived: Some(Derived {
             role: DerivedRole::StepVjp,
@@ -492,6 +493,7 @@ int main(void) {
         const struct eg_unit_group_scratch* t = group->scratch[0];
         printf("scratch %s dtype %d rank %d shape %lld elements %lld bytes %lld\n", t->name, t->dtype, t->rank, (long long)t->shape[0],
                (long long)t->elements, (long long)t->bytes);
+        printf("distinct %d first %d last %d\n", group->n_distinct, group->distinct_slots[0], group->distinct_slots[group->n_distinct - 1]);
     }
     return 0;
 }
@@ -536,6 +538,8 @@ fn a_c_reader_of_the_compiled_record_sees_the_branch_costs_and_the_products_that
         // the group record: AXES over lane axis 1, bound 5, one scratch of 3-value rows (15 scalars, 120 bytes)
         "group 1 phases 2 key -1 count 0 max 5 bytes 120 axes 1 first 1 scratch 1\n",
         "scratch t dtype 0 rank 1 shape 3 elements 15 bytes 120\n",
+        // the planes the unit assumes distinct: two slots, 0 and 2
+        "distinct 2 first 0 last 2\n",
     ];
     assert_eq!(read, want.concat());
 }
