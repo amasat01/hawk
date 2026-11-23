@@ -584,7 +584,7 @@ def test_a_phase_that_reads_a_neighbour_is_cut_into_an_interior_loop_and_the_edg
         in lines
     )
     assert any(
-        line.startswith("mut_y[i] = ") and "scr_t[hawk_rank + 1]" in line
+        line.startswith("hawk_p_mut_y[hawk_i] = ") and "scr_t[hawk_rank + 1]" in line
         for line in lines
     )
     assert any("scr_t[aether::edge::wrap(hawk_rank + 1, " in line for line in lines)
@@ -633,10 +633,31 @@ def test_a_vector_and_a_matrix_input_plane_are_read_through_a_hoisted_pointer_an
 
 
 def test_a_plane_the_body_reads_and_the_unit_writes_gets_no_restrict_pointer():
-    """``w`` is read by the body and written beside it: it is read through its view; the input ``x`` still has a pointer."""
+    """``w`` is read by the body and written beside it: it is read and written through its view; the input ``x`` still has a pointer."""
     text = _host_text(after_writes_what_the_body_reads)
     assert "hawk_p_psc_x = psc_x.data();" in text
-    assert "hawk_p_mut_w" not in text and "__restrict hawk_p_mut" not in text
+    assert "hawk_p_mut_w" not in text
+    assert "mut_w[i] = " in text
+
+
+def test_a_plane_only_written_at_the_lanes_own_element_is_stored_through_a_hoisted_restrict_pointer():
+    """The pointer is declared once before the group function and the phase loop stores through it, not through the view."""
+    lines = [line.strip() for line in _host_text(fill).splitlines()]
+    pointer = "auto* __restrict hawk_p_mut_y = mut_y.data();"
+    assert pointer in lines
+    assert lines.index(pointer) < next(
+        k for k, line in enumerate(lines) if line.startswith("const auto hawk_group")
+    )
+    assert any(line.startswith("hawk_p_mut_y[hawk_i] = ") for line in lines)
+    assert not any(line.startswith("mut_y[i] = ") for line in lines)
+
+
+def test_a_plane_with_a_keyed_add_beside_the_group_gets_no_output_pointer():
+    """The accumulate plane is written through a key, so its stores keep the view; ``y`` is written only at the lane."""
+    text = _host_text(beside_keyed)
+    assert "hawk_p_aout_acc" not in text
+    assert "hawk_abi::accum_add(aout_acc, " in text
+    assert "auto* __restrict hawk_p_mut_y = mut_y.data();" in text
 
 
 @pytest.mark.parametrize("edge", ("clamp", "zero"))
