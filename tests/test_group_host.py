@@ -518,6 +518,24 @@ def test_a_phase_that_reads_a_neighbour_is_cut_into_an_interior_loop_and_the_edg
     assert "?" not in " ".join(interior[: interior.index("}")])
 
 
+def test_an_input_plane_is_read_in_the_phase_loops_through_a_hoisted_restrict_pointer():
+    """The pointer is declared once before the group loop, and the lane's own element is read through it."""
+    lines = [line.strip() for line in _host_text(_ring("wrap")).splitlines()]
+    assert "const auto* __restrict hawk_p_psc_x = psc_x.data();" in lines
+    assert lines.index("const auto* __restrict hawk_p_psc_x = psc_x.data();") < next(
+        k for k, line in enumerate(lines) if line.startswith("for (std::int64_t hawk_g")
+    )
+    assert any("hawk_p_psc_x[hawk_i]" in line for line in lines)
+    assert not any("psc_x[i]" in line for line in lines)
+
+
+def test_a_plane_the_body_reads_and_the_unit_writes_gets_no_restrict_pointer():
+    """``w`` is read by the body and written beside it: it is read through its view; the input ``x`` still has a pointer."""
+    text = _host_text(after_writes_what_the_body_reads)
+    assert "hawk_p_psc_x = psc_x.data();" in text
+    assert "hawk_p_mut_w" not in text and "__restrict hawk_p_mut" not in text
+
+
 @pytest.mark.parametrize("edge", ("clamp", "zero"))
 def test_the_edge_lanes_of_clamp_and_zero_are_written_apart_from_the_interior(edge):
     text = _host_text(_ring(edge))
