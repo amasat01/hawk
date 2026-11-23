@@ -1079,7 +1079,7 @@ def _collect(name: str, params: list[str], args: dict[str, Any],
                 "— every declared sink must be written (a plane this kernel only "
                 "reads is an input — declare it Scalar/Vector[W])"
             )
-        sinks.extend(committed)
+        sinks.extend(k for k in committed if k not in sinks)   # a group is the sink of every output its scope commits
     if not sinks and not finishing:
         raise HawkError(
             f"kernel {name!r}: declares no output plane; a kernel commits through a "

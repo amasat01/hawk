@@ -306,7 +306,11 @@ def set_component(vector: Any, index: Any, value: Any, name: str) -> Any:
     The index may be static or symbolic; folding a static one is the C++
     compiler's decision, not the tracer's."""
     from .decl import Plane
+    from .group import ScratchPlane
 
+    if isinstance(vector, ScratchPlane):
+        vector[index] = value       # a group's scratch plane stores by place
+        return vector
     if isinstance(vector, Plane):
         vector[index] = value       # a DECLARATION assigned to: its own refusal
     node = node_of(vector)
@@ -563,6 +567,8 @@ def transform(fn: ast.FunctionDef, filename: str, sinks: frozenset[str],
     _check_no_prior_attr(body, filename, mutables | finishes)
     body, written = _rewrite_mutable_stores(body, sinks, mutables, finishes,
                                             filename, fn.name)
+    grouped = _group_commits(body, filename)
+    written = [name for name in written if name not in grouped]
     body = [_assign(_mutable_name(name), ast.Call(
         func=ast.Attribute(value=ast.Name(id=name, ctx=ast.Load()), attr="unset",
                            ctx=ast.Load()), args=[], keywords=[]))
@@ -651,8 +657,16 @@ def _lower_row_loops(stmts: list[ast.stmt], filename: str) -> list[ast.stmt]:
 
 
 def _validate(stmts: list[ast.stmt], filename: str, sinks: frozenset[str],
-              in_branch: bool, in_loop: bool = False) -> None:
+              in_branch: bool, in_loop: bool = False, in_group: bool = False) -> None:
     for st in stmts:
+        if isinstance(st, ast.With) and _is_group_scope(st):
+            _check_group_scope(st, filename, in_branch or in_loop or in_group)
+            _validate(st.body, filename, sinks, False, False, True)
+            continue
+        if in_group and isinstance(st, (ast.If, ast.For)):
+            raise _err(st, filename,
+                       "a group's scope holds straight-line statements: an `if` or a `for` inside `with hawk.group(...)` "
+                       "is not in this release; choose with m.where(cond, a, b) and hold the loop outside the group")
         if isinstance(st, ast.Return):
             raise _err(st, filename, _EARLY_RETURN)
         if isinstance(st, ast.Break):
@@ -725,6 +739,53 @@ def _validate(stmts: list[ast.stmt], filename: str, sinks: frozenset[str],
                 _validate(x.body[:-1], filename, sinks, True, True)
             _validate([x for x in st.body if not _is_exit(x)], filename,
                       sinks, in_branch, True)
+
+
+def _is_group_scope(st: ast.With) -> bool:
+    """``st`` is ``with hawk.group(...) as name:`` (or ``with group(...)``)."""
+    return (len(st.items) == 1 and isinstance(st.items[0].context_expr, ast.Call)
+            and _named_call(st.items[0].context_expr.func, "group"))
+
+
+def _check_group_scope(st: ast.With, filename: str, nested: bool) -> None:
+    """The static refusals of one ``with hawk.group(...) as g:`` statement."""
+    if nested:
+        raise _err(st, filename,
+                   "a `with hawk.group(...)` scope sits at the top level of the kernel body: not inside an `if`, a `for` "
+                   "or another group")
+    item = st.items[0]
+    if not isinstance(item.optional_vars, ast.Name):
+        raise _err(st, filename, "a group is bound to a name, `with hawk.group(...) as g:`, to state its scratch, rank and barriers")
+    _check_expr(item.context_expr, filename)
+
+
+def _group_commits(stmts: list[ast.stmt], filename: str) -> list[str]:
+    """Commit, at the end of every group's scope, the mutable planes (their shadow names) the scope stores, in the order
+    of their first store, so that each plane's sink belongs to the group; return their raw names. A plane stored both
+    inside a scope and outside it is refused: a plane has one commit."""
+    inside: list[str] = []
+    for st in stmts:
+        if not (isinstance(st, ast.With) and _is_group_scope(st)):
+            continue
+        mine: list[str] = []
+        for inner in st.body:
+            target = (inner.targets[0] if isinstance(inner, ast.Assign) else getattr(inner, "target", None))
+            if isinstance(target, ast.Name) and target.id.startswith(MUT_PREFIX):
+                name = target.id[len(MUT_PREFIX):]
+                if name not in mine:
+                    mine.append(name)
+        st.body += [_commit(name) for name in mine]
+        inside += [name for name in mine if name not in inside]
+    for st in stmts:
+        if isinstance(st, ast.With) and _is_group_scope(st):
+            continue
+        stored = {n[len(MUT_PREFIX):] for n in _assigned([st]) if n.startswith(MUT_PREFIX)}
+        both = [name for name in inside if name in stored]
+        if both:
+            raise _err(st, filename,
+                       f"the output {both[0]!r} is stored inside a group's scope and outside it; a plane is stored in one "
+                       "place, so store it in the scope or after it")
+    return inside
 
 
 #: The reductions over lane axes: a collective, never inside a branch or a ``for``.
@@ -1452,6 +1513,11 @@ def _first_access(stmts: list[ast.stmt], name: str) -> str | None:
             if a == "write":
                 return "write"
             continue
+        if isinstance(st, ast.With) and _is_group_scope(st):
+            found = _first_access(st.body, name)        # straight-line, run like the statements around it
+            if found is not None:
+                return found
+            continue
         if isinstance(st, (ast.For, ast.While, ast.With, ast.Try)):
             if any(isinstance(n, ast.Name) and n.id == name for n in ast.walk(st)):
                 return "read"
@@ -1592,10 +1658,21 @@ class _Rewriter:
                 out.extend(self._if(st, bound))
             elif isinstance(st, ast.For):
                 out.extend(self._for(st, bound))
+            elif isinstance(st, ast.With):
+                out.append(self._group(st, bound))
             else:
                 out.append(_IfExp(self).visit(st))
                 bound |= _assigned([st])
         return out
+
+    def _group(self, st: ast.With, bound: set[str]) -> ast.stmt:
+        """A group's scope, kept as written: its body is straight-line, rewritten like the body around it, and what it
+        stores into the output planes is committed at its end (see :func:`_group_commits`)."""
+        item = st.items[0]
+        item.context_expr = _IfExp(self).visit(item.context_expr)
+        bound.add(item.optional_vars.id)
+        st.body = self.block(st.body, bound)
+        return st
 
     def _for(self, st: ast.For, bound: set[str]) -> list[ast.stmt]:
         """One bounded ``for``, rewritten into a SINGLE symbolic pass: open the

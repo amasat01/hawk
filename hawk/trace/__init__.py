@@ -72,6 +72,7 @@ from .decl import Terminated as Terminated
 from .decl import Vector as Vector
 from .decl import Wide as Wide
 from .decl import WideOut as WideOut
+from .group import group as group
 from .kernel import Kernel as Kernel
 from .lane_axes import current_context as current_context
 from .kernel import kernel as kernel

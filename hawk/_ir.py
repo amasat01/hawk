@@ -453,21 +453,66 @@ def operation_fields(sink: Any) -> dict:
 def update(
     name: str, value: Any, *, indices: Sequence[Any] = (), op: str = "add", summation: str = "auto",
     order: str = "any", edge: str = "unchecked", axes: Sequence[tuple[str, int | None]] = (), reduced: Any = None,
-    conflict: str = "unique", returns_old: bool = False,
+    conflict: str = "unique", returns_old: bool = False, role: str | None = None,
 ) -> Any:
     """Make the update of ``value`` into the plane ``name`` (at ``indices``, one per axis of ``axes``; none: the lane's cell).
 
     A ``compare_exchange`` takes the expected value as the first of ``indices``, ahead of the plane's own indices.
-    ``reduced`` is the sum over samples this update stores one entry of, which states the flat key of the lane's run."""
+    ``reduced`` is the sum over samples this update stores one entry of, which states the flat key of the lane's run.
+    ``role`` is the role of the plane written (``scratch`` for a group's scratch); none: the library's default, the output plane."""
     refs = [value, *indices]
     at = f", ('indices', ({''.join(f'#{k + 1}, ' for k in range(len(indices)))}))"
     fields = f"(('name', {name!r}), ('value', #0){at}, ('op', {op!r}), ('summation', {summation!r}), "
+    if role is not None:
+        fields += f"('role', {role!r}), "
     fields += f"('order', {order!r}), ('conflict', {conflict!r}), ('returns_old', {returns_old!r}), "
     if reduced is not None:
         refs.append(reduced)
         fields += f"('reduced', #{len(refs) - 1}), "
     fields += f"('edge', {edge!r}), ('axes', {tuple(axes)!r}))"
     return value.ctx.new("Update", fields, refs)
+
+
+@_as_hawk_error
+def scratch(context: Any, name: str, ttype: Sequence, axes: Sequence[tuple[str, int | None]]) -> Any:
+    """Make the scratch plane ``name`` of a group: its value type ``ttype`` over ``axes`` (an extent of ``None``: not known at build)."""
+    shape, dtype, tag = ttype
+    record = f"TensorType(shape={_text(tuple(shape))}, dtype={dtype!r}, tag={tag!r})"
+    return context.new("Scratch", f"(('name', {name!r}), ('ttype', {record}), ('axes', {_text(tuple(axes))}))", [])
+
+
+@_as_hawk_error
+def group(
+    context: Any, membership: str, body: Sequence[Any], scratches: Sequence[Any], *, key: Any = None, count: int | None = None,
+    grid: Sequence[tuple[str, int | None]] = (), axes: Sequence[str] = (), max_size: int | None = None,
+) -> Any:
+    """Make the group of ``membership`` (``count``, ``axes`` or ``key``) declaring ``scratches``, over the sinks ``body`` in order.
+
+    ``count`` is the lanes of a ``count`` group, ``grid`` the kernel's lane axes and ``axes`` the labels among them one
+    group spans, ``key`` the per-lane key node and ``max_size`` the largest group of a ``key`` group. The library types the
+    group and refuses what it cannot hold."""
+    refs = [*body, *scratches, *([] if key is None else [key])]
+    body_refs = "".join(f"#{k}, " for k in range(len(body)))
+    scratch_refs = "".join(f"#{len(body) + k}, " for k in range(len(scratches)))
+    key_ref = "None" if key is None else f"#{len(refs) - 1}"
+    fields = (
+        f"(('membership', {membership!r}), ('body_sinks', ({body_refs})), ('key', {key_ref}), ('count', {count!r}), "
+        f"('grid', {_text(tuple(grid))}), ('axes', {_text(tuple(axes))}), ('max_size', {max_size!r}), "
+        f"('scratch', ({scratch_refs})))"
+    )
+    return context.new("Group", fields, refs)
+
+
+@_as_hawk_error
+def group_element(context: Any, kind: str) -> Any:
+    """Make the group element ``kind`` that states nothing but itself: ``GroupRank``, ``GroupSize`` or ``Barrier``."""
+    return context.new(kind, "()", [])
+
+
+@_as_hawk_error
+def group_reduce(op: str, value: Any, order: str) -> Any:
+    """Make the group-wide reduce ``op`` (``sum``, ``min``, ``max``, ``any`` or ``all``) of ``value``, added in ``order`` when it is a sum."""
+    return value.ctx.new("GroupReduce", f"(('op', {op!r}), ('value', #0), ('order', {order!r}))", [value])
 
 
 @_as_hawk_error

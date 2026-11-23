@@ -1262,6 +1262,7 @@ class MutableRef(_SinkRef):
         """Commit ``value`` to this plane (the ``assign``); a reduction over
         every lane (``hawk.sum(x)``) commits a cell, one over some lane axes
         (``hawk.sum(x, over=...)``) adds into the sink by the kept coordinates."""
+        from .group import open_scope
         from .reduce import Reduced
 
         if _is_stored(value):
@@ -1270,6 +1271,10 @@ class MutableRef(_SinkRef):
             raise HawkError(
                 f"{self.name!r} is written per lane (locked) and by key "
                 f"(hawk.scatter({self.name})[key]): one plane has one extent")
+        scope = open_scope()
+        if scope is not None:
+            scope.commit(self, value)
+            return
         if isinstance(value, Reduced):
             self._reduced(value)
             return
