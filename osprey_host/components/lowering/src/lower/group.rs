@@ -294,6 +294,10 @@ mod tests {
     const TILE: &str = include_str!("../../../../../raptor/rs/support/tests/data/groups/tile.dump");
     const ROWS: &str = include_str!("../../../../../raptor/rs/support/tests/data/groups/rows.dump");
     const RING: &str = include_str!("../../../../../raptor/rs/support/tests/data/groups/ring.dump");
+    const LANE_OUT: &str =
+        include_str!("../../../../../raptor/rs/support/tests/data/groups/lane_out.dump");
+    const LANE_VECTOR_OUT: &str =
+        include_str!("../../../../../raptor/rs/support/tests/data/groups/lane_vector_out.dump");
 
     /// `tile` with its element type changed to f32 is not stored; a key group is `tile`'s document with a per-lane key plane `k` and
     /// a stated bound of 8 in place of the count: the key leaf is node 9, the group node 10.
@@ -596,5 +600,24 @@ mod tests {
             answer.units[0].meta.group.as_ref().map(|g| g.phases),
             Some(2)
         );
+    }
+
+    #[test]
+    fn the_per_lane_outputs_of_a_group_lower_up_to_the_group_reduce_they_read() {
+        // both documents commit an ordinary output (an `Assign`) of a value that holds a group reduce, which the host does not
+        // write yet: the refusal names the reduce, not the output
+        for (name, dump) in [("lane_out", LANE_OUT), ("lane_vector_out", LANE_VECTOR_OUT)] {
+            let (ctx, group) = loaded(dump);
+            let request = request_for(name, group, &[], Target::Host);
+            let why = lower(&TestHost, ctx, &request.to_json(), &shipped())
+                .map(|_| ())
+                .expect_err("a refusal");
+            // SAFETY: `ctx` is the live context made above and is not used after.
+            unsafe { rx_ctx_free(ctx) };
+            assert_eq!(
+                why.reason,
+                format!("\"{name}\": a group reduce is not written on the host yet")
+            );
+        }
     }
 }

@@ -701,8 +701,17 @@ pub(super) fn unit(parts: &Parts) -> Result<(m::UnitMeta, Option<m::Contraction>
         .map(|c| {
             let (comp, target) = (&c.plane, &c.target);
             let at = |plane: &str| {
-                slot_at(&slots, plane)
-                    .ok_or_else(|| fault(format!("a companion pair over the plane {plane}")))
+                slot_at(&slots, plane).ok_or_else(|| {
+                    // SAFETY: `parts.ctx` is the live context the caller holds; it is only read here.
+                    let ctx = unsafe { &*parts.ctx };
+                    if super::group::group_of(ctx, &parts.pending.member.sinks).is_some() {
+                        return not_written(format!(
+                            "{:?}: a compensated keyed add inside a group is not written yet: the kernel declares no companion plane {plane} for it; state the add with the plain contract",
+                            parts.pending.member.name
+                        ));
+                    }
+                    fault(format!("a companion pair over the plane {plane}"))
+                })
             };
             Ok(m::Companion {
                 slot: at(comp)?,
