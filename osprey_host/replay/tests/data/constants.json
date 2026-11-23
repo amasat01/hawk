@@ -37,7 +37,8 @@
   "terminated",
   "uniform",
   "nsamples",
-  "mutable"
+  "mutable",
+  "scratch"
  ],
  "LOGICAL": [
   "land",
