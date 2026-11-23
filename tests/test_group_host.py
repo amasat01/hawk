@@ -161,10 +161,44 @@ def beside_keyed(
 
 
 @hawk.kernel
-def beside_reads_prior(x: Scalar, y: Mutable[Scalar], z: Mutable[Scalar]):
+def before_reads_prior(x: Scalar, y: Mutable[Scalar], z: Mutable[Scalar]):
     z = y + x
     with hawk.group(lanes=8) as g:
         y = x * m.real(g.size)
+
+
+@hawk.kernel
+def shared_add(
+    cell: Index, x: Scalar, y: Mutable[Scalar], acc: Mutable[Scalar, "bin":4]
+):  # noqa: F821 axis labels
+    hawk.scatter(acc, contract="plain")[cell] += 4.0 * x
+    with hawk.group(lanes=8) as g:
+        y = x * m.real(g.size)
+    hawk.scatter(acc, contract="plain")[cell] += 2.0 * x
+
+
+@hawk.kernel
+def beside_compensated(
+    cell: Index, x: Scalar, y: Mutable[Scalar], acc: Mutable[Scalar, "bin":4]
+):  # noqa: F821 axis labels
+    with hawk.group(lanes=8) as g:
+        y = x * m.real(g.size)
+    hawk.scatter(acc)[cell] += x
+
+
+@hawk.kernel
+def after_writes_what_the_body_reads(x: Scalar, w: Mutable[Scalar], y: Mutable[Scalar]):
+    with hawk.group(lanes=8) as g:
+        y = w + x * m.real(g.size)
+    w = x + 1.0
+
+
+@hawk.kernel
+def cycle(x: Scalar, w: Mutable[Scalar], y: Mutable[Scalar]):
+    ahead = y + x
+    with hawk.group(lanes=8) as g:
+        y = w + x
+    w = ahead
 
 
 KERNELS = [_ring(edge, lanes) for edge in EDGES for lanes in (8, 64)] + [
@@ -176,6 +210,8 @@ KERNELS = [_ring(edge, lanes) for edge in EDGES for lanes in (8, 64)] + [
     over_two,
     fill,
     beside,
+    before_reads_prior,
+    after_writes_what_the_body_reads,
 ]
 
 
@@ -197,6 +233,18 @@ def keyed_bundle(tmp_path_factory, cache_dir):
     return build_bundle(
         [beside_keyed],
         tmp_path_factory.mktemp("group_keyed"),
+        targets=("host",),
+        cache_dir=cache_dir,
+        host_profile="native",
+    )
+
+
+@pytest.fixture(scope="module")
+def shared_bundle(tmp_path_factory, cache_dir):
+    """The kernel that adds into one plane from before, inside and after its scope, built apart (a keyed access)."""
+    return build_bundle(
+        [shared_add, beside_compensated],
+        tmp_path_factory.mktemp("group_shared"),
         targets=("host",),
         cache_dir=cache_dir,
         host_profile="native",
@@ -327,13 +375,59 @@ def test_a_keyed_add_beside_a_group_adds_every_lane_once(keyed_bundle):
     np.testing.assert_array_equal(y, x * np.repeat([8.0, 8.0, 3.0], [8, 8, 3]))
 
 
-def test_a_sink_beside_a_group_that_reads_a_plane_the_group_writes_is_refused_by_name():
-    refusal = _refusal(beside_reads_prior)
+def test_a_sink_before_a_group_reads_the_value_the_plane_held_before_the_group_wrote_it(
+    bundle,
+):
+    """Oracle: ``y + x`` of the plane's launch-start value (the author's order: the sink is written before the scope)."""
+    x, y = RNG.normal(size=19), RNG.normal(size=19)
+    start, z = y.copy(), np.zeros(19)
+    _run(bundle, "before_reads_prior", x=x, y=y, z=z)
+    np.testing.assert_array_equal(z, start + x)
+    np.testing.assert_array_equal(y, x * np.repeat([8.0, 8.0, 3.0], [8, 8, 3]))
+
+
+def test_a_sink_that_writes_a_plane_the_group_reads_runs_after_the_group(bundle):
+    """Oracle: every read sees the launch-start value, so the group reads ``w`` as given, and ``w`` becomes ``x + 1``."""
+    x, w = RNG.normal(size=19), RNG.normal(size=19)
+    start, y = w.copy(), np.zeros(19)
+    _run(bundle, "after_writes_what_the_body_reads", x=x, w=w, y=y)
+    np.testing.assert_array_equal(y, start + x * np.repeat([8.0, 8.0, 3.0], [8, 8, 3]))
+    np.testing.assert_array_equal(w, x + 1.0)
+
+
+def test_sinks_that_read_what_the_body_writes_and_write_what_it_reads_are_refused_by_name():
+    refusal = _refusal(cycle)
     assert (
-        "a sink beside a group that shares the plane 'y' with the group's body is not written on the host yet"
+        "read a plane the body writes and write a plane the body reads is not written on the host yet"
         in refusal
     )
-    assert '"beside_reads_prior"' in refusal
+    assert '"cycle"' in refusal
+
+
+def test_keyed_adds_before_and_after_a_group_into_one_plane_add_every_lane_six_times(
+    shared_bundle,
+):
+    """Oracle: ``np.add.at`` of ``6 x`` (two adds into one plane: 4 x written before the scope, 2 x after it)."""
+    n = 19
+    x, cell = RNG.normal(size=n), RNG.integers(0, 4, size=n).astype(np.int32)
+    y, acc = np.zeros(n), np.zeros(4)
+    _run(shared_bundle, "shared_add", cell=cell, x=x, y=y, acc=acc)
+    want = np.zeros(4)
+    np.add.at(want, cell, 6.0 * x)
+    np.testing.assert_allclose(acc, want, rtol=0, atol=1e-12)
+
+
+def test_a_compensated_keyed_add_beside_a_group_adds_every_lane_to_what_the_plane_held(
+    shared_bundle,
+):
+    """Oracle: the start value plus ``np.add.at`` of the values (an add keeps what the plane held), within the bound the keyed sums use."""
+    n = 19
+    x, cell = RNG.normal(size=n), RNG.integers(0, 4, size=n).astype(np.int32)
+    y, acc = np.zeros(n), np.full(4, 5.0)
+    _run(shared_bundle, "beside_compensated", cell=cell, x=x, y=y, acc=acc)
+    want = np.full(4, 5.0)
+    np.add.at(want, cell, x)
+    np.testing.assert_allclose(acc, want, rtol=0, atol=1e-12)
 
 
 #: The groups one tile of a launch holds: a group's working set is small enough for the largest tile the host library cuts (4096
@@ -461,6 +555,12 @@ def test_a_group_by_key_is_refused_by_name_on_the_host():
             y = t[g.rank]
 
     assert "a group by key is not written on the host yet" in _refusal(keyed)
+
+
+def test_two_run_time_lane_axes_cannot_be_authored_so_a_group_over_them_is_not_asked_for():
+    """A grid states one run-time axis, its first: the group over two run-time axes the writer refuses by name has no author."""
+    with pytest.raises(HawkError, match=r"only the FIRST axis may be bare"):
+        Grid["row", "col"]
 
 
 def test_a_group_for_the_device_is_refused_by_name():

@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 
 import hawk
+import hawk.diff
 from hawk import HawkError, Index, Matrix, Mutable, Scalar, Vector, _ir
 from hawk import math as m
 from hawk.artifact import build_bundle
@@ -179,7 +180,7 @@ def test_a_keyed_store_with_a_conflict_rule_in_the_scope_is_a_sink_of_the_group(
 def bundle(tmp_path_factory, cache_dir):
     """The kernels that run, built for the host once."""
     return build_bundle(
-        [keyed_add, keyed_store, keyed_add_compensated],
+        [keyed_add, keyed_store, keyed_add_compensated, appended],
         tmp_path_factory.mktemp("group_body"),
         targets=("host",),
         cache_dir=cache_dir,
@@ -190,7 +191,7 @@ def bundle(tmp_path_factory, cache_dir):
 def sample_local(tmp_path_factory, cache_dir):
     """The kernels that write only their own lane's cells (a bundle holds one kind of access), built for the host."""
     return build_bundle(
-        [parity, unrolled, pick],
+        [parity, unrolled, pick, counted, exits],
         tmp_path_factory.mktemp("group_body_local"),
         targets=("host",),
         cache_dir=cache_dir,
@@ -344,3 +345,125 @@ def test_what_every_lane_must_reach_is_refused_by_name_inside_an_if_or_a_for(
     file.write_text(source)
     with pytest.raises(HawkError, match=stem):
         runpy.run_path(str(file))
+
+
+@pytest.mark.parametrize("kernel", [keyed_add, parity], ids=lambda k: k.name)
+@pytest.mark.parametrize(
+    "entry",
+    [
+        hawk.diff.vjp,
+        hawk.diff.jvp,
+        hawk.diff.with_derivative,
+        lambda k: hawk.diff.tape(k, 4),
+        hawk.diff.step_vjp,
+        hawk.diff.step_jvp,
+        hawk.diff.step_function,
+        hawk.diff.refine_entry,
+    ],
+    ids=[
+        "vjp",
+        "jvp",
+        "with_derivative",
+        "tape",
+        "step_vjp",
+        "step_jvp",
+        "step_function",
+        "refine_entry",
+    ],
+)
+def test_a_kernel_with_a_group_has_no_derivative_yet_at_every_transform_entry(
+    kernel, entry
+):
+    with pytest.raises(
+        HawkError,
+        match=rf"kernel '{kernel.name}' holds a group; a kernel with a group has no derivative yet",
+    ):
+        entry(kernel)
+
+
+@hawk.kernel
+def appended(x: Scalar, out: Mutable[Scalar, "item":64], y: Mutable[Scalar]):  # noqa: F821 axis labels
+    with hawk.group(lanes=8) as g:
+        hawk.append(out, value=x, when=x > 0.0)
+        y = x * m.real(g.size)
+
+
+@hawk.kernel
+def counted(x: Scalar, n: Index, y: Mutable[Scalar]):
+    with hawk.group(lanes=8) as g:
+        acc = 0.0 * x
+        for k in range(n, max=5):
+            acc = acc + x
+        y = acc + 0.0 * m.real(g.rank)
+
+
+@hawk.kernel
+def exits(x: Scalar, n: Index, y: Mutable[Scalar]):
+    with hawk.group(lanes=8) as g:
+        acc = 0.0 * x
+        for k in range(5):
+            if m.lnot(k < n):
+                break
+            acc = acc + x
+        y = acc + 0.0 * m.real(g.rank)
+
+
+def test_an_append_in_the_scope_is_one_group_with_the_count_the_list_and_the_output_as_its_sinks():
+    names = [k.field_text("name") for k in _group(appended).field_nodes("body_sinks")]
+    assert names == ["out_count", "out", "y"]
+    assert [_ir.is_a(s, "group") for s in appended.sinks].count(True) == 1
+
+
+def test_a_loop_whose_trips_are_run_time_reads_back_after_the_loop_in_the_same_phase():
+    assert tuple(_group(counted).field_ints("phases")) == (0,)
+    assert tuple(_group(exits).field_ints("phases")) == (0,)
+
+
+@pytest.mark.parametrize("head", ["for k in range(n, max=3):", "for k in range(3):"])
+@pytest.mark.parametrize(
+    ("what", "stem"),
+    [
+        ("g.barrier()", r"g\.barrier\(\.\.\.\) inside an `if` or a `for`"),
+        (
+            "t[g.rank] = x",
+            r"a store into the scratch plane 't' inside an `if` or a `for`",
+        ),
+    ],
+    ids=["barrier", "scratch store"],
+)
+def test_a_loop_that_holds_a_barrier_or_a_scratch_store_is_refused_by_name(
+    tmp_path, head, what, stem
+):
+    file = tmp_path / "looped.py"
+    file.write_text(
+        "import hawk\n"
+        "from hawk import Index, Mutable, Scalar\n"
+        "@hawk.kernel\n"
+        "def looped(x: Scalar, n: Index, y: Mutable[Scalar]):\n"
+        "    with hawk.group(lanes=8) as g:\n"
+        "        t = g.scratch('t', Scalar)\n"
+        "        y = x\n"
+        f"        {head}\n"
+        f"            {what}\n"
+    )
+    with pytest.raises(HawkError, match=stem):
+        runpy.run_path(str(file))
+
+
+def test_an_append_in_the_scope_stores_the_positive_values_beside_an_output(bundle):
+    """Oracle: the set ``x[x > 0]`` (no order is promised) and the value times the length of the lane's group."""
+    x = RNG.normal(size=19)
+    out, y = np.zeros(64), np.zeros(19)
+    _run(bundle, "appended", x=x, out=out, y=y)
+    np.testing.assert_array_equal(np.sort(out[: (x > 0).sum()]), np.sort(x[x > 0]))
+    np.testing.assert_array_equal(y, x * np.repeat([8.0, 8.0, 3.0], [8, 8, 3]))
+
+
+@pytest.mark.parametrize("name", ["counted", "exits"])
+def test_a_loop_in_the_scope_runs_its_trips_and_reads_back_after_it(sample_local, name):
+    """Oracle: ``x * n`` for ``n`` between 0 and 4 trips of an addition of ``x``."""
+    x = RNG.uniform(1.0, 3.0, size=19)
+    n = (np.arange(19) % 5).astype(np.int32)
+    y = np.zeros(19)
+    _run(sample_local, name, x=x, n=n, y=y)
+    np.testing.assert_allclose(y, x * n, rtol=1e-14)

@@ -54,6 +54,15 @@ _FLAG = _ir.TensorType((), "f64")
 _FLOAT = ("f64", "f32")
 
 
+def refuse_group(primal: Any, entry: str) -> None:
+    """Refuse by name a kernel that holds a group: no transform differentiates the scratch, the barriers and the group-wide
+    results of a group yet, and the library would otherwise name the group an unknown sink."""
+    sinks = getattr(primal, "sinks", None) or ()
+    if any(_ir.is_a(s, "group") for s in sinks):
+        name = getattr(primal, "name", None)
+        raise HawkError(f"{entry}: kernel {name!r} holds a group; a kernel with a group has no derivative yet")
+
+
 def tape(kernel: Any, window: int, *, events: str = "step") -> Any:
     """The taping twin of ``kernel`` for windows of ``window`` steps (see
     the module docstring). A default automatic kernel, or a ``steps=K``
@@ -66,6 +75,7 @@ def tape(kernel: Any, window: int, *, events: str = "step") -> Any:
     rounding of the index-form time a crossing exactly on the step grid
     can carry — so a stop that lands on a grid point is taken at that step,
     never one step late. ``events="step"`` keeps the kernel's own test."""
+    refuse_group(kernel, "hawk.diff.tape")
     step = getattr(kernel, "step", None) or getattr(kernel, "one_step", None) or kernel
     fused = step is not kernel
     name = step.name
@@ -518,6 +528,7 @@ def refine_entry(kernel: Any) -> Any:
     pure function of its inputs, so :func:`~hawk.diff.jvp` w.r.t.
     ``<dt>_tau`` gives the step's and the guard's derivative in the partial
     step. No finish and no mask: it runs on finished samples."""
+    refuse_group(kernel, "hawk.diff.refine_entry")
     from ..trace.kernel import Kernel
     from .event import GUARD_PREFIX, as_plain_reads, guards_of
 
@@ -610,6 +621,7 @@ def step_vjp(
         back = hawk.Kernel("fall_step_vjp", hawk.diff.step_vjp(fall))
         # reads y, v, dt, bar_y_next, bar_v_next; writes bar_y, bar_v, bar_dt
     """
+    refuse_group(kernel, "hawk.diff.step_vjp")
     from ..trace.steps import _fused_steps_of
     from .transform import _rederivable
 
@@ -649,6 +661,7 @@ def step_function(kernel: Any) -> Any:
 
         pure = hawk.diff.step_function(decay)    # reads a, x; writes x_next
     """
+    refuse_group(kernel, "hawk.diff.step_function")
     from ..trace.kernel import Kernel
     from .event import as_plain_reads
 
@@ -731,6 +744,7 @@ def step_jvp(kernel: Any, *, wrt=None) -> Any:
         fwd = hawk.diff.step_jvp(decay)
         # reads a, dot_a, x, dot_x; commits x and dot_x
     """
+    refuse_group(kernel, "hawk.diff.step_jvp")
     from ..trace.kernel import Kernel
     from .event import as_plain_reads
     from .transform import jvp

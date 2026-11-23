@@ -1,0 +1,14 @@
+raptor.ir.dump/1
+n|Leaf|f64|()|None|()|(('kind', 'vocab_read'), ('role', 'plane_in'), ('name', 'x'), ('quantity', None), ('wire_index', 0), ('sorted', False), ('axes', ()))
+n|Scratch|f64|()|None|()|(('kind', 'scratch'), ('role', 'scratch'), ('name', 't'), ('quantity', None), ('wire_index', 0), ('sorted', False), ('axes', (('rank', 8),)))
+n|GroupRank|i32|()|None|()|()
+n|Update|f64|()|None|(#0, #2)|(('kind', 'update'), ('role', 'scratch'), ('name', 't'), ('op', 'store'), ('conflict', 'unique'), ('summation', 'auto'), ('order', 'any'), ('returns_old', False), ('reduced', None), ('edge', 'unchecked'), ('axes', (('rank', 8),)))
+n|Const|i32|()|None|()|(('literal', 1),)
+n|Op|i32|()|None|(#2, #4)|(('kind', 'add'), ('literal', None))
+n|At|f64|()|None|(#1, #2)|(('kind', 'at'), ('literal', None), ('edge', 'clamp'))
+n|At|f64|()|None|(#1, #5)|(('kind', 'at'), ('literal', None), ('edge', 'wrap'))
+n|Op|f64|()|None|(#6, #7)|(('kind', 'add'), ('literal', None))
+n|Assign|f64|()|None|(#8,)|(('kind', 'assign'), ('role', 'mutable'), ('name', 'y'), ('axes', ()))
+n|Barrier|bool|()|None|()|()
+n|Group|bool|()|None|()|(('membership', 'count'), ('count', 8), ('grid', ()), ('axes', ()), ('max_size', None), ('scratch', (#1,)), ('body_sinks', (#3, #10, #9)))
+root|#11

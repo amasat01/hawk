@@ -38,6 +38,7 @@ from .loops import (
     reverse_loop,
 )
 from .ordered import kept_of, order
+from .tape import refuse_group
 
 
 #: Prefixes of the planes a derivative declares (never a wire namespace).
@@ -1261,6 +1262,7 @@ def _sinks_of(primal: Any, forward: bool = False) -> tuple[Any, ...]:
     """The sinks of ``primal`` to differentiate, refusing by name an update that has no derivative. The ticket an append takes
     is an integer and carries none; the forward derivative keeps the append (one ticket stores a value and its tangent), and
     the reverse derivative reads the places the primal run gave (:func:`_recorded_places`)."""
+    refuse_group(primal, "hawk.diff")
     appended = _appended(primal)
     sinks = tuple(getattr(primal, "sinks", primal))
     if not sinks or not all(_ir.is_a(s, "sink", "loop") for s in sinks):

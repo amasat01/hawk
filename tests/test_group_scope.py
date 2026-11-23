@@ -3,7 +3,7 @@
 
 """``with hawk.group(...) as g:`` builds the library's group elements and states nothing the library computes.
 
-Nothing runs here. The oracle of every equality is the library's own stored document of the same kernel (loaded through the
+Nothing runs here. The oracle of every equality is the stored document of the same kernel (a copy of the library's, under ``data/groups``) (loaded through the
 binding, in a context of its own): the traced group and the stored one must have the same canonical digest, the same phases and
 the same slots. Every refusal is the library's text (asserted by its stem) with the kernel's name in front, except the few
 that state the form of the author's call.
@@ -19,9 +19,9 @@ import hawk
 from hawk import Grid, HawkError, Index, Mutable, Scalar, Vector, _ir
 from hawk import math as m
 
-STORED = (
-    pathlib.Path(__file__).resolve().parents[2] / "raptor/rs/support/tests/data/groups"
-)
+#: The reference group kernels, as the IR library stores them (copies of its `ring`, `tile` and `rows` documents in the dump format,
+#: kept here so that no test reads another repository; a change of the IR's reference documents is made here by copying them again).
+STORED = pathlib.Path(__file__).resolve().parent / "data" / "groups"
 
 
 @hawk.kernel
@@ -231,7 +231,10 @@ def test_a_scratch_used_after_its_scope_is_refused_by_name():
 
 
 def test_a_value_read_in_the_scope_and_used_outside_it_is_refused_by_the_library():
-    with pytest.raises(HawkError, match=r"GroupRank is reached outside a Group"):
+    with pytest.raises(
+        HawkError,
+        match=r"kernel 'leaked': canonical\(\): GroupRank is reached outside a Group",
+    ):
 
         @hawk.kernel
         def leaked(x: Scalar, y: Mutable[Scalar], z: Mutable[Scalar]):
@@ -242,7 +245,9 @@ def test_a_value_read_in_the_scope_and_used_outside_it_is_refused_by_the_library
 
 
 def test_a_second_group_in_one_kernel_is_refused_by_the_library():
-    with pytest.raises(HawkError, match=r"a kernel holds one Group"):
+    with pytest.raises(
+        HawkError, match=r"kernel 'twice': canonical\(\): a kernel holds one Group"
+    ):
 
         @hawk.kernel
         def twice(x: Scalar, y: Mutable[Scalar], z: Mutable[Scalar]):

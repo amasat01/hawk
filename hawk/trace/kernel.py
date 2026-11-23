@@ -94,7 +94,14 @@ class Kernel:
         self.planes = {} if planes is None else planes
         for count, appended in getattr(sinks, "counts", {}).items():
             self.planes[count] = Plane("accum", INT32, axes=(("count", 1),), counts=appended)
-        self.walk: _ir.Walk = _ir.cells_walk(sinks, _declared(self.planes))
+        try:
+            self.walk: _ir.Walk = _ir.cells_walk(sinks, _declared(self.planes))
+        except HawkError as refusal:
+            if str(refusal).startswith(f"kernel {name!r}"):
+                raise
+            named = HawkError(f"kernel {name!r}: {refusal}")
+            named.code = getattr(refusal, "code", None)
+            raise named from refusal
         #: The launch shape, ``((label|None, extent|None), ...)`` row-major with the
         #: fastest axis last: the ``Grid[...]`` declared, else one unlabelled
         #: runtime axis. Read by the sidecar and the bind doors.
@@ -370,7 +377,9 @@ def _trace(fn: Callable[..., None], kind: Any) -> Kernel:
             returns = None
             sinks = _collect(fn.__name__, params, args, sink_names,
                              finishing=bool(finished)) + finished
-        sinks += tuple(s for name, ref in args.items() if _is_count(ref) for s in ref.sinks)
+        sinks += tuple(
+            s for name, ref in args.items() if _is_count(ref) for s in ref.sinks if s not in sinks
+        )  # a group is the one sink of everything its scope wrote
         extra = _compensated_companion(resolved_kind, planes, vocab, sinks)
         if extra is not None:
             sinks = sinks + (extra,)
