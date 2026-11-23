@@ -176,7 +176,7 @@ def test_the_device_compensated_matrix_sum_equals_fsum_per_element(bundle):
 
     key, m = _crowded(np.random.default_rng(5), CELLS), _ill_conditioned(np.random.default_rng(6), (2, 2, N))
     acc = cp.zeros((2, 2, CELLS))
-    _launch(bundle, "matrix_compensated", "cuda", {"key": cp.asarray(key), "m": cp.asarray(m), "acc": acc}).launch()
+    _launch(bundle, "matrix_compensated", "cuda", {"key": cp.asarray(key), "m": cp.asarray(m.reshape(4, N)), "acc": acc}).launch()
     cp.cuda.Device().synchronize()
     scale = np.finfo(np.float64).eps * np.abs(m).sum() * 8
     assert np.all(np.abs(acc.get() - _exact_sums(key, m)) <= scale)

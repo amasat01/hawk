@@ -163,7 +163,7 @@ def test_the_device_derivatives_equal_the_closed_forms(tmp_path, cache_dir):
     refuse_device_row()
     tangent = Kernel("folds_jvp", jvp(folds, wrt=("x",), primal_unit=UNIT))
     reverse = Kernel("folds_vjp", vjp(folds, primal_unit=UNIT))
-    on_device = {k.name: build_bundle([k], tmp_path / k.name, mode="float64", targets=("cuda",), cache_dir=cache_dir)
+    on_device = {k.name: build_bundle([k], tmp_path / k.name, mode="float64", targets=("cuda", "host"), cache_dir=cache_dir)
                  for k in (folds, tangent, reverse)}
 
     def run(name, **planes):
