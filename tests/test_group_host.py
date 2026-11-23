@@ -488,6 +488,47 @@ def test_a_fill_and_a_read_in_two_phases_gives_x(bundle):
     np.testing.assert_array_equal(y, np.sqrt(x) * np.sqrt(x))
 
 
+def _ring_oracle(x, edge, lanes):
+    """Oracle: ``np.roll`` / ``np.clip`` / a mask of each NumPy slice of ``lanes`` entries; the last slice may be short."""
+    return np.concatenate(
+        [
+            g + 2.0 * _moved(g, 1, edge) + 3.0 * _moved(g, -1, edge)
+            for g in _groups(x, lanes)
+        ]
+    )
+
+
+@pytest.mark.parametrize(
+    "n",
+    (5, 8, 300_003),
+    ids=("only a short group", "one whole group", "short last of many tiles"),
+)
+@pytest.mark.parametrize("edge", ("wrap", "clamp"))
+def test_a_count_group_of_eight_is_right_for_a_short_only_group_a_whole_one_and_a_short_last_of_many_tiles(
+    bundle, edge, n
+):
+    """Oracle: NumPy slices of 8; 300,003 lanes are 37,501 groups, cut into ten tiles by the team, the last group of 3 lanes."""
+    x = RNG.normal(size=n)
+    y = np.zeros(n)
+    _run(bundle, f"ring_{edge}_8", x=x, y=y)
+    np.testing.assert_array_equal(y, _ring_oracle(x, edge, 8))
+
+
+@pytest.mark.parametrize(
+    "n",
+    (5, 16, 300_003),
+    ids=("only a short group", "one whole group", "short last of many tiles"),
+)
+def test_a_fill_group_of_sixteen_is_right_for_a_short_only_group_a_whole_one_and_a_short_last_of_many_tiles(
+    bundle, n
+):
+    """Oracle: ``sqrt(x) * sqrt(x)`` rounded as NumPy does, lane by lane."""
+    x = np.abs(RNG.normal(size=n))
+    y = np.zeros(n)
+    _run(bundle, "fill", x=x, y=y)
+    np.testing.assert_array_equal(y, np.sqrt(x) * np.sqrt(x))
+
+
 # ---- the text ----
 
 
