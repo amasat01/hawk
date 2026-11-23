@@ -180,6 +180,44 @@ def test_sixteen_thousand_nets_compensated_match_the_loop_and_replay_when_aligne
         assert seen[0].tobytes() == seen[1].tobytes() == seen[2].tobytes()
 
 
+def _device_grad_text(loss):
+    """The device text of the gradient of ``loss`` with respect to ``W``; no GPU is needed to emit it."""
+    from hawk.artifact import emit_source
+
+    grad = Kernel(f"{loss.name}_grad", vjp(loss, wrt=("W",)))
+    return emit_source(grad, targets=("cuda",)).sources["cuda"].text
+
+
+def _commits_to(text, plane):
+    """The lines of ``text`` that commit into ``plane``: (per-lane atomic adds, run commits)."""
+    lines = [line for line in text.splitlines() if f"({plane}(" in line]
+    return ([line for line in lines if "accum_add_at(" in line],
+            [line for line in lines if "accum::run::addAt<32>(" in line])
+
+
+@pytest.mark.parametrize("contract", ("compensated", "auto"))
+def test_a_net_spanning_whole_warps_commits_its_gradient_once_per_warp_run(contract):
+    """The gradient of a per-net loss at 64 samples per net adds into ``bar_W[net, p]``: the net and the
+    unit are the same for the 32 lanes of a warp, so the device text sums the warp's terms and commits
+    once, at the element, not once per lane (the promise of the module docstring)."""
+    lanes, runs = _commits_to(_device_grad_text(N.net_loss_for(64, contract)), "aout_bar_W")
+    assert not lanes
+    assert len(runs) == 3        # one commit per partial derivative of a unit (a, b, c)
+
+
+def test_an_add_whose_second_index_moves_with_the_sample_keeps_the_per_lane_commit():
+    """A run needs every index to be the same across the warp: an index that is the lane's own sample
+    is not, so each lane commits its own element."""
+
+    @hawk.kernel
+    def moving(lane: hawk.Grid["net", "sample":64], W: hawk.Table["net", "p":P], x: hawk.Scalar, y: hawk.Scalar) -> hawk.Scalar:
+        r = W.at(net=lane.net, p=lane.sample) * x - y
+        return hawk.sum(r * r, over="sample")
+
+    lanes, runs = _commits_to(_device_grad_text(Kernel("moving", moving.sinks, moving.planes)), "aout_bar_W")
+    assert lanes and not runs
+
+
 def _loss(bundles, target, w, x, y, mask, contract):
     """The loss from 3 launches; the ordered one has team stages, which the host runtime runs and
     the device driver of ``_team_stages`` launches."""

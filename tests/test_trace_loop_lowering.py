@@ -361,7 +361,8 @@ def test_a_gather_loops_reverse_scatters_once_per_iteration_in_the_same_scope():
     text = emit_source(kernel, targets=("host",)).sources["host"].text
     commits = (text.count("hawk_abi::accum_add(aout_bar_t, ")
                + text.count("aether::accum::run::add<32>(aout_bar_t, ")
-               + text.count("hawk_abi::accum_add_at(aout_bar_t("))
+               + text.count("hawk_abi::accum_add_at(aout_bar_t(")
+               + text.count("aether::accum::run::addAt<32>(aout_bar_t("))
     # no ``text.count("for (") == 1`` here: the old count was on the body alone; the whole unit's text
     # also holds the sample loop of the wrapper, so it shows 2.
     assert commits == 1, text
