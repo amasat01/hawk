@@ -70,7 +70,10 @@ def test_a_vector_output_of_a_group_is_written_as_an_ordinary_output_inside_the_
     loop = lines.index(
         "for (std::int64_t hawk_rank = 0; hawk_rank < hawk_size; ++hawk_rank) {"
     )
-    assert any(line.startswith("mut_y(2, i.global()) = ") for line in lines[loop:])
+    assert any(
+        line.startswith("hawk_p_mut_y[2 * hawk_pitch_mut_y + hawk_i] = ")
+        for line in lines[loop:]
+    )
     assert not any("wout_y" in line for line in lines)
 
 

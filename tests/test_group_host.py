@@ -219,20 +219,80 @@ def matrix_mix(a: Matrix[2, 2], y: Mutable[Scalar]):
         y = s[g.rank] + a[1, 1]
 
 
-KERNELS = [_ring(edge, lanes) for edge in EDGES for lanes in (8, 64)] + [
-    ranked,
-    two_phase,
-    over_cols,
-    over_rows,
-    over_lead,
-    over_two,
-    fill,
-    vector_norm,
-    matrix_mix,
-    beside,
-    before_reads_prior,
-    after_writes_what_the_body_reads,
-]
+@hawk.kernel
+def vector_fill(x: Scalar, w: Mutable[Vector[3]]):
+    with hawk.group(lanes=16) as g:
+        w = m.vec([x, 2.0 * x, m.real(g.rank)])
+
+
+@hawk.kernel
+def matrix_fill(x: Scalar, w: Mutable[Matrix[2, 2]]):
+    with hawk.group(lanes=16) as g:
+        w = m.outer(m.vec([x, 2.0 * x]), m.vec([m.real(g.rank), m.real(g.size)]))
+
+
+def _ring_in_place(edge, lanes):
+    """The ring stencil of ``_ring`` on ONE plane the kernel reads and writes: phase 0 copies it into scratch, phase 1 writes it."""
+
+    @hawk.kernel
+    def ring_in_place(x: Mutable[Scalar]):
+        with hawk.group(lanes=lanes) as g:
+            t = g.scratch("t", Scalar)
+            t[g.rank] = x
+            g.barrier()
+            x = (
+                t[g.rank]
+                + 2.0 * t.at(g.rank + 1, edge=edge)
+                + 3.0 * t.at(g.rank - 1, edge=edge)
+            )
+
+    ring_in_place.name = f"ring_in_place_{edge}_{lanes}"
+    return ring_in_place
+
+
+@hawk.kernel
+def scale_in_place(x: Mutable[Scalar]):
+    with hawk.group(lanes=8) as g:
+        x = x * m.real(g.size)
+
+
+@hawk.kernel
+def sum_of_two(a: Scalar, b: Scalar, y: Mutable[Scalar]):
+    with hawk.group(lanes=8) as g:
+        t = g.scratch("t", Scalar)
+        t[g.rank] = a + b
+        g.barrier()
+        y = t[g.rank]
+
+
+@hawk.kernel
+def doubled(x: Scalar, y: Mutable[Scalar]):
+    y = 2.0 * x
+
+
+KERNELS = (
+    [_ring(edge, lanes) for edge in EDGES for lanes in (8, 64)]
+    + [_ring_in_place(edge, lanes) for edge in ("wrap", "clamp") for lanes in (8, 64)]
+    + [
+        scale_in_place,
+        sum_of_two,
+        doubled,
+        ranked,
+        two_phase,
+        over_cols,
+        over_rows,
+        over_lead,
+        over_two,
+        fill,
+        vector_norm,
+        matrix_mix,
+        vector_fill,
+        matrix_fill,
+        beside,
+        before_reads_prior,
+        after_writes_what_the_body_reads,
+    ]
+)
 
 
 @pytest.fixture(scope="module")
@@ -566,6 +626,130 @@ def test_a_matrix_input_read_in_the_phases_of_a_group_equals_the_numpy_mix(bundl
     _run(bundle, "matrix_mix", a=a, y=y)
     want = a[0] * a[3] + 10.0 * a[1] + 100.0 * a[2] + a[3]
     np.testing.assert_array_equal(y, want)
+
+
+@pytest.mark.parametrize("n", (5, 16, 100), ids=("short only", "whole", "short last"))
+def test_a_vector_output_written_in_a_group_equals_the_numpy_rows(bundle, n):
+    """Oracle: the three components ``x``, ``2x`` and the lane's place, built with NumPy."""
+    x = RNG.normal(size=n)
+    w = np.zeros((3, n))
+    _run(bundle, "vector_fill", x=x, w=w)
+    np.testing.assert_array_equal(
+        w, np.stack([x, 2.0 * x, (np.arange(n) % 16).astype(float)])
+    )
+
+
+@pytest.mark.parametrize("n", (5, 16, 100), ids=("short only", "whole", "short last"))
+def test_a_matrix_output_written_in_a_group_equals_the_numpy_outer_product(bundle, n):
+    """Oracle: the outer product of ``(x, 2x)`` and ``(place, size)`` per lane, components row-major."""
+    x = RNG.normal(size=n)
+    w = np.zeros((4, n))
+    _run(bundle, "matrix_fill", x=x, w=w)
+    place = np.arange(n) % 16
+    size = np.array([len(g) for g in _groups(np.arange(n), 16) for _ in g])
+    left, right = np.stack([x, 2.0 * x]), np.stack([place, size]).astype(float)
+    want = np.einsum("ik,jk->ijk", left, right).reshape(4, n)
+    np.testing.assert_array_equal(w, want)
+
+
+def test_a_vector_and_a_matrix_output_are_stored_through_a_hoisted_pointer_and_pitch():
+    """Each component of the lane's row is stored at its pitch after the lane's place; the view is not stored through."""
+    for kernel, components in ((vector_fill, 3), (matrix_fill, 4)):
+        lines = [line.strip() for line in _host_text(kernel).splitlines()]
+        pointer = "auto* __restrict hawk_p_mut_w = mut_w.data();"
+        assert pointer in lines
+        assert any(
+            line.startswith("const std::int64_t hawk_pitch_mut_w = ") for line in lines
+        )
+        stores = [line for line in lines if line.startswith("hawk_p_mut_w[")]
+        assert len(stores) == components
+        assert not any(line.startswith(("mut_w[i]", "mut_w(")) for line in lines)
+
+
+@pytest.mark.parametrize("n", (5, 8, 100, 300_003))
+def test_a_plane_the_group_reads_and_writes_in_place_at_its_own_lane_is_updated_from_its_previous_value(
+    bundle, n
+):
+    """Oracle: NumPy ``x * size`` with the size of each group of 8 (the last may be short); one plane, no restrict pointer."""
+    x = RNG.normal(size=n)
+    want = x * np.array([len(g) for g in _groups(x, 8) for _ in g], dtype=float)
+    plane = x.copy()
+    _run(bundle, "scale_in_place", x=plane)
+    np.testing.assert_array_equal(plane, want)
+
+
+@pytest.mark.parametrize("lanes", (8, 64))
+@pytest.mark.parametrize("edge", ("wrap", "clamp"))
+@pytest.mark.parametrize("n", (5, 8, 100, 300_003))
+def test_the_ring_stencil_through_scratch_on_one_plane_equals_the_numpy_move_of_its_slices(
+    bundle, edge, lanes, n
+):
+    """Oracle: ``np.roll`` / ``np.clip`` of each slice of the previous values, written back into the same array."""
+    x = RNG.normal(size=n)
+    plane = x.copy()
+    _run(bundle, f"ring_in_place_{edge}_{lanes}", x=plane)
+    np.testing.assert_array_equal(plane, _ring_oracle(x, edge, lanes))
+
+
+def test_the_same_in_place_kernel_launched_twice_on_one_array_carries_the_state(bundle):
+    """Oracle: the NumPy ring applied twice."""
+    x = RNG.normal(size=100)
+    plane = x.copy()
+    for _ in range(2):
+        _run(bundle, "ring_in_place_wrap_8", x=plane)
+    np.testing.assert_array_equal(
+        plane, _ring_oracle(_ring_oracle(x, "wrap", 8), "wrap", 8)
+    )
+
+
+def test_an_in_place_update_declares_no_restrict_pointer_for_its_plane():
+    """The plane is read and written, so its stores and reads go through its view."""
+    text = _host_text(scale_in_place)
+    assert "__restrict" not in text
+    assert "mut_x[i] = " in text
+
+
+def test_one_array_bound_to_a_read_plane_and_a_written_plane_of_a_group_kernel_is_refused_by_name(
+    bundle,
+):
+    plane = np.abs(RNG.normal(size=64))
+    with pytest.raises(HawkError) as raised:
+        _run(bundle, "fill", x=plane, y=plane)
+    message = str(raised.value)
+    # the parameters are named in the order of the kernel's slots (the output first)
+    assert "kernel 'fill': 'y' and 'x' are the same memory" in message
+    assert "declare one parameter that the kernel both reads and writes" in message
+
+
+def test_two_overlapping_slices_of_one_array_are_refused_and_disjoint_slices_pass(
+    bundle,
+):
+    """Oracle: ``sqrt(x) * sqrt(x)`` per lane for the disjoint slices."""
+    whole = np.abs(RNG.normal(size=200))
+    with pytest.raises(HawkError, match="are the same memory"):
+        _run(bundle, "fill", x=whole[0:100], y=whole[50:150])
+    x = whole[0:100].copy()
+    _run(bundle, "fill", x=whole[0:100], y=whole[100:200])
+    np.testing.assert_array_equal(whole[100:200], np.sqrt(x) * np.sqrt(x))
+
+
+def test_one_array_bound_to_two_read_planes_of_a_group_kernel_runs(bundle):
+    """Oracle: ``a + b`` with both parameters the same array."""
+    a = RNG.normal(size=100)
+    y = np.zeros(100)
+    _run(bundle, "sum_of_two", a=a, b=a, y=y)
+    np.testing.assert_array_equal(y, a + a)
+
+
+def test_an_ordinary_kernel_with_one_array_as_input_and_output_still_runs_lane_by_lane(
+    bundle,
+):
+    """Without a group the unit assumes no distinct planes: each lane reads its own element and writes it, so the result
+    does not depend on the order of the lanes."""
+    x = RNG.normal(size=100)
+    plane = x.copy()
+    _run(bundle, "doubled", x=plane, y=plane)
+    np.testing.assert_array_equal(plane, 2.0 * x)
 
 
 # ---- the text ----
