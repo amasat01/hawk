@@ -241,6 +241,8 @@ fn a_device_unit_is_built_through_the_door_with_the_found_compiler_and_a_second_
     // the library reads the process environment once, when its tool side is first used
     std::env::set_var("HAWK_NVCC", tools.join("nvcc"));
     std::env::set_var("HAWK_NVCC_CCBIN", tools.join("host"));
+    // the fakes have no GPU: the driver library is told to see none, so a GPU on the machine that runs this test states no driver
+    std::env::set_var("CUDA_VISIBLE_DEVICES", "");
     let ask = r#"{"target": "cuda", "options": {"arch": "sm_61"}, "opt_level": ""}"#;
     let machine = tool::machine(&osprey_cuda_lib::Cuda, ask).unwrap();
     assert_eq!(member_text(&machine, "tools_absent"), None, "{machine}");

@@ -193,7 +193,7 @@ Every file with its line count (this file excluded):
     317  osprey_host/replay/tests/stage_records.rs
      72  osprey_host/replay/tests/structural_keys.rs
     251  osprey_host/replay/tests/table.rs
-    307  osprey_host/replay/tests/tool_side.rs
+    309  osprey_host/replay/tests/tool_side.rs
      47  osprey_host/replay/tests/treplay.rs
      14  osprey_host/ruff.toml
       2  osprey_host/rustfmt.toml
