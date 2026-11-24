@@ -190,6 +190,18 @@ assert loop.field_ints("body_sinks") == () and loop.field_kind("body_sinks") == 
 assert loop.field_text("exit_cond") is None and loop.field_text("dynamic") is None
 done.append("new_loop: several lists, optional nodes, integers; its operands and fields read back")
 
+param = c.make("Param", "f64", [], None, [], "(('name', 'v'), ('access', 'read'))")
+fn = c.new(
+    "Function",
+    "(('name', 'ident'), ('scope', 'lane'), ('params', (#0, )), ('body', #1), ('natives', ()), ('jvp', None), ('vjp', ()), "
+    "('returns', TensorType(shape=(), dtype='f64', tag=None)))",
+    [param, param],
+)
+call = c.make("Call", "f64", [], None, [x], "(('function', ('ident', '%s')), )" % fn.field_text("digest"))
+assert call.field_nodes("callee") == (fn,), call.field_nodes("callee")
+raises(ValueError, lambda: x.field_nodes("callee"), "a node that is no call has no callee")
+done.append("a call answers the function it names")
+
 # ---- the query surface: constants, kinds, feathers, parameter cells, sinks, matrices ----
 assert c.const_names("COMPARE") == ("lt", "le", "gt", "ge", "eq", "ne"), c.const_names("COMPARE")
 assert c.const_names("PARAM_CELL") == ("param_cell",)

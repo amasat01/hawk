@@ -2085,6 +2085,28 @@ def run(done, raises, not_run, backends):
         door.plane_free(handle)
     done.append("order_by_key: order and starts equal numpy argsort and searchsorted, a key outside the bound is refused with the count")
 
+    # ---- reorder: planes permuted in place by an order, numpy fancy indexing as the oracle ----
+    reorder_order = np.argsort(sort_keys, kind="stable").astype(np.int32)
+    reorder_ints = (np.arange(3000, dtype=np.int64) * 31) % 1009
+    reorder_reals = np.linspace(0.0, 1.0, 3000)
+    reorder_rows = np.arange(9000, dtype=np.float32).reshape(3, 3000)
+    reorder_bufs = (reorder_ints.copy(), reorder_reals.copy(), reorder_rows.copy())
+    reorder_ps = [door.plane_wrap(b) for b in reorder_bufs]
+    reorder_order_p = door.plane_wrap(reorder_order)
+    door.reorder(reorder_ps, reorder_order_p)
+    assert (reorder_bufs[0] == reorder_ints[reorder_order]).all() and (reorder_bufs[1] == reorder_reals[reorder_order]).all()
+    assert (reorder_bufs[2] == reorder_rows[:, reorder_order]).all()
+    reorder_order[7] = 3000
+    before = [b.copy() for b in reorder_bufs]
+    e = raises(o.BadRequest, lambda: door.reorder(reorder_ps, reorder_order_p), "reorder: an entry outside the extent")
+    assert "1 entries of order are outside [0, 3000)" in refusal_text(door, e)
+    assert all((b == c).all() for b, c in zip(reorder_bufs, before))
+    e = raises(o.BadRequest, lambda: door.reorder([], reorder_order_p), "reorder: no planes")
+    assert "n_planes is 0" in refusal_text(door, e)
+    for handle in (*reorder_ps, reorder_order_p):
+        door.plane_free(handle)
+    done.append("reorder: planes of three dtypes and a vector value equal numpy p[order], an entry outside the extent is refused with the count and moves nothing")
+
     # ---- the arms of a conditional, by kind ----
     cell = door.plane_wrap(np.zeros(1, dtype=np.int32))
     for kind, n_arms, arms_ok in (

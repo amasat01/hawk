@@ -3,7 +3,6 @@
 use aether_writers::contract::types::Caches;
 use aether_writers::contract::Json;
 use osprey_lowering::facts::{stated_closed, stated_size, stated_text, Failed};
-use std::ffi::{c_char, c_int, c_void};
 
 /// What the running machine reports: its instruction set (as the arm and x86 cards name it) and its cache sizes.
 pub struct Probe {
@@ -88,6 +87,7 @@ pub fn read_stated(record: &Json) -> Result<Stated, Failed> {
 /// The value of a macOS system setting (a number of one to eight bytes), when it reads.
 #[cfg(target_os = "macos")]
 fn sysctl_number(name: &str) -> Option<i64> {
+    use std::ffi::{c_char, c_int, c_void};
     extern "C" {
         /// The system call that reads a named setting.
         fn sysctlbyname(

@@ -48,6 +48,7 @@
     X(eg_scan)                                                                                     \
     X(eg_compact)                                                                                  \
     X(eg_order_by_key)                                                                             \
+    X(eg_reorder)                                                                                  \
     X(eg_copy)                                                                                     \
     X(eg_record_begin)                                                                             \
     X(eg_record_abort)                                                                             \
@@ -1118,6 +1119,47 @@ static PyObject* m_order_by_key(PyObject* self, PyObject* args)
     if (door_check(d, d->fn.eg_order_by_key(d->ctx, &desc)) < 0)
         return NULL;
     Py_RETURN_NONE;
+}
+
+/* reorder(planes, order): every plane of the sequence permuted in place so that p[j] holds what p[order[j]] held. */
+static PyObject* m_reorder(PyObject* self, PyObject* args)
+{
+    Door* d = (Door*)self;
+    PyObject *oplanes, *oorder;
+    if (!PyArg_ParseTuple(args, "OO", &oplanes, &oorder) || !door_ready(d))
+        return NULL;
+    void* order;
+    if (handle_ptr(d, oorder, KIND_PLANE, &order) < 0)
+        return NULL;
+    Py_ssize_t count = PySequence_Size(oplanes);
+    if (count < 0)
+        return NULL;
+    eg_plane** planes = PyMem_Calloc(count > 0 ? (size_t)count : 1, sizeof *planes);
+    if (planes == NULL)
+        return PyErr_NoMemory();
+    Py_ssize_t i = 0;
+    for (; i < count; ++i) {
+        PyObject* item = PySequence_GetItem(oplanes, i);
+        void* plane = NULL;
+        int bad = item == NULL || handle_ptr(d, item, KIND_PLANE, &plane) < 0;
+        Py_XDECREF(item);
+        if (bad)
+            break;
+        planes[i] = plane;
+    }
+    PyObject* result = NULL;
+    if (i == count) {
+        struct eg_reorder_desc desc = { .struct_size = sizeof desc,
+            .n_planes = (uint32_t)count,
+            .planes = planes,
+            .order = order };
+        if (door_check(d, d->fn.eg_reorder(d->ctx, &desc)) == 0) {
+            Py_INCREF(Py_None);
+            result = Py_None;
+        }
+    }
+    PyMem_Free(planes);
+    return result;
 }
 
 static PyObject* m_copy(PyObject* self, PyObject* args)
@@ -2409,6 +2451,7 @@ static PyMethodDef door_methods[] = {
     { "scan", m_scan, METH_VARARGS, NULL },
     { "compact", m_compact, METH_VARARGS, NULL },
     { "order_by_key", m_order_by_key, METH_VARARGS, NULL },
+    { "reorder", m_reorder, METH_VARARGS, NULL },
     { "copy", m_copy, METH_VARARGS, NULL },
     { "record_begin", m_record_begin, METH_VARARGS, NULL },
     { "record_abort", m_record_abort, METH_VARARGS, NULL },
@@ -2571,6 +2614,7 @@ static PyType_Spec handle_spec    = { "_osprey.Handle", sizeof(Handle), 0,
     X(EG_GNODE_SCAN)                                                                               \
     X(EG_GNODE_COMPACT)                                                                            \
     X(EG_GNODE_ORDER)                                                                              \
+    X(EG_GNODE_REORDER)                                                                            \
     X(EG_GNODE_HOST)                                                                               \
     X(EG_ACCESS_READ)                                                                              \
     X(EG_ACCESS_WRITE)                                                                             \
