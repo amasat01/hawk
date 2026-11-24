@@ -94,6 +94,13 @@ _DERIVED_ROLE_CODES = MappingProxyType({
 _UNIFORM_FORMAT = MappingProxyType({"float64": "<d", "float32": "<f", "int64": "<q", "int32": "<i", "uint32": "<I", "bool": "<?"})
 
 
+def _streams():
+    """The :mod:`hawk.streams` module, imported where it is used: it imports this module for :func:`through_door`."""
+    from . import streams
+
+    return streams
+
+
 def through_door(call, *args, **kwargs):
     """Return ``call(*args, **kwargs)``; a refusal of the runtime (its own exception types) is raised as
     :class:`~hawk.errors.HawkError`, its reason as given. Any other exception, one a step of the user's raised included, passes
@@ -841,6 +848,7 @@ class BoundPlan:
         memory is queued: :meth:`wait` or :func:`hawk.synchronize` returns when it has run. A counter array the caller bound
         (``finished_count``, a dispatch group's branch counters) is filled from the plan's counters."""
         self._check_open()
+        _streams().apply(self._door)
         tiles = through_door(self._door.launch, self._plan)
         self.settle_counters()
         return tiles

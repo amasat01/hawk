@@ -25,8 +25,9 @@ from typing import NamedTuple
 
 import _osprey
 
-from . import _place, graph_builder
+from . import _place, graph_builder, streams
 from .errors import HawkError
+from .collectives import Collective
 from .runner import GradientReport, Gradients, RunRecord, check_reverse_options
 from .host_steps import BoundHostStep
 from .runtime import BoundPlan, PlaneStore, through_door
@@ -250,6 +251,8 @@ class GraphPipeline:
         self._launches: list[_Launch] = []
         #: every launch and host step, in recording order
         self._recorded: list = []
+        #: every whole-plane node, in recording order
+        self._collectives: list = []
         self._counting: list[BoundPlan] = []
         self._params: dict | None = None
         self._handles: list = []
@@ -308,6 +311,9 @@ class GraphPipeline:
             elif isinstance(item, _HostCall):
                 item.bound.record(door, self._store)
                 self._recorded.append(item)
+            elif isinstance(item, Collective):
+                item.record(door, self._store)
+                self._collectives.append(item)
             elif isinstance(item, _Cond):
                 self._emit_cond(item)
             elif isinstance(item, _Fork):
@@ -472,6 +478,7 @@ class GraphPipeline:
         record: a refused recording call changes nothing, so the library keeps the recording until it is told to drop it."""
         self._launches.clear()
         self._recorded.clear()
+        self._collectives.clear()
         self._counting.clear()
         through_door(self._door.record_abort)
 
@@ -496,6 +503,7 @@ class GraphPipeline:
         if self._finalizer is None or not self._finalizer.alive:
             raise HawkError(f"{type(self).__name__}.launch: the graph is not built, or is closed; build it first")
         for _ in range(n):
+            streams.apply(self._door)
             through_door(self._door.graph_launch, self._handles[0])
             for bound in self._counting:
                 bound.settle_counters()

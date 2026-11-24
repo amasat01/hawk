@@ -91,6 +91,8 @@ The declarations a kernel is written in, and the top-level functions. Each has i
    hawk.host_threads
    hawk.set_host_threads
    hawk.synchronize
+   hawk.Stream
+   hawk.Event
    hawk.banded_pack
    hawk.banded_unpack
 ```

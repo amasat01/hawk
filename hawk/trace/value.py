@@ -390,7 +390,9 @@ class Value:
             "reaches a Python branch or comprehension the pass does not own — use "
             "select(cond, a, b). Combine conditions with `and` / `or` / `not` or with & | ~, and parenthesise "
             "each comparison around & and |: `x >= 0 & x <= 3` parses as `x >= (0 & x) <= 3`, "
-            "so write `(x >= 0) & (x <= 3)`"
+            "so write `(x >= 0) & (x <= 3)`. A lambda kernel is one expression the pass does not rewrite: "
+            "a branch on a traced value in it (`a if c else b`, `and`, `or`) is written hawk.math.where(c, a, b), "
+            "or as a `def`"
         )
 
 

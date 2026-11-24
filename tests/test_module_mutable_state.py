@@ -75,6 +75,7 @@ ALLOWED = {
         "ext/primitive.py",
         "_RULES",
     ): "the rule templates of declared primitives; a name is claimed under one lock",
+    ("streams.py", "_SCOPE"): "the stream scope of the running thread: a context variable, one value per thread or task",
     ("targets/__init__.py", "TARGETS"): VIEW,
     ("targets/__init__.py", "DEFAULT_TARGETS"): VIEW,
     **{

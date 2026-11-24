@@ -22,6 +22,7 @@ import inspect
 import sys
 import textwrap
 import threading
+import types as types_module
 import typing
 from collections.abc import Callable
 from typing import Any
@@ -194,8 +195,18 @@ class Kernel:
 def kernel(fn: Callable[..., None] | None = None, *, kind: Any = None,
            steps: Any = None, time: str | None = None,
            time_step: str | None = None, jump: Any = None,
-           group: int | str = 1) -> Any:
+           group: int | str = 1, name: str | None = None,
+           types: tuple | None = None) -> Any:
     """Trace ``fn`` into a :class:`Kernel`. Refusals fire here.
+
+    ``fn`` is a ``def`` or a ``lambda``. A lambda is one expression whose value is the output ``out`` (a tuple: ``out0``,
+    ``out1``, ...); it holds no statement, and a branch on a traced value inside it (``a if c else b``, ``and``, ``or``) is
+    refused by name: use ``hawk.math.where`` or a ``def``. The parameters' declarations come from the annotations or, when
+    the function has none, from ``types=`` (one declaration per parameter, in order); both together are refused.
+    ``name=`` is the kernel's name in errors, files and the cache: it is required when the function's own name is not an
+    identifier (every lambda) and refused otherwise::
+
+        add = hawk.kernel(lambda a, b: a + b, name="add", types=(hawk.Scalar, hawk.Scalar))
 
     ``kind`` supplies the kernel's :class:`hawk.ext.Kind` (vocabulary,
     output set, seams); omitted, it gets :data:`hawk.ext.DEFAULT_KIND`.
@@ -240,8 +251,9 @@ def kernel(fn: Callable[..., None] | None = None, *, kind: Any = None,
     if fn is None:
         def decorate(f: Callable[..., None]) -> Any:
             return kernel(f, kind=kind, steps=steps, time=time, time_step=time_step,
-                          jump=jump, group=group)
+                          jump=jump, group=group, name=name, types=types)
         return decorate
+    fn = _named_form(fn, name, types)
     if time is not None and time_step is None:
         raise HawkError(
             f"kernel {fn.__name__!r}: time={time!r} needs time_step=, the "
@@ -319,6 +331,48 @@ def resolve_dispatch(kernel: Kernel, strategies: dict[str, str]) -> Kernel:
     return fused
 
 
+def _is_lambda(fn: Callable[..., Any]) -> bool:
+    """Whether ``fn`` is a ``lambda``: Python gives every lambda's code the name ``<lambda>``, and that is the only mark."""
+    return fn.__code__.co_name == "<lambda>"
+
+
+def _named_form(fn: Callable[..., Any], name: str | None, types: tuple | None) -> Callable[..., Any]:
+    """``fn`` as the kernel entry traces it: itself, or a copy that carries ``name=`` and the declarations of ``types=``.
+
+    The copy leaves the author's function untouched. Refuses by name: a function whose name is not an identifier and no
+    ``name=``; ``name=`` on a function that has an identifier for a name; ``types=`` beside annotations; a wrong number
+    of types."""
+    own = fn.__name__
+    if name is None and not own.isidentifier():
+        raise HawkError(
+            f"kernel {own!r}: a lambda has no name of its own; give one: hawk.kernel(fn, name=\"add\", types=...)")
+    if name is not None and own.isidentifier():
+        raise HawkError(
+            f"kernel {own!r}: name= is for a function whose own name is not an identifier (a lambda); "
+            f"this function is already named {own!r}, so leave name= out")
+    if name is not None and not (isinstance(name, str) and name.isidentifier()):
+        raise HawkError(f"kernel {own!r}: name= is an identifier, got {name!r}")
+    if name is None and types is None:
+        return fn
+    label = name or own
+    params = list(inspect.signature(fn).parameters)
+    annotated = _annotations(fn)
+    if types is not None:
+        if annotated:
+            raise HawkError(
+                f"kernel {label!r}: the parameters {sorted(annotated)} are annotated and types= is given too; "
+                "state each declaration once, in the annotations or in types=")
+        if not isinstance(types, (tuple, list)) or len(types) != len(params):
+            raise HawkError(
+                f"kernel {label!r}: types= holds one declaration per parameter, in order: "
+                f"{len(params)} for {params}, got {types!r}")
+    copy = types_module.FunctionType(fn.__code__, fn.__globals__, label, fn.__defaults__, fn.__closure__)
+    copy.__kwdefaults__ = fn.__kwdefaults__
+    copy.__module__, copy.__doc__ = fn.__module__, fn.__doc__
+    copy.__annotations__ = dict(zip(params, types)) if types is not None else dict(annotated)
+    return copy
+
+
 def _kernel(fn: Callable[..., None], kind: Any, steps: Any) -> Any:
     """:func:`kernel`'s build, before the time declaration is recorded."""
     from .steps import check_steps
@@ -358,11 +412,19 @@ def _trace(fn: Callable[..., None], kind: Any) -> Kernel:
         planes, args, sink_names, mutables, finishes = _bound_planes(
             fn, params, own, vocab, resolved_kind)
         scope[astpass.REFS] = args
-        traced, returning, shape = _retrace(
-            fn, scope, sink_names, mutables, finishes=finishes,
-            returns_value=True if forced is not None else None)
+        if _is_lambda(fn):
+            traced, returning, shape = fn, True, None  # one expression: nothing for the ast pass to rewrite
+        else:
+            traced, returning, shape = _retrace(
+                fn, scope, sink_names, mutables, finishes=finishes,
+                returns_value=True if forced is not None else None)
         with tracing(lane_space(planes), fn.__name__) as reads:
-            out = _call_finishing(traced, fn, {**args, **_group_views(planes, args)})
+            try:
+                out = _call_finishing(traced, fn, {**args, **_group_views(planes, args)})
+            except HawkError as refusal:
+                if not _is_lambda(fn):
+                    raise
+                raise HawkError(f"kernel {fn.__name__!r}: {refusal}") from refusal
         _declare_counts(planes, args)
         _declare_winners(planes, args)
         _retag_by_key(planes, args)

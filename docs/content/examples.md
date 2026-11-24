@@ -75,6 +75,7 @@ Run a Python function inside a graph, and give it a gradient.
 :maxdepth: 1
 
 howto_host_step
+howto_whole_plane
 ```
 
 ## Wide values

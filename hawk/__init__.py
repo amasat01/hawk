@@ -112,7 +112,13 @@ _TOP_LEVEL_DOORS = {"build": ("artifact", "build_bundle"),
                     "samples_last": ("_plane_layout", "samples_last"),
                     "sample_position": ("trace.value", "sample_position"),
                     "primitive": ("ext.primitive", "primitive"),
-                    "chain": ("trace.chain", "chain")}
+                    "chain": ("trace.chain", "chain"),
+                    "reduce": ("collectives", "reduce"),
+                    "copy": ("collectives", "copy"),
+                    "matmul": ("collectives", "matmul"),
+                    "fft": ("collectives", "fft"),
+                    "Stream": ("streams", "Stream"),
+                    "Event": ("events", "Event")}
 
 #: Submodules ``import hawk`` resolves lazily: the door returns the module
 #: itself, imported on first access.

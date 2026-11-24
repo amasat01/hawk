@@ -26,6 +26,14 @@ x = np.linspace(0.0, 7.0, 8)
 scale(x, 2.0, 1.0)                # call it: the first call builds and caches it
 ```
 
+A one-expression kernel can be a lambda. It has no name of its own, so `name=` gives it one, and `types=` declares
+its parameters when it has no annotations; the value is the output `out` (a tuple gives `out0`, `out1`). A branch on a
+traced value is written `hawk.math.where(cond, a, b)`, or the kernel is a `def`:
+
+```python
+add = hawk.kernel(lambda a, b: a + b, name="add", types=(Scalar, Scalar))
+```
+
 The printed answer, as recorded in the
 [first tutorial's](tutorials/01_your_first_kernel) executed run:
 

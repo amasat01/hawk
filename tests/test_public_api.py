@@ -57,11 +57,11 @@ _SURFACES = {
 #: the SAME commit, same as any other committed manifest in this repo.
 _EXPECTED_MANIFEST = {
     "hawk": [
-        "ActiveSet", "DeviceKernel", "DeviceProps", "Graph", "GraphPipeline", "Grid", "HawkError", "HostSerial", "HostTeam", "Index", "Int32", "Kernel", "Matrix", "Meta", "Mutable",
+        "ActiveSet", "DeviceKernel", "DeviceProps", "Event", "Graph", "GraphPipeline", "Grid", "HawkError", "HostSerial", "HostTeam", "Index", "Int32", "Kernel", "Matrix", "Meta", "Mutable",
         "Param", "Partition", "Quantity", "Quat", "RawBlock", "Record", "Rows", "Scalar", "SkipGuard", "Sorted",
-        "Staged", "Table", "Tensor", "Terminated", "ToolchainAbsent", "UInt32", "Value", "Vector", "Wide",
-        "WideOut", "__version__", "append", "asarray", "banded_pack", "banded_unpack", "build", "chain", "deploy", "device_props", "geometry", "group",
-        "host_step", "host_threads", "kernel", "load", "max", "mean", "min", "plan", "primitive", "raw_device", "repeat_while", "resolve_dispatch", "reverse", "run",
+        "Staged", "Stream", "Table", "Tensor", "Terminated", "ToolchainAbsent", "UInt32", "Value", "Vector", "Wide",
+        "WideOut", "__version__", "append", "asarray", "banded_pack", "banded_unpack", "build", "chain", "copy", "deploy", "device_props", "fft", "geometry", "group",
+        "host_step", "host_threads", "kernel", "load", "matmul", "max", "mean", "min", "plan", "primitive", "raw_device", "reduce", "repeat_while", "resolve_dispatch", "reverse", "run",
         "sample_position", "samples_first", "samples_last", "scatter", "set_host_threads", "simulate", "skippable", "steps", "sum", "synchronize",
         "to_numpy", "until_done",
     ],
