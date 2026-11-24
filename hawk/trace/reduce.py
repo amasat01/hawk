@@ -244,13 +244,6 @@ def _reduce(op: str, x: Any, over: Any, where_mask: Any, contract: Any) -> Any:
     axes = getattr(_trace, "axes", ((None, None),))
     gone = _reduced_axes(over, axes, call)
     kept = tuple(i for i in range(len(axes)) if i not in gone)
-    if kept and contract == "ordered" and gone != tuple(range(len(axes) - len(gone), len(axes))):
-        labels = [label if label is not None else i for i, (label, _) in enumerate(axes)]
-        raise HawkError(
-            f"kernel {getattr(_trace, 'name', None)!r}: {call} with contract=\"ordered\" sums over {[labels[i] for i in gone]}, "
-            f"but an ordered sum over some lane axes is built only over the trailing axes of the Grid "
-            f"({[labels[i] for i in range(len(axes) - len(gone), len(axes))]} for {len(gone)} summed axis(es); "
-            f"over every axis is built too): use contract=\"auto\", or order the Grid so the summed axes come last")
     base = "sum" if op == "mean" else op
     if kept and base != "sum":
         raise HawkError(
@@ -300,8 +293,7 @@ def sum(x: Any, over: Any = None, where: Any = None, contract: str = "auto") -> 
     may be read back later in the body (a stage boundary); over some axes it is
     an output, one value per kept coordinate, bound ``(*payload, *kept)``. Over some axes,
     ``contract="ordered"`` adds each key's lanes in lane order in a stage of its own (no atomics: the
-    same bits on every launch, for any lane count), and the summed axes must be the trailing axes of the Grid; the default
-    contracts commit atomically."""
+    same bits on every launch, for any lane count), over any of the Grid's axes; the default contracts commit atomically."""
     return _reduce("sum", x, over, where, contract)
 
 

@@ -23,6 +23,13 @@ def ordered(lane: hawk.Grid["key", "col":64], x: hawk.Scalar) -> hawk.Scalar:
 
 
 @hawk.kernel
+def leading(
+    lane: hawk.Grid["col":64, "key":8], x: hawk.Scalar, y: hawk.Mutable["key":8]
+):
+    y = hawk.sum(x, over="col", contract="ordered")
+
+
+@hawk.kernel
 def add(key: hawk.Index, x: hawk.Scalar, acc: hawk.Mutable[hawk.Scalar]):
     hawk.scatter(acc, contract="ordered")[key] += x
 
@@ -53,6 +60,12 @@ def test_an_ordered_or_default_contract_reduction_builds_banded_on_the_ordered_s
     assert "band_partial" in _partial_dtypes(banded, kernel.name)
     f64 = build_bundle([kernel], tmp_path / "f64", mode="float64", targets=(target,), host_profile="native")
     assert "band_partial" not in _partial_dtypes(f64, kernel.name)
+
+
+@pytest.mark.parametrize("target", ["cuda"])
+def test_an_ordered_sum_over_a_leading_axis_builds_banded_on_the_ordered_stages_with_16_byte_partials(target, tmp_path):
+    banded = build_bundle([leading], tmp_path, mode="banded", targets=(target,), host_profile="native")
+    assert "band_partial" in _partial_dtypes(banded, leading.name)
 
 
 @hawk.kernel

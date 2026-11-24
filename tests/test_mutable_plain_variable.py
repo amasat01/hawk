@@ -208,3 +208,25 @@ def test_a_wideout_plane_stored_only_by_key_traces():
         hawk.scatter(y)[k] = 2.0 * x
 
     assert _ir.prior_reads(wo_key.walk) == ()
+
+
+def test_outputs_declared_against_their_statement_order_hold_the_values_python_gives(tmp_path):
+    """Each plane commits once, from its last assignment, and a read after an assignment is the assigned value: the order in which
+    the outputs are declared never decides a value. The reference is the same statements in NumPy."""
+    import numpy as np
+
+    import hawk
+    from hawk.artifact import build_bundle
+
+    @kernel
+    def crossed(x: Scalar, b: Mutable[Scalar], a: Mutable[Scalar]):
+        a = x
+        a = a + 1.0
+        b = a * 2.0
+
+    x = np.arange(1.0, 6.0)
+    a, b = np.zeros(5), np.zeros(5)
+    bundle = build_bundle([crossed], tmp_path / "bundle", targets=("host",), cache_dir=tmp_path / "cache")
+    hawk.run(hawk.load(bundle.directory, crossed.name), x=x, a=a, b=b)
+    np.testing.assert_array_equal(a, x + 1.0)
+    np.testing.assert_array_equal(b, (x + 1.0) * 2.0)

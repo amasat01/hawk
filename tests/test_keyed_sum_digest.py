@@ -1,4 +1,5 @@
 """Two keyed sums that differ only in their key are two computations: they must not share a walk digest, as a plain reduction or as a block."""
+
 import pytest
 
 import hawk
@@ -14,8 +15,6 @@ def make(over, contract):
     return k
 
 
-# An ordered sum over a leading axis is refused by name until it is built (tests/test_ordered_sum_axes.py holds the red reminder):
-# the strict mark turns this row red the day the refusal goes, so the row comes back with the fix.
-@pytest.mark.parametrize("contract", ["auto", pytest.param("ordered", marks=pytest.mark.xfail(strict=True, raises=hawk.HawkError))])
+@pytest.mark.parametrize("contract", ["auto", "ordered"])
 def test_keyed_sums_that_differ_only_in_their_key_have_two_digests(contract):
     assert _ir.digest(make("a", contract).walk) != _ir.digest(make("b", contract).walk)
