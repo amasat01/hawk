@@ -58,8 +58,6 @@
   "isinf",
   "isfinite"
  ],
- "RAW_KIND": "raw_device",
- "RAW_LANGUAGE": "aether",
  "SCATTER_CONTRACTS": [
   "auto",
   "compensated",

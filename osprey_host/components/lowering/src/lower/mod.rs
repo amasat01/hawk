@@ -659,7 +659,7 @@ fn write_target(
     if !pending.exports_block && target == Target::Host {
         unit.exports = Exports::Text(String::new());
     }
-    unit.functions = functions::table(ctx, walk)?;
+    unit.functions = functions::table(ctx, walk, cards.served_name)?;
     unit.segment = pending.segment.clone();
     unit.one_step = pending
         .one_step

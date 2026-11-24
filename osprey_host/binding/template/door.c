@@ -47,6 +47,7 @@
     X(eg_reduce)                                                                                   \
     X(eg_scan)                                                                                     \
     X(eg_compact)                                                                                  \
+    X(eg_order_by_key)                                                                             \
     X(eg_copy)                                                                                     \
     X(eg_record_begin)                                                                             \
     X(eg_record_abort)                                                                             \
@@ -1092,6 +1093,29 @@ static PyObject* m_compact(PyObject* self, PyObject* args)
     struct eg_compact_desc desc
         = { .struct_size = sizeof desc, .keep = keep, .kept = kept, .count = count };
     if (door_check(d, d->fn.eg_compact(d->ctx, &desc)) < 0)
+        return NULL;
+    Py_RETURN_NONE;
+}
+
+/* order_by_key(keys, order, starts, bound): the stable permutation of the lanes by integer key into order, and the first place of
+ * each key into starts. */
+static PyObject* m_order_by_key(PyObject* self, PyObject* args)
+{
+    Door* d = (Door*)self;
+    PyObject *okeys, *oorder, *ostarts;
+    long long bound;
+    if (!PyArg_ParseTuple(args, "OOOL", &okeys, &oorder, &ostarts, &bound) || !door_ready(d))
+        return NULL;
+    void *keys, *order, *starts;
+    if (handle_ptr(d, okeys, KIND_PLANE, &keys) < 0 || handle_ptr(d, oorder, KIND_PLANE, &order) < 0
+        || handle_ptr(d, ostarts, KIND_PLANE, &starts) < 0)
+        return NULL;
+    struct eg_order_desc desc = { .struct_size = sizeof desc,
+        .keys = keys,
+        .order = order,
+        .starts = starts,
+        .bound = bound };
+    if (door_check(d, d->fn.eg_order_by_key(d->ctx, &desc)) < 0)
         return NULL;
     Py_RETURN_NONE;
 }
@@ -2384,6 +2408,7 @@ static PyMethodDef door_methods[] = {
     { "reduce", KEYWORD_CALL(m_reduce), METH_VARARGS | METH_KEYWORDS, NULL },
     { "scan", m_scan, METH_VARARGS, NULL },
     { "compact", m_compact, METH_VARARGS, NULL },
+    { "order_by_key", m_order_by_key, METH_VARARGS, NULL },
     { "copy", m_copy, METH_VARARGS, NULL },
     { "record_begin", m_record_begin, METH_VARARGS, NULL },
     { "record_abort", m_record_abort, METH_VARARGS, NULL },
@@ -2545,6 +2570,7 @@ static PyType_Spec handle_spec    = { "_osprey.Handle", sizeof(Handle), 0,
     X(EG_GNODE_WAIT)                                                                               \
     X(EG_GNODE_SCAN)                                                                               \
     X(EG_GNODE_COMPACT)                                                                            \
+    X(EG_GNODE_ORDER)                                                                              \
     X(EG_GNODE_HOST)                                                                               \
     X(EG_ACCESS_READ)                                                                              \
     X(EG_ACCESS_WRITE)                                                                             \

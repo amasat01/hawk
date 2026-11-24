@@ -32,11 +32,44 @@ fn host_sources(door: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Compiles `source` of the door to an object in `out` and returns the object's path.
+/// The files a compiler's dependency file (make syntax, one rule) names after the colon: the source and every header it read.
+fn dependencies(depfile: &Path) -> Vec<String> {
+    let text = std::fs::read_to_string(depfile).unwrap_or_else(|why| {
+        panic!(
+            "the dependency file {} is unreadable: {why}",
+            depfile.display()
+        )
+    });
+    let rule = text.replace("\\\n", " ");
+    let (_, files) = rule
+        .split_once(": ")
+        .expect("a dependency file holds one rule");
+    let mut names = Vec::new();
+    let mut name = String::new();
+    let mut characters = files.chars().peekable();
+    while let Some(character) = characters.next() {
+        match character {
+            // a backslash before a space belongs to the name
+            '\\' if characters.peek() == Some(&' ') => name.push(characters.next().unwrap_or(' ')),
+            c if c.is_whitespace() => {
+                names.extend((!name.is_empty()).then(|| std::mem::take(&mut name)))
+            }
+            c => name.push(c),
+        }
+    }
+    names.extend((!name.is_empty()).then_some(name));
+    names
+}
+
+/// Compiles `source` of the door to an object in `out` and returns the object's path. Cargo is told to rebuild when the source
+/// or any header the compiler read for it changes, wherever the include roots put that header.
 fn compile(cxx: &str, flags: &[String], door: &Path, source: &str, out: &Path) -> PathBuf {
     let object = out.join(source.replace('/', "_")).with_extension("o");
+    let depfile = object.with_extension("d");
     let done = Command::new(cxx)
         .args(flags)
+        .args(["-MMD", "-MF"])
+        .arg(&depfile)
         .args(["-c"])
         .arg(door.join(source))
         .arg("-o")
@@ -48,6 +81,9 @@ fn compile(cxx: &str, flags: &[String], door: &Path, source: &str, out: &Path) -
         "{source} did not compile with {cxx}:\n{}",
         String::from_utf8_lossy(&done.stderr)
     );
+    for file in dependencies(&depfile) {
+        println!("cargo:rerun-if-changed={file}");
+    }
     object
 }
 

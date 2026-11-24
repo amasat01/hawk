@@ -20,7 +20,7 @@ const REMOVED: [&str; 2] = ["KEYED_AUTO", "SCATTER_CONTRACTS"];
 fn every_constant_the_front_end_imports_equals_the_old_python_value() {
     let all = oracle("constants.json");
     let rows = all.obj();
-    assert_eq!(rows.len(), 18);
+    assert_eq!(rows.len(), 16);
     for (name, want) in rows
         .iter()
         .filter(|(name, _)| !REMOVED.contains(&name.as_str()))

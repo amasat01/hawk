@@ -13,7 +13,7 @@ use rcore::sha256;
 use std::collections::HashMap;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
 
 /// The environment variables of a discovery, a snapshot so a test can state its own. The snapshot of the process environment is
@@ -343,8 +343,9 @@ pub fn forget_probes() {
 
 /// The standard output of `<path> <args>`, or why it did not run: the operating system's error when it could not be started,
 /// else the exit code and the tool's own complaint. A success is memoised per executable for this process and, when `root` is
-/// given, kept in the store under it, keyed on the executable's path, size and modification time and the arguments, so a fresh
-/// process and a second process do not ask the tool again and a replaced executable never reads the old answer.
+/// given, kept in the store under it, keyed on the executable's path, size and modification time, the arguments and the release
+/// of the operating system, so a fresh process and a second process do not ask the tool again, and neither a replaced executable
+/// nor an updated system reads the old answer. Where the system's release cannot be asked, the answer is not kept.
 fn probe(path: &Path, args: &[String], env: &Env, root: Option<&Path>) -> Result<String, String> {
     let unreadable = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
     let meta = std::fs::metadata(path).map_err(|e| unreadable(&e))?;
@@ -374,9 +375,9 @@ fn probe(path: &Path, args: &[String], env: &Env, root: Option<&Path>) -> Result
             .map_or("no exit code".to_string(), |c| format!("exit {c}"));
         Err(format!("{code}: {}", done.stderr.trim()))
     };
-    let answer = match root {
-        Some(root) => kept(root, &key, ask)?,
-        None => ask()?,
+    let answer = match (root, system_release()) {
+        (Some(root), Some(release)) => kept(root, release, &key, ask)?,
+        _ => ask()?,
     };
     if let Ok(mut memo) = PROBES.lock() {
         memo.get_or_insert_with(HashMap::new)
@@ -385,10 +386,29 @@ fn probe(path: &Path, args: &[String], env: &Env, root: Option<&Path>) -> Result
     Ok(answer)
 }
 
-/// The answer of `ask` for the probe `key`, kept as a slot of the store under `root/probes`: built once however many processes
-/// ask, published whole. A failed probe leaves no slot. A store that cannot be used (a read-only root) costs only the keeping.
+/// The release of the running operating system (`uname -rv`), asked once per process; `None` where it cannot be asked.
+/// A tool's answer can depend on the system it runs on (a compiler states its target with the system's release), so a kept
+/// answer belongs to one release.
+fn system_release() -> Option<&'static str> {
+    static RELEASE: OnceLock<Option<String>> = OnceLock::new();
+    RELEASE
+        .get_or_init(|| {
+            let done = std::process::Command::new("uname")
+                .arg("-rv")
+                .output()
+                .ok()?;
+            let text = String::from_utf8(done.stdout).ok()?;
+            (done.status.success() && !text.trim().is_empty()).then(|| text.trim().to_string())
+        })
+        .as_deref()
+}
+
+/// The answer of `ask` for the probe `key` on the system of `release`, kept as a slot of the store under `root/probes`: built
+/// once however many processes ask, published whole. A failed probe leaves no slot. A store that cannot be used (a read-only
+/// root) costs only the keeping.
 fn kept(
     root: &Path,
+    release: &str,
     key: &(PathBuf, u64, u128, Vec<String>),
     ask: impl Fn() -> Result<String, String>,
 ) -> Result<String, String> {
@@ -397,6 +417,7 @@ fn kept(
         path.display().to_string(),
         size.to_string(),
         mtime.to_string(),
+        release.to_string(),
     ];
     terms.extend_from_slice(args);
     let slot = sha256::hex(terms.join("\0").as_bytes());
@@ -580,6 +601,34 @@ pub fn stated(tool: &Tool) -> J {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Oracle: the count of questions the asker was put; a kept answer is read without asking.
+    #[test]
+    fn a_kept_probe_answer_is_not_read_on_another_release_of_the_system() {
+        let root = std::env::temp_dir().join(format!("toolkit_release_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let key = (PathBuf::from("/tool"), 1, 2, vec!["--version".to_string()]);
+        let asked = std::cell::Cell::new(0);
+        let ask = |text: &'static str| {
+            asked.set(asked.get() + 1);
+            Ok(text.to_string())
+        };
+        assert_eq!(
+            kept(&root, "release a", &key, || ask("on a")).unwrap(),
+            "on a"
+        );
+        assert_eq!(
+            kept(&root, "release a", &key, || ask("unasked")).unwrap(),
+            "on a"
+        );
+        assert_eq!(asked.get(), 1);
+        assert_eq!(
+            kept(&root, "release b", &key, || ask("on b")).unwrap(),
+            "on b"
+        );
+        assert_eq!(asked.get(), 2);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn flags_are_read_and_removed_in_both_forms() {

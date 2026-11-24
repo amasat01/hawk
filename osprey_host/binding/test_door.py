@@ -2070,6 +2070,21 @@ def run(done, raises, not_run, backends):
         door.plane_free(handle)
     done.append("compact: kept[:count] equals flatnonzero, the tail is untouched, a wrong kept is refused by name")
 
+    # ---- order_by_key: the stable permutation by key and the first place of each key, numpy as the oracle ----
+    sort_keys = (np.arange(3000, dtype=np.int32) * 7919) % 13
+    sorted_order = np.zeros(3000, dtype=np.int32)
+    sorted_starts = np.zeros(14, dtype=np.int32)
+    keys_p, order_p, starts_p = door.plane_wrap(sort_keys), door.plane_wrap(sorted_order), door.plane_wrap(sorted_starts)
+    door.order_by_key(keys_p, order_p, starts_p, 13)
+    assert (sorted_order == np.argsort(sort_keys, kind="stable")).all()
+    assert (sorted_starts == np.searchsorted(sort_keys[sorted_order], np.arange(14))).all()
+    short_starts_p = door.plane_wrap(np.zeros(13, dtype=np.int32))
+    e = raises(o.BadRequest, lambda: door.order_by_key(keys_p, order_p, short_starts_p, 12), "order_by_key: a key outside the bound")
+    assert "keys are outside [0, 12)" in refusal_text(door, e)
+    for handle in (keys_p, order_p, starts_p, short_starts_p):
+        door.plane_free(handle)
+    done.append("order_by_key: order and starts equal numpy argsort and searchsorted, a key outside the bound is refused with the count")
+
     # ---- the arms of a conditional, by kind ----
     cell = door.plane_wrap(np.zeros(1, dtype=np.int32))
     for kind, n_arms, arms_ok in (
