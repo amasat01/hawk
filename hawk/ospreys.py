@@ -34,6 +34,18 @@ ENTRY_POINT_GROUP = "hawk.ospreys"
 SEARCH_ENV = "HAWK_OSPREY_PATH"
 
 
+@functools.cache
+def _manifest_ctx():
+    """The one binding context that answers every manifest question of the process.
+
+    A manifest call reads only its arguments and writes nothing to the context but the text of a refusal, which it raises
+    in the same call under the interpreter lock; so the answers never change and one context serves every thread.
+    """
+    import _osprey
+
+    return _osprey.Ctx()
+
+
 def _ask(call: str, *args) -> str:
     """Return the text answer of the binding's manifest call ``backend_<call>``; its refusal is raised as ``HawkError``.
 
@@ -43,7 +55,7 @@ def _ask(call: str, *args) -> str:
     import _osprey
 
     try:
-        return getattr(_osprey.Ctx(), "backend_" + call)(*args)
+        return getattr(_manifest_ctx(), "backend_" + call)(*args)
     except (_osprey.NotWritten, _osprey.BadRequest, _osprey.Fault) as refusal:
         raise HawkError(str(refusal)) from refusal
 

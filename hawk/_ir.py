@@ -31,7 +31,7 @@ _CONTEXT_OF_CONSTANTS = _osprey.Ctx()
 # The constants a one-element answer stands for as a plain string (the library answers every
 # constant as a tuple).
 _STRING_CONSTANTS = (
-    "NAMESPACE_SEP", "PARAM_CELL", "RAW_KIND", "CELL_PLANE", "RAW_LANGUAGE",
+    "NAMESPACE_SEP", "PARAM_CELL", "CELL_PLANE",
     "COMPANION_SUFFIX", "ADJOINT_PREFIX", "REDUCE_KIND", "PRIMITIVE_KIND", "SAMPLE_SUM_COMP_SUFFIX",
 )  # fmt: skip
 _TUPLE_CONSTANTS = (
@@ -47,7 +47,7 @@ COMPARE, LOGICAL, PREDICATE, CONTRACTS = (
  LINALG_FACTORISATIONS) = (
     _CONTEXT_OF_CONSTANTS.const_names(name) for name in _TUPLE_CONSTANTS[4:]
 )  # fmt: skip
-(NAMESPACE_SEP, PARAM_CELL, RAW_KIND, CELL_PLANE, RAW_LANGUAGE, COMPANION_SUFFIX,
+(NAMESPACE_SEP, PARAM_CELL, CELL_PLANE, COMPANION_SUFFIX,
  ADJOINT_PREFIX, REDUCE_KIND, PRIMITIVE_KIND, SAMPLE_SUM_COMP_SUFFIX) = (
     _CONTEXT_OF_CONSTANTS.const_names(name)[0] for name in _STRING_CONSTANTS
 )  # fmt: skip
@@ -129,18 +129,6 @@ class Wire(NamedTuple):
     shape: tuple = ()
     dtype: str = "f64"
     tag: Any = None
-
-
-class RawBlock(NamedTuple):
-    """The literal of a raw-device op: the library writes its key text from these seven fields."""
-
-    name: str
-    access: str
-    text: str
-    language: str
-    reads: tuple
-    writes: tuple
-    returns: TensorType
 
 
 class KeyRun(NamedTuple):
@@ -471,6 +459,21 @@ def update(
         fields += f"('reduced', #{len(refs) - 1}), "
     fields += f"('edge', {edge!r}), ('axes', {tuple(axes)!r}))"
     return value.ctx.new("Update", fields, refs)
+
+
+@_as_hawk_error
+def function(
+    context: Any, name: str, params: Sequence[Any], body: Any, natives: Sequence[tuple[str, str]], result: TensorType
+) -> Any:
+    """Declare the function ``name`` in the function table of ``context``: its ``params``, and either a traced ``body`` or the
+    ``natives`` texts as ``(target name, text)`` pairs. A name that is already declared with another body is refused."""
+    leaves = "".join(f"#{i}, " for i in range(len(params)))
+    held = "None" if body is None else f"#{len(params)}"
+    fields = (
+        f"(('name', {name!r}), ('scope', 'lane'), ('params', ({leaves})), ('body', {held}), "
+        f"('natives', {_text(tuple(natives))}), ('jvp', None), ('vjp', ()), ('returns', {_text(result)}))"
+    )
+    return context.new("Function", fields, [*params, *([] if body is None else [body])])
 
 
 @_as_hawk_error

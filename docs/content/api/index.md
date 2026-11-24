@@ -3,9 +3,8 @@
 hawk's public Python surface, by subpackage. The authoring names
 (`hawk.kernel`, the declarations, `hawk.steps`) live at the top level and
 the math vocabulary, including the quaternion helpers and the random
-distributions, at `hawk.math`. `hawk.raw_device` / `hawk.RawBlock` are the
-escape hatch: splice a block of device code the vocabulary cannot spell,
-with its access class declared by hand.
+distributions, at `hawk.math`. `hawk.native` is the
+escape hatch: a function whose body is your own text per target, for code the vocabulary cannot spell.
 
 The compiled `hawk._core` extension and the IR internals are implementation detail and not documented here; they may
 change between releases. The compiled backend libraries are reached only through `hawk.ospreys`, `hawk.targets` and
@@ -38,8 +37,8 @@ The declarations a kernel is written in, and the top-level functions. Each has i
 
    hawk.kernel
    hawk.Kernel
-   hawk.raw_device
-   hawk.RawBlock
+   hawk.function
+   hawk.native
    hawk.steps
    hawk.chain
    hawk.scatter

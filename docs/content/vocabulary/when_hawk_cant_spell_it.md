@@ -39,33 +39,37 @@ the table's for that subgraph. This covers almost everything a kernel
 author reaches for: a smoothed activation, a regularised norm, a custom
 loss term.
 
-## 2. `hawk.raw_device` (concept only — not a runnable cell here)
+## 2. `hawk.native` (a function written as text)
 
-`hawk.raw_device(text, access=..., reads=..., writes=..., returns=...)`
-splices literal C++ text into the generated kernel body, with the access
-class (`sample_local`, `cross_sample_write`, …) declared explicitly — never
-inferred, because spliced text is opaque to the walk (the pass that
-inspects a kernel's IR to infer things like this automatically). It
-exists for
-arithmetic hawk's vocabulary cannot express at all: a hand-tuned numerical
-trick, a call into a library hawk has no binding for.
+`hawk.native(name, reads=..., returns=..., text=...)` declares a function whose body is your own text for each
+target. `reads` names the parameters and their types, `returns` is the type of the one result, and `text` maps a
+target name to the body of the function. It exists for arithmetic hawk's vocabulary cannot express at all: a
+hand-tuned numerical trick, a call into a library hawk has no binding for.
 
-Two honest limits, today:
+```python
+fma_sq = hawk.native(
+    "fma_sq",
+    reads={"x": hawk.Scalar, "y": hawk.Scalar},
+    returns=hawk.Scalar,
+    text={"host": "return std::fma(x, x, y);"},
+)
 
-- **It is not differentiable.** `hawk.diff.vjp`/`jvp` refuse a kernel that
-  calls a `raw_device` block, by name — there is no rule for opaque text,
-  and there will not be one (the point of the seam is that the text is
-  outside hawk's own IR).
-- **Little of it is tested end to end.** Its own test suite
-  (`tests/test_trace_raw_device.py`) stops at the trace and IR
-  level: it checks that an unannotated block is refused and that a
-  declared access class folds into the walk's inferred class. The only
-  place a compiled kernel that calls one runs is the multi-process (MPI)
-  rank test bed. This page shows no runnable example because none is
-  tested in the regular suite.
+@hawk.kernel
+def combine(a: Scalar, b: Scalar, y: Mutable[Scalar]):
+    y = fma_sq(a, b)
+```
 
-Reach for `raw_device` only when a primitive genuinely cannot express what
-you need, and expect to lose autodiff on that kernel.
+The text sees its parameters and nothing else: a name of a plane or of anything in the kernel is a compile error
+that names the function. A target the function has no text for is refused by the function's and the target's names. It is
+written once per unit and called, like [a function](../composition). Two limits, today:
+
+- **It is not differentiable.** Differentiating a kernel that calls one is refused by name; there is no rule for
+  opaque text.
+- **The device text does not write functions yet.** A kernel that calls one is refused by name when it is built for
+  the device.
+
+Reach for `hawk.native` only when a primitive genuinely cannot express what you need, and expect to lose autodiff
+on that kernel.
 
 ## 3. Contribute a native op (the two-repo path)
 
@@ -90,10 +94,9 @@ steps.
         /            \                              (3. above --
      yes              no                             two repos, six files)
       |                |
-  hawk.ext.primitive   hawk.raw_device
-  (1. above --         (2. above -- concept only,
-   the common case)     not differentiable, no
-                         runnable cell here)
+  hawk.ext.primitive   hawk.native
+  (1. above --         (2. above --
+   the common case)     not differentiable)
 ```
 
 ## Next

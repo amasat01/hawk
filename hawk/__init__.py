@@ -15,7 +15,7 @@ Runtime dependency: numpy only. Nothing under ``hawk/`` imports ``eagle``: a ker
 (``k(...)``) is ``hawk.deploy(k)(...)``, which runs through the compiled OSPREY libraries.
 
 This module also adds the authoring names (``kernel``, the declaration
-vocabulary, ``raw_device``, ``Quantity``), bound lazily through
+vocabulary, ``Quantity``), bound lazily through
 :pep:`562`'s module ``__getattr__`` because :mod:`hawk.trace` imports
 :mod:`hawk._ir` and forbids ``import hawk`` from pulling that in —
 touching one authoring name imports the tracer, but importing the
@@ -46,7 +46,7 @@ from . import _contracts
 #: ``TensorType``/``Wire`` stay out on purpose: their canonical path is
 #: :mod:`hawk._ir`, not the top level.
 _AUTHORING = (
-    "kernel", "Kernel", "raw_device", "RawBlock", "Value", "Quantity",
+    "kernel", "Kernel", "Value", "Quantity",
     "Scalar", "Index", "Int32", "UInt32", "Quat", "Vector", "Matrix", "Tensor", "Record", "Rows", "Param",
     "Mutable", "Meta", "Table", "Grid", "Sorted", "Staged", "Wide", "WideOut",
     "Terminated", "HawkError", "ToolchainAbsent", "steps", "resolve_dispatch",
@@ -113,6 +113,7 @@ _TOP_LEVEL_DOORS = {"build": ("artifact", "build_bundle"),
                     "sample_position": ("trace.value", "sample_position"),
                     "primitive": ("ext.primitive", "primitive"),
                     "function": ("trace.function", "function"),
+                    "native": ("trace.function", "native"),
                     "chain": ("trace.chain", "chain"),
                     "reduce": ("collectives", "reduce"),
                     "copy": ("collectives", "copy"),
@@ -120,6 +121,7 @@ _TOP_LEVEL_DOORS = {"build": ("artifact", "build_bundle"),
                     "fft": ("collectives", "fft"),
                     "scan": ("collectives", "scan"),
                     "compact": ("collectives", "compact"),
+                    "sort": ("collectives", "sort"),
                     "Stream": ("streams", "Stream"),
                     "Event": ("events", "Event")}
 

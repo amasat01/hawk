@@ -1,7 +1,8 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""Whole-plane operations called like a kernel: ``hawk.reduce``, ``hawk.copy``, ``hawk.matmul`` and ``hawk.fft``.
+"""Whole-plane operations called like a kernel: ``hawk.reduce``, ``hawk.scan``, ``hawk.compact``, ``hawk.sort``,
+``hawk.copy``, ``hawk.matmul`` and ``hawk.fft``.
 
 One call path serves them all. Called inside a graph builder or block, the call records one node of the graph; called
 anywhere else it runs once. Either way the result arrays are made at the call, in the memory of the first operand, and
@@ -11,6 +12,7 @@ runs the node, and its reason for a refusal reaches the author unparsed.
 
 from __future__ import annotations
 
+import operator
 import weakref
 from types import MappingProxyType, SimpleNamespace
 from typing import Any, Callable
@@ -21,7 +23,7 @@ from . import _place, graph_builder, streams
 from .errors import HawkError
 from .runtime import through_door
 
-__all__ = ["compact", "copy", "fft", "matmul", "reduce", "scan"]
+__all__ = ["compact", "copy", "fft", "matmul", "reduce", "scan", "sort"]
 
 _OPS = MappingProxyType(
     {
@@ -57,7 +59,8 @@ _KIND_WORDS = MappingProxyType({0: "int", 1: "uint", 2: "float"})
 
 
 class Collective:
-    """One whole-plane node: what it is called, the arrays it touches and the door call that runs it over their planes.
+    """One whole-plane node: what it is called, the door of the memory it runs in, the arrays it touches and the door call that
+    runs it over their planes.
 
     ``arrays`` are the operands in the order ``run`` takes their planes. ``plan`` is the door's plan handle for a transform or
     a matrix product (``None`` for the others), freed with the node.
@@ -66,14 +69,15 @@ class Collective:
     def __init__(
         self,
         label: str,
+        door: Any,
         arrays: tuple,
         run: Callable,
         plan: Any = None,
         free: Callable | None = None,
     ) -> None:
-        """Make the node ``label`` over ``arrays``; ``run(door, planes)`` calls the door, ``free(door, plan)`` drops its plan."""
+        """Make the node ``label`` over ``arrays`` held by ``door``; ``run(door, planes)`` calls the door, ``free(door, plan)`` drops its plan."""
         self.label, self.arrays, self.run, self.plan = label, arrays, run, plan
-        self.door = _door_of(arrays[0], label)
+        self.door = door
         if plan is not None:
             weakref.finalize(self, free, self.door, plan)
 
@@ -117,20 +121,19 @@ def _word(dtype: tuple) -> str:
     return "bool" if code == 6 else f"{_KIND_WORDS[code]}{bits}"
 
 
-def _made(like: Any, shape: tuple, dtype: tuple, label: str) -> Any:
+def _made(like: Any, shape: tuple, dtype: tuple) -> Any:
     """A zeroed array of ``shape`` and the DLPack ``dtype`` in the memory of ``like``."""
-    door = _door_of(like, label)
     return _place.Maker.at(_place.device_of(like), like=like).zeros(shape, _word(dtype))
 
 
-def _layout(array: Any, label: str) -> dict:
+def _layout(door: Any, array: Any) -> dict:
     """The door's reading of ``array``: ``shape``, ``dtype`` and ``device``."""
-    return _door_of(array, label).array_layout(array)
+    return door.array_layout(array)
 
 
-def _result(out: Any, like: Any, shape: tuple, dtype: tuple, label: str) -> Any:
+def _result(out: Any, like: Any, shape: tuple, dtype: tuple) -> Any:
     """``out`` as the caller gave it, else the array the door makes beside ``like``."""
-    return out if out is not None else _made(like, shape, dtype, label)
+    return out if out is not None else _made(like, shape, dtype)
 
 
 def reduce(
@@ -157,17 +160,18 @@ def reduce(
         raise HawkError(
             f"hawk.reduce: contract={contract!r} is not one of {tuple(_CONTRACTS)}"
         )
-    layout = _layout(p, "reduce")
+    door = _door_of(p, "reduce")
+    layout = _layout(door, p)
     columns = (layout["shape"][0] if len(layout["shape"]) > 1 else 1,)
-    result = _result(out, p, columns, layout["dtype"], "reduce")
-    where = _made(p, columns, (0, 32, 1), "reduce") if with_index else None
+    result = _result(out, p, columns, layout["dtype"])
+    where = _made(p, columns, (0, 32, 1)) if with_index else None
 
     def run(door: Any, planes: list) -> None:
         index = planes[2] if with_index else None
         door.reduce(planes[0], planes[1], _OPS[op], _CONTRACTS[contract], index=index)
 
     arrays = (p, result, where) if with_index else (p, result)
-    _call(Collective(f"reduce {op}", arrays, run))
+    _call(Collective(f"reduce {op}", door, arrays, run))
     return (result, where) if with_index else result
 
 
@@ -180,14 +184,15 @@ def scan(p: Any, op: str, exclusive: bool = False, out: Any = None) -> Any:
     Typing (one axis, a scalar value, the six numeric types) is the runtime's, and its reason for a refusal is shown as given."""
     if op not in _SCAN_OPS:
         raise HawkError(f"hawk.scan: op={op!r} is not one of {tuple(_SCAN_OPS)}")
-    layout = _layout(p, "scan")
-    result = _result(out, p, tuple(layout["shape"]), layout["dtype"], "scan")
+    door = _door_of(p, "scan")
+    layout = _layout(door, p)
+    result = _result(out, p, tuple(layout["shape"]), layout["dtype"])
     flags = _osprey.EG_SCAN_EXCLUSIVE if exclusive else 0
 
     def run(door: Any, planes: list) -> None:
         door.scan(planes[0], planes[1], _SCAN_OPS[op], flags)
 
-    _call(Collective(f"scan {op}", (p, result), run))
+    _call(Collective(f"scan {op}", door, (p, result), run))
     return result
 
 
@@ -198,18 +203,47 @@ def compact(keep: Any, out: tuple | None = None) -> tuple:
     ``kept`` has the shape of ``keep`` (int32) and its entries from ``count`` on are not written; ``count`` can be the condition
     of an ``if`` in a graph builder, or a loop limit. ``out=(kept, count)`` passes the caller's planes instead. The same result on
     every run. Typing (one axis, a bool ``keep``) is the runtime's, and its reason for a refusal is shown as given."""
-    layout = _layout(keep, "compact")
+    door = _door_of(keep, "compact")
+    layout = _layout(door, keep)
     if out is None:
-        kept = _made(keep, tuple(layout["shape"]), (0, 32, 1), "compact")
-        count = _made(keep, (1,), (1, 32, 1), "compact")
+        kept = _made(keep, tuple(layout["shape"]), (0, 32, 1))
+        count = _made(keep, (1,), (1, 32, 1))
     else:
         kept, count = out
 
     def run(door: Any, planes: list) -> None:
         door.compact(*planes)
 
-    _call(Collective("compact", (keep, kept, count), run))
+    _call(Collective("compact", door, (keep, kept, count), run))
     return kept, count
+
+
+def sort(keys: Any, bound: int, out: tuple | None = None) -> tuple:
+    """The stable sort of the lanes of the integer plane ``keys`` (one axis, every key in ``[0, bound)``): returns
+    ``(order, starts)``, where ``order[j]`` is the lane that lands at sorted place ``j`` and ``starts[k]`` is the first sorted
+    place of key ``k``, with ``starts[bound]`` the lane count.
+
+    Lanes of equal key keep their lane order. ``order`` is an int32 plane the shape of ``keys`` and ``starts`` an int32 plane of
+    ``bound + 1`` entries; ``out=(order, starts)`` passes the caller's planes instead. The same result on every run. A key outside
+    ``[0, bound)`` fails the call, or the replay in a graph builder, with the number of such keys. Typing (an integer plane, one
+    axis, a bound of 1 or more) is the runtime's, and its reason for a refusal is shown as given."""
+    try:
+        bound = operator.index(bound)
+    except TypeError:
+        raise HawkError(f"hawk.sort: bound={bound!r} is not an integer") from None
+    door = _door_of(keys, "sort")
+    layout = _layout(door, keys)
+    if out is None:
+        order = _made(keys, tuple(layout["shape"]), (0, 32, 1))
+        starts = _made(keys, (max(bound, 0) + 1,), (0, 32, 1))
+    else:
+        order, starts = out
+
+    def run(door: Any, planes: list) -> None:
+        door.order_by_key(planes[0], planes[1], planes[2], bound)
+
+    _call(Collective("sort", door, (keys, order, starts), run))
+    return order, starts
 
 
 def copy(src: Any, dst: Any) -> Any:
@@ -218,7 +252,7 @@ def copy(src: Any, dst: Any) -> Any:
     def run(door: Any, planes: list) -> None:
         door.copy(planes[0], planes[1])
 
-    _call(Collective("copy", (src, dst), run))
+    _call(Collective("copy", _door_of(src, "copy"), (src, dst), run))
     return dst
 
 
@@ -234,15 +268,15 @@ def matmul(
     ``transpose_b`` (the planes are stored as given). Returns the product plane, which ``out=`` replaces by the caller's;
     with ``accumulate=True`` it is added to ``out`` instead of replacing it. The planes' shapes and dtype are checked by the
     runtime, and its reason for a refusal is shown as given."""
-    la, lb = _layout(a, "matmul"), _layout(b, "matmul")
+    door = _door_of(a, "matmul")
+    la, lb = _layout(door, a), _layout(_door_of(b, "matmul"), b)
     (a_rows, a_cols), (b_rows, b_cols) = la["shape"], lb["shape"]
     m, n = (a_cols if transpose_a else a_rows), (b_rows if transpose_b else b_cols)
-    result = _result(out, a, (m, n), la["dtype"], "matmul")
+    result = _result(out, a, (m, n), la["dtype"])
     flags = (_osprey.EG_GEMM_TRANS_A if transpose_a else 0) | (
         _osprey.EG_GEMM_TRANS_B if transpose_b else 0
     )
     flags |= _osprey.EG_GEMM_ACCUMULATE if accumulate else 0
-    door = _door_of(a, "matmul")
     plan = through_door(
         door.gemm_new,
         la["shape"],
@@ -257,7 +291,12 @@ def matmul(
 
     _call(
         Collective(
-            "matmul", (a, b, result), run, plan, lambda d, handle: d.gemm_free(handle)
+            "matmul",
+            door,
+            (a, b, result),
+            run,
+            plan,
+            lambda d, handle: d.gemm_free(handle),
         )
     )
     return result
@@ -273,7 +312,8 @@ def _transform(
         raise HawkError(
             f"hawk.fft.{label}: norm={norm!r} is not one of {tuple(_NORMS)}"
         )
-    layout = _layout(p, f"fft.{label}")
+    door = _door_of(p, f"fft.{label}")
+    layout = _layout(door, p)
     shape, dtype = tuple(layout["shape"]), layout["dtype"]
     complex_in = kind != _osprey.EG_FFT_R2C
     data = (
@@ -297,8 +337,7 @@ def _transform(
         # the real length of the halved axis is not in the complex plane: an even one is assumed, as a plain transform gives
         real_side = (*data[:halved], 2 * (data[halved] - 1), *data[halved + 1 :])
         made = real_side
-    result = _result(out, p, made, dtype, f"fft.{label}")
-    door = _door_of(p, f"fft.{label}")
+    result = _result(out, p, made, dtype)
     plan = through_door(
         door.fft_new,
         kind,
@@ -314,7 +353,12 @@ def _transform(
 
     _call(
         Collective(
-            f"fft {label}", (p, result), run, plan, lambda d, handle: d.fft_free(handle)
+            f"fft {label}",
+            door,
+            (p, result),
+            run,
+            plan,
+            lambda d, handle: d.fft_free(handle),
         )
     )
     return result

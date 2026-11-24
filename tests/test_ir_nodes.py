@@ -87,27 +87,22 @@ def test_the_index_of_a_read_is_operand_one_and_its_edge_rule_is_a_field(ctx, ed
     assert read.field_text("edge") == edge
 
 
-def raw_block_digest(ctx, text="x + 1", language="aether", reads=("a",), returns=F64):
-    """Return the digest of the walk of a sink over a raw device block with the stated record."""
-    x = _ir.leaf(ctx, "vocab_read", "plane_in", "x", F64)
-    block = _ir.RawBlock(
-        "blk", "sample_local", text, language, reads, (), _ir.TensorType(*returns)
-    )
-    raw = _ir.make_node("Op", returns, [x], kind=_ir.RAW_KIND, literal=block)
-    return _ir.digest(_ir.canonical([_ir.make_node("Assign", F64, [raw], name="y")]))
+def native_digest(natives=(("host", "return x + 1.0;"),), params=("x",), returns=F64):
+    """Return the digest of a native function with the stated texts, parameters and result type, declared in a context of its own."""
+    ctx = _ir.new_context()
+    leaves = [_ir.make_node("Param", F64, context=ctx, name=n, access="read") for n in params]
+    return _ir.function(ctx, "blk", leaves, None, natives, _ir.TensorType(*returns)).field_text("digest")
 
 
-def test_a_raw_block_literal_is_written_as_a_record_and_distinct_blocks_are_distinct_nodes(
-    ctx,
-):
-    """Two blocks differing in text, language, reads or return type give four more digests than one block built twice."""
-    base = raw_block_digest(ctx)
-    assert raw_block_digest(_ir.new_context()) == base
+def test_a_native_function_is_written_as_its_texts_and_distinct_functions_have_distinct_digests():
+    """Two functions differing in text, target, parameters or result type give four more digests than one built twice."""
+    base = native_digest()
+    assert native_digest() == base
     changed = {
-        raw_block_digest(ctx, text="x + 2"),
-        raw_block_digest(ctx, language="cuda"),
-        raw_block_digest(ctx, reads=("a", "b")),
-        raw_block_digest(ctx, returns=((), "f32", None)),
+        native_digest(natives=(("host", "return x + 2.0;"),)),
+        native_digest(natives=(("cuda", "return x + 1.0;"),)),
+        native_digest(params=("x", "y")),
+        native_digest(returns=((), "f32", None)),
     }
     assert base not in changed and len(changed) == 4
 

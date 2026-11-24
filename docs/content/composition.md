@@ -36,6 +36,17 @@ def push(v: hawk.Vector[3], rho: hawk.Scalar, out: hawk.Mutable[hawk.Vector[3]])
 
 A function body may read only its parameters; it may call another function, but not itself. A wrong number or type of arguments is refused by the function's name. A compiler that keeps the call may fuse multiply-adds differently from the inlined text, so under the default host profile the two agree to rounding, and under the `native` profile (no fusing) they agree bit for bit. The device text does not write functions yet and refuses a kernel that calls one.
 
+A function can instead be your own text per target: `hawk.native(name, reads={...}, returns=T, text={target: body})` declares it, and a call in a kernel body records one call, like a `@hawk.function`. The text is the BODY of the function and sees only its parameters, so it cannot name a plane or a lane index of the kernel; a name it uses that is not a parameter fails the compile, and the failure names the function. A target the function has no text for is refused by the function's and the target's names. A native function can be called from a `@hawk.function` and the other way round. It is not differentiable, and the device text does not write it yet.
+
+```python
+fma_sq = hawk.native("fma_sq", reads={"x": hawk.Scalar, "y": hawk.Scalar}, returns=hawk.Scalar,
+                     text={"host": "return std::fma(x, x, y);"})
+
+@hawk.kernel
+def combine(a: hawk.Scalar, b: hawk.Scalar, out: hawk.Mutable[hawk.Scalar]):
+    out = fma_sq(a, b)
+```
+
 A sum that skips some terms (a masked sum) writes each term as `m.dispatch(live, [0.0, term], strategy="predicated")`, with `live` an integer 0 or 1 per element: both branches are evaluated and one kept, with no divergent branch. See [Choosing a dispatch strategy](tutorials/08_choosing_a_dispatch_strategy).
 
 ## Kernels in sequence: `hawk.chain`

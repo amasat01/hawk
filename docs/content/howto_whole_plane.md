@@ -1,4 +1,4 @@
-# Whole-plane operations: reduce, scan, copy, matmul and fft
+# Whole-plane operations: reduce, scan, compact, sort, copy, matmul and fft
 
 Some steps of a computation are not a body run for every sample: a sum over all samples, a copy, a matrix product, a Fourier
 transform. They are called like a kernel. Outside a graph they run once; inside a `@hawk.Graph.builder` they record one node
@@ -13,6 +13,7 @@ hawk.reduce(x, "sum")                                  # shape (3,): the sum of 
 hawk.matmul(a, b, transpose_b=True, accumulate=False)  # op(a) @ op(b)
 hawk.scan(x[0], "sum")                                 # running sum of one axis; "min", "max"; exclusive=True shifts it
 hawk.compact(keep)                                     # (kept, count): the lanes a bool plane keeps, in lane order
+hawk.sort(keys, bound=K)                               # (order, starts): the stable sort of the lanes by integer key
 hawk.copy(src, dst)
 hawk.fft.r2c(y, axes=None, norm="backward")            # also hawk.fft.c2c and hawk.fft.c2r
 ```
@@ -36,6 +37,14 @@ lane order (an int32 plane the shape of `keep`) and `count` is a one-element uin
 written, and the result is the same on every run and at any thread count. Inside a graph builder `count` is a condition cell
 (`if count:`) and a loop limit, read at every replay. A `keep` of several axes is refused by name; the reverse of a recording that
 holds a compaction is refused by name for now.
+
+`order, starts = hawk.sort(keys, bound=K, out=None)` sorts the lanes of an integer plane `keys` of one axis, every key in `[0, K)`:
+`order[j]` is the lane that lands at sorted place `j` and `starts[k]` is the first sorted place of key `k`, with `starts[K]` the
+lane count, so the lanes of key `k` are `order[starts[k]:starts[k + 1]]`. Lanes of equal key keep their lane order, and the result
+is the same on every run and at any thread count. `order` is an int32 plane the shape of `keys` and `starts` an int32 plane of
+`K + 1` entries; `out=(order, starts)` passes your own. A key outside `[0, K)` fails the call, or in a graph builder the replay,
+naming how many there are; a real `keys` plane, a `K` below 1 and a `keys` of several axes are refused by name. The reverse of a
+recording that holds a sort is refused by name for now.
 
 `value, where = hawk.reduce(p, "min" | "max", with_index=True)` also returns an int32 plane with the lane of each column's winner:
 a tie goes to the lowest lane and a NaN never wins; a column of nothing but NaN has the value NaN and the lane `n`. `"any"` and

@@ -5,7 +5,7 @@
 
 ``@kernel`` traces a decorated function whose PARAMETERS are its declared
 vocabulary and whose body is rewritten by the ``ast`` pass into ``select``
-nodes; ``@raw_device`` is the bounded escape hatch for opaque text.
+nodes.
 Importing this package loads the binding (:mod:`hawk._ir`), so :mod:`hawk` itself binds
 these names LAZILY and a light consumer keeps paying only for
 :mod:`hawk.types`.
@@ -78,14 +78,12 @@ from .lane_axes import current_context as current_context
 from .kernel import kernel as kernel
 from .kernel import resolve_dispatch as resolve_dispatch
 from .kernel import trace_value as trace_value
-from .raw import RawBlock as RawBlock
 from .reduce import max as max
 from .reduce import mean as mean
 from .reduce import min as min
 from .reduce import append as append
 from .reduce import scatter as scatter
 from .reduce import sum as sum
-from .raw import raw_device as raw_device
 from .value import Value as Value
 from .value import random_normal as random_normal
 from .value import random_uniform as random_uniform

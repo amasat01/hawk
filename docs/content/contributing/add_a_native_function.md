@@ -7,7 +7,7 @@ files across two repositories. Cross-linked from
 [aether's own "adding a function" tutorial](https://amasat01.github.io/aether/).
 
 No public seam skips this today: [`hawk.ext.primitive`](../vocabulary/03_your_own_derivative)
-only *composes* existing ops, and [`hawk.raw_device`](../vocabulary/when_hawk_cant_spell_it)
+only *composes* existing ops, and [`hawk.native`](../vocabulary/when_hawk_cant_spell_it)
 cannot be differentiated. A genuinely new native op is this six-step edit.
 
 ## 1. aether: the host/device dispatch
@@ -63,4 +63,4 @@ but no rule, and so on).
 ## Next
 
 Back to [when hawk can't spell it](../vocabulary/when_hawk_cant_spell_it) for the
-decision between a primitive, `raw_device`, and this path.
+decision between a primitive, `hawk.native`, and this path.

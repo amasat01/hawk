@@ -1305,10 +1305,11 @@ def _rule(node: Any):
 def _wrt(seq: Iterable[Any], wrt: Sequence[str] | None) -> tuple[Any, ...]:
     """The leaves a derivative is taken with respect to, in traversal order."""
     for node in seq:
-        if node.field_text("kind") == _ir.RAW_KIND:
+        if node.cls == "Call" and node.field_flag("native"):
+            name = node.field_names("function")[0]
             raise HawkError(
-                "a spliced @raw_device block cannot be differentiated: its "
-                "text is opaque to the IR, so no rule can exist for it"
+                f"native function {name!r} cannot be differentiated yet: its text is opaque "
+                "to the IR and it carries no derivative rule"
             )
     leaves = [
         n

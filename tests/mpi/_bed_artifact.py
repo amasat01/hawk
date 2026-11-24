@@ -29,16 +29,12 @@ is why the kernels live here and not there):
   it is the BED's convention, not the artifact schema's — so it is added here,
   where the bed's contract is being satisfied.
 
-THE CROSS-SAMPLE READ USES ``@raw_device`` ON PURPOSE. HAWK's traced ``at()``
-form reads a ``lookup``-role plane, and a ``lookup`` slot would be a
-SECOND input the bed does not bind. the escape hatch is the sanctioned way to
-express an access form the DAG cannot: the block declares
-``access="cross_sample_read"`` explicitly (an unannotated one is refused at trace
-time), and that declared class folds into the walk's inferred class, so the
-manifest declares what the body actually does. The text reads the SAME shifted
-index eagle's own hand-written fixture does, off the TRUE ``nSamples`` — which
-is what makes the replicated-input ruling checkable: the answer is bit-identical
-under any partitioning only because every rank holds the whole plane.
+THE CROSS-SAMPLE READ IS A TRACED ``at()``. ``table`` is a per-lane input read at another lane
+(``table.at(index)``), so it is the ONE input the bed binds, and the walk infers the class
+``cross_sample_read`` itself: the manifest declares what the body actually does. The index is the same shifted
+one eagle's own hand-written fixture reads, taken off the TRUE ``nSamples`` --- which is what makes the
+replicated-input ruling checkable: the answer is bit-identical under any partitioning only because every rank
+holds the whole plane.
 """
 
 from __future__ import annotations
@@ -48,26 +44,13 @@ import json
 import pathlib
 
 import hawk
+import hawk.math as m
 from hawk.artifact import build_bundle
-from hawk.trace import Index, Mutable, Param, Scalar, kernel, raw_device
+from hawk.trace import Index, Mutable, Param, Scalar, kernel
 
 #: The classes this bed certifies. ``mapreduce`` is not among them: no kernel
 #: declares it in this release (folding cells across ranks returns in the next).
 REQUIRED_ACCESS_CLASSES = ("sample_local", "cross_sample_read", "cross_sample_write")
-
-#: The shifted absolute read, spelled in the two identifiers BOTH backends bind:
-#: the plane's own view (``psc_<name>``, ``aether.wings.base.render.binding_name``) and
-#: the loop's global index ``hawk_i`` / the triple's ``nSamples``, which the host
-#: and device prologues each define. Same index expression as
-#: ``eagle/tests/fixtures/host_plugin_execv2.cpp``'s ``exec_gather``.
-SHIFTED_READ = ("psc_table[aether::SampleIndex::make(static_cast<std::size_t>("
-                "(hawk_i * 7 + 3) % nSamples))].eval()")
-
-
-@raw_device(SHIFTED_READ, access="cross_sample_read", reads=("table",))
-def _shifted_read():
-    """The stub spelling: names the block, carries no body of its own."""
-
 
 @kernel
 def rank_local(x: Scalar, a: Param, b: Param, y: Mutable[Scalar]):
@@ -79,10 +62,8 @@ def rank_local(x: Scalar, a: Param, b: Param, y: Mutable[Scalar]):
 @kernel
 def rank_gather(table: Scalar, y: Mutable[Scalar]):
     """``cross_sample_read``: sample ``i`` reads a sample that is NOT its own, at
-    an absolute index derived from the TRUE ``nSamples``. ``table`` is passed to
-    the block so the leaf is REACHED and therefore bound — the text reads the
-    plane's view, and an unbound plane would be a slot the entry never takes."""
-    y = _shifted_read(table)
+    an absolute index derived from the TRUE ``nSamples``."""
+    y = table.at((m.sample_index() * 7 + 3) % m.n_samples())
 
 
 @kernel
