@@ -189,6 +189,7 @@ def test_nested_scopes_of_adopted_streams_restore_the_outer_stream_also_after_an
     for got in (first, second, third):
         np.testing.assert_allclose(cupy.asnumpy(got), x.sum(axis=1), rtol=1e-13)
     assert streams._SCOPE.get() is None
+    del first, second, third, got  # the results were made while the streams were in scope: they go before the streams do
 
 
 @pytest.mark.gpu

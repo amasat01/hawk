@@ -156,6 +156,7 @@ def test_a_reader_that_waits_on_an_event_sees_the_writers_values_in_100_runs():
     for _ in range(100):
         values = RNG.normal(size=(3, 1_000_000))
         x[...] = cupy.asarray(values)
+        cupy.cuda.get_current_stream().synchronize()  # cupy's stream does not order against the library streams below
         with writer:
             writer_graph.launch()
             written.record()
@@ -172,7 +173,7 @@ def test_two_chains_on_two_streams_overlap_in_time_by_their_event_stamps():
     never show."""
     cupy = pytest.importorskip("cupy")
     streams = [hawk.Stream(device="cuda:0"), hawk.Stream(device="cuda:0")]
-    graphs = [hawk.Graph.builder(chain)(cupy.zeros((3, 4_000_000))) for _ in streams]
+    graphs = [hawk.Graph.builder(chain)(cupy.zeros((3, 1_000_000))) for _ in streams]
     starts, stops = [hawk.Event(), hawk.Event()], [hawk.Event(), hawk.Event()]
     for stream, graph, start, stop in zip(streams, graphs, starts, stops):
         with stream:
