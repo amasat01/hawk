@@ -63,6 +63,14 @@
     X(eg_device_count)                                                                             \
     X(eg_device_props)                                                                             \
     X(eg_stream_use)                                                                               \
+    X(eg_stream_new)                                                                               \
+    X(eg_stream_free)                                                                              \
+    X(eg_stream_sync)                                                                              \
+    X(eg_event_new)                                                                                \
+    X(eg_event_free)                                                                               \
+    X(eg_event_record)                                                                             \
+    X(eg_event_wait)                                                                               \
+    X(eg_event_elapsed)                                                                            \
     X(eg_sync)                                                                                     \
     X(eg_plane_new)                                                                                \
     X(eg_plane_dlpack)                                                                             \
@@ -106,10 +114,11 @@ typedef enum {
     KIND_GRAPH,
     KIND_FFT,
     KIND_GEMM,
-    KIND_HOST_NODE
+    KIND_HOST_NODE,
+    KIND_EVENT
 } Kind;
 static const char* const kind_names[]
-    = { "unit", "plane", "plan", "runner", "graph", "fft", "gemm", "host_node" };
+    = { "unit", "plane", "plan", "runner", "graph", "fft", "gemm", "host_node", "event" };
 
 /* A handle the door made, with the Door that made it; ptr is NULL once the handle is freed. */
 typedef struct {
@@ -236,6 +245,8 @@ static eg_status handle_release(Door* d, Kind kind, void* ptr)
         return d->fn.eg_fft_free(d->ctx, ptr);
     case KIND_HOST_NODE:
         return d->fn.eg_host_node_free(d->ctx, ptr);
+    case KIND_EVENT:
+        return d->fn.eg_event_free(d->ctx, ptr);
     default:
         return d->fn.eg_gemm_free(d->ctx, ptr);
     }
@@ -1525,6 +1536,41 @@ static PyObject* m_stream_use(PyObject* self, PyObject* args)
     Py_RETURN_NONE;
 }
 
+/* stream_new(device=None): the handle of a queue the library owns, on the device the text names. */
+static PyObject* m_stream_new(PyObject* self, PyObject* args)
+{
+    Door* d = (Door*)self;
+    const char* device = NULL;
+    unsigned long long stream = 0;
+    if (!PyArg_ParseTuple(args, "|z", &device) || !door_ready(d))
+        return NULL;
+    if (door_check(d, d->fn.eg_stream_new(d->ctx, device, &stream)) < 0)
+        return NULL;
+    return PyLong_FromUnsignedLongLong(stream);
+}
+
+static PyObject* m_stream_free(PyObject* self, PyObject* args)
+{
+    Door* d = (Door*)self;
+    unsigned long long stream;
+    if (!PyArg_ParseTuple(args, "K", &stream) || !door_ready(d))
+        return NULL;
+    if (door_check(d, d->fn.eg_stream_free(d->ctx, stream)) < 0)
+        return NULL;
+    Py_RETURN_NONE;
+}
+
+static PyObject* m_stream_sync(PyObject* self, PyObject* args)
+{
+    Door* d = (Door*)self;
+    unsigned long long stream;
+    if (!PyArg_ParseTuple(args, "K", &stream) || !door_ready(d))
+        return NULL;
+    if (door_check(d, d->fn.eg_stream_sync(d->ctx, stream)) < 0)
+        return NULL;
+    Py_RETURN_NONE;
+}
+
 static PyObject* m_sync(PyObject* self, PyObject* args)
 {
     Door* d = (Door*)self;
@@ -1533,6 +1579,62 @@ static PyObject* m_sync(PyObject* self, PyObject* args)
     if (door_check(d, d->fn.eg_sync(d->ctx)) < 0)
         return NULL;
     Py_RETURN_NONE;
+}
+
+/* event_new(): a handle of an event that is not yet recorded. */
+static PyObject* m_event_new(PyObject* self, PyObject* args)
+{
+    Door* d = (Door*)self;
+    eg_event* event = NULL;
+    if (!PyArg_ParseTuple(args, "") || !door_ready(d))
+        return NULL;
+    if (door_check(d, d->fn.eg_event_new(d->ctx, &event)) < 0)
+        return NULL;
+    return handle_make(d, KIND_EVENT, event);
+}
+
+static PyObject* m_event_free(PyObject* self, PyObject* args)
+{
+    return handle_free(self, args, KIND_EVENT);
+}
+
+/* event_record(event) and event_wait(event): mark the stream in scope, or make it wait for the mark. */
+static PyObject* event_call(PyObject* self, PyObject* args, int record)
+{
+    Door* d = (Door*)self;
+    PyObject* o;
+    void* event;
+    if (!PyArg_ParseTuple(args, "O", &o) || !door_ready(d) || handle_ptr(d, o, KIND_EVENT, &event) < 0)
+        return NULL;
+    eg_status st = record ? d->fn.eg_event_record(d->ctx, event) : d->fn.eg_event_wait(d->ctx, event);
+    if (door_check(d, st) < 0)
+        return NULL;
+    Py_RETURN_NONE;
+}
+
+static PyObject* m_event_record(PyObject* self, PyObject* args)
+{
+    return event_call(self, args, 1);
+}
+
+static PyObject* m_event_wait(PyObject* self, PyObject* args)
+{
+    return event_call(self, args, 0);
+}
+
+/* event_elapsed(start, stop): the milliseconds from the mark of start to the mark of stop. */
+static PyObject* m_event_elapsed(PyObject* self, PyObject* args)
+{
+    Door* d = (Door*)self;
+    PyObject *ostart, *ostop;
+    void *start, *stop;
+    double ms = 0.0;
+    if (!PyArg_ParseTuple(args, "OO", &ostart, &ostop) || !door_ready(d)
+        || handle_ptr(d, ostart, KIND_EVENT, &start) < 0 || handle_ptr(d, ostop, KIND_EVENT, &stop) < 0)
+        return NULL;
+    if (door_check(d, d->fn.eg_event_elapsed(d->ctx, start, stop, &ms)) < 0)
+        return NULL;
+    return PyFloat_FromDouble(ms);
 }
 
 /* ---- planes the door makes, banded cells, figures and reset -------------------------------- */
@@ -2260,6 +2362,14 @@ static PyMethodDef door_methods[] = {
     { "device_count", m_device_count, METH_VARARGS, NULL },
     { "device_props", m_device_props, METH_VARARGS, NULL },
     { "stream_use", m_stream_use, METH_VARARGS, NULL },
+    { "stream_new", m_stream_new, METH_VARARGS, NULL },
+    { "stream_free", m_stream_free, METH_VARARGS, NULL },
+    { "stream_sync", m_stream_sync, METH_VARARGS, NULL },
+    { "event_new", m_event_new, METH_VARARGS, NULL },
+    { "event_free", m_event_free, METH_VARARGS, NULL },
+    { "event_record", m_event_record, METH_VARARGS, NULL },
+    { "event_wait", m_event_wait, METH_VARARGS, NULL },
+    { "event_elapsed", m_event_elapsed, METH_VARARGS, NULL },
     { "sync", m_sync, METH_VARARGS, NULL },
     { "plane_new", KEYWORD_CALL(m_plane_new), METH_VARARGS | METH_KEYWORDS, NULL },
     { "plane_dlpack", m_plane_dlpack, METH_VARARGS, NULL },

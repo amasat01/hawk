@@ -2003,6 +2003,29 @@ def run(done, raises, not_run, backends):
     else:
         not_run.append("the device group without a device: this door has a device group")
 
+    # ---- a host context is one queue: the three stream calls refuse it by the same words ----
+    for call in (
+        lambda: door.stream_new("cuda:0"),
+        lambda: door.stream_free(1),
+        lambda: door.stream_sync(1),
+    ):
+        e = raises(o.BadRequest, call, "stream calls on a host context")
+        assert "host-only context: it has one queue" in refusal_text(door, e)
+    done.append("stream_new, stream_free, stream_sync: a host context refuses them by name")
+
+    # ---- events: a host context stamps a steady clock; an event never recorded is refused by name ----
+    first, second = door.event_new(), door.event_new()
+    e = raises(o.BadRequest, lambda: door.event_elapsed(first, second), "event_elapsed: never recorded")
+    assert "start event was never recorded" in refusal_text(door, e)
+    door.event_record(first)
+    door.event_record(second)
+    door.event_wait(first)
+    assert door.event_elapsed(first, second) >= 0.0
+    door.event_free(first)
+    door.event_free(second)
+    raises(ValueError, lambda: door.event_record(first), "an event handle after its free")
+    done.append("event_new, event_record, event_wait, event_elapsed, event_free on a host context")
+
     # ---- the arms of a conditional, by kind ----
     cell = door.plane_wrap(np.zeros(1, dtype=np.int32))
     for kind, n_arms, arms_ok in (
