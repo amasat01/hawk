@@ -158,6 +158,7 @@ fn full_tree() -> (LibraryMeta, UnitMeta) {
             columns: 2,
             slots: Some(vec![0, 1]),
             comp_slots: Some(vec![2, 3]),
+            position: false,
             name: "c".into(),
         }],
         keyed: vec![keyed],

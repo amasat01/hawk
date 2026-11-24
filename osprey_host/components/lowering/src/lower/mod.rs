@@ -16,6 +16,7 @@ pub mod card;
 mod chain;
 pub mod derived;
 pub mod events;
+mod functions;
 mod fused;
 mod group;
 pub mod image;
@@ -658,6 +659,7 @@ fn write_target(
     if !pending.exports_block && target == Target::Host {
         unit.exports = Exports::Text(String::new());
     }
+    unit.functions = functions::table(ctx, walk)?;
     unit.segment = pending.segment.clone();
     unit.one_step = pending
         .one_step
@@ -993,6 +995,7 @@ fn unit_of(
         },
         exports: settings.exports.map_or(Exports::Derived, Exports::Sizes),
         literal_table: settings.literal_table,
+        functions: None,
     })
 }
 

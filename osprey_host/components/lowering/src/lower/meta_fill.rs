@@ -670,6 +670,7 @@ pub(super) fn unit(parts: &Parts) -> Result<(m::UnitMeta, Option<m::Contraction>
                 name: cell.name.clone(),
                 slots: Some(mine).filter(|s| !s.is_empty()),
                 comp_slots: None,
+                position: cell.op.starts_with("arg"),
             })
         })
         .collect::<Result<Vec<_>, Refusal>>()?;
@@ -821,10 +822,10 @@ fn compensated(
                         })
                 })
                 .collect();
-            if cell.op == m::ReduceOp::Sum && !found.is_empty() {
+            if !found.is_empty() {
                 if found.len() != rows.len() {
                     return Err(fault(format!(
-                        "the sum cell {} compensates {} of its {} rows",
+                        "the cell {} has a companion for {} of its {} rows",
                         cell.name,
                         found.len(),
                         rows.len()
@@ -860,8 +861,8 @@ fn intern(table: &mut Vec<m::Keyed>, plane: &KeyedRecord) -> usize {
 fn reduce_op(op: &str) -> Result<m::ReduceOp, Refusal> {
     match op {
         "sum" => Ok(m::ReduceOp::Sum),
-        "max" => Ok(m::ReduceOp::Max),
-        "min" => Ok(m::ReduceOp::Min),
+        "max" | "argmax" => Ok(m::ReduceOp::Max),
+        "min" | "argmin" => Ok(m::ReduceOp::Min),
         "all" | "land" => Ok(m::ReduceOp::All),
         other => Err(not_written(format!("a cell folded by {other}"))),
     }
@@ -1111,6 +1112,7 @@ pub(super) fn stages(
             name: cell.name.clone(),
             slots: None,
             comp_slots: None,
+            position: cell.op.starts_with("arg"),
         });
     }
     meta.body.keyed = keyed;

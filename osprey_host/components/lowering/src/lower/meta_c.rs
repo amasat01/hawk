@@ -329,13 +329,14 @@ fn body(out: &mut Out, unit: &UnitMeta) -> Result<String, Refusal> {
         let row = out.numbers("int32_t", &format!("cell{at}_slots"), &row);
         let comp = c.comp_slots.clone().unwrap_or_default();
         let comp = out.numbers("int32_t", &format!("cell{at}_comp"), &comp);
-        let members = [
+        let members = vec![
             ("op", c.op.c_name().into()),
             ("internal", flag(c.internal).into()),
             ("columns", c.columns.to_string()),
             ("slots", row),
             ("name", lit(&c.name)),
             ("comp_slots", comp),
+            ("position", flag(c.position).into()),
         ];
         cells.push(out.record("eg_unit_cell", &format!("cell{at}"), &members));
     }

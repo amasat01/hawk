@@ -416,21 +416,56 @@ record! {
         pub of_slot: usize,
     }
 }
-record! {
-    /// A reduction over samples kept in rows and folded into the cell between launches.
-    pub struct Cell {
-        /// The fold.
-        pub op: ReduceOp,
-        /// Whether only a later stage reads it and the caller never declared it.
-        pub internal: bool,
-        /// The components of the cell.
-        pub columns: i64,
-        /// The row-plane slot of each column in this unit, absent when the unit binds none.
-        pub slots: Option<Vec<usize>>,
-        /// The slot of each column's compensation of a sum, absent when the cell has none.
-        pub comp_slots: Option<Vec<usize>>,
-        /// The cell's name.
-        pub name: String,
+/// A reduction over samples kept in rows and folded into the cell between launches.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Cell {
+    /// The fold.
+    pub op: ReduceOp,
+    /// Whether only a later stage reads it and the caller never declared it.
+    pub internal: bool,
+    /// The components of the cell.
+    pub columns: i64,
+    /// The row-plane slot of each column in this unit, absent when the unit binds none.
+    pub slots: Option<Vec<usize>>,
+    /// The slot of each column's compensation of a sum, or of the lanes that won the rows of a minimum or maximum, absent when
+    /// the cell has none.
+    pub comp_slots: Option<Vec<usize>>,
+    /// Whether the cell takes the lane of the winner of its rows, not their value (a minimum or maximum with `comp_slots`).
+    pub position: bool,
+    /// The cell's name.
+    pub name: String,
+}
+impl Wire for Cell {
+    // written by hand: `position` is written only when set, so the record of a cell that has none is what it always was
+    fn put(&self) -> Json {
+        let mut members = vec![
+            ("op".to_string(), self.op.put()),
+            ("internal".to_string(), self.internal.put()),
+            ("columns".to_string(), self.columns.put()),
+            ("slots".to_string(), self.slots.put()),
+            ("comp_slots".to_string(), self.comp_slots.put()),
+        ];
+        if self.position {
+            members.push(("position".to_string(), Json::Bool(true)));
+        }
+        members.push(("name".to_string(), self.name.put()));
+        Json::Obj(members)
+    }
+    fn get(json: Option<&Json>, key: &str) -> Result<Self, Refusal> {
+        let mut keys = Keys::of(present(json, key)?, "Cell")?;
+        let found = Cell {
+            op: <ReduceOp as Wire>::get(keys.opt("op"), "op")?,
+            internal: <bool as Wire>::get(keys.opt("internal"), "internal")?,
+            columns: <i64 as Wire>::get(keys.opt("columns"), "columns")?,
+            slots: <Option<Vec<usize>> as Wire>::get(keys.opt("slots"), "slots")?,
+            comp_slots: <Option<Vec<usize>> as Wire>::get(keys.opt("comp_slots"), "comp_slots")?,
+            position: keys.opt("position").map_or(Ok(false), |flag| {
+                <bool as Wire>::get(Some(flag), "position")
+            })?,
+            name: <String as Wire>::get(keys.opt("name"), "name")?,
+        };
+        keys.done()?;
+        Ok(found)
     }
 }
 record! {

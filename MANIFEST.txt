@@ -46,21 +46,22 @@ Every file with its line count (this file excluded):
     258  osprey_host/components/lowering/src/lower/chain.rs
     776  osprey_host/components/lowering/src/lower/derived.rs
     199  osprey_host/components/lowering/src/lower/events.rs
+    175  osprey_host/components/lowering/src/lower/functions.rs
      83  osprey_host/components/lowering/src/lower/fused.rs
     641  osprey_host/components/lowering/src/lower/group.rs
      13  osprey_host/components/lowering/src/lower/image.rs
     335  osprey_host/components/lowering/src/lower/links.rs
     179  osprey_host/components/lowering/src/lower/merge.rs
-    927  osprey_host/components/lowering/src/lower/meta_c.rs
-   1438  osprey_host/components/lowering/src/lower/meta_fill.rs
-   1607  osprey_host/components/lowering/src/lower/mod.rs
+    928  osprey_host/components/lowering/src/lower/meta_c.rs
+   1440  osprey_host/components/lowering/src/lower/meta_fill.rs
+   1610  osprey_host/components/lowering/src/lower/mod.rs
      89  osprey_host/components/lowering/src/lower/peer.rs
     121  osprey_host/components/lowering/src/lower/placed.rs
    2030  osprey_host/components/lowering/src/lower/request.rs
     377  osprey_host/components/lowering/src/lower/segment.rs
     116  osprey_host/components/lowering/src/lower/stage_block.rs
     695  osprey_host/components/lowering/src/lower/stages.rs
-   1031  osprey_host/components/lowering/src/lower/unit_meta.rs
+   1066  osprey_host/components/lowering/src/lower/unit_meta.rs
     246  osprey_host/components/lowering/src/lower/warp.rs
     508  osprey_host/components/lowering/src/testing.rs
     496  osprey_host/components/lowering/src/tool.rs
@@ -209,7 +210,7 @@ Every file with its line count (this file excluded):
      87  osprey_host/replay/tests/link_rules.rs
      55  osprey_host/replay/tests/live_environment.rs
     189  osprey_host/replay/tests/loop_rules.rs
-    688  osprey_host/replay/tests/meta_c.rs
+    689  osprey_host/replay/tests/meta_c.rs
     642  osprey_host/replay/tests/own_cards.rs
      54  osprey_host/replay/tests/param_cell.rs
      41  osprey_host/replay/tests/quantity.rs
