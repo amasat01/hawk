@@ -10,6 +10,9 @@ with a card; their oracle is NumPy and the same call made with no stream.
 
 from __future__ import annotations
 
+import contextvars
+import threading
+
 import numpy as np
 import pytest
 
@@ -117,6 +120,90 @@ def test_closing_an_adopted_stream_frees_nothing_and_closing_twice_is_harmless()
     stream.close()
 
 
+def _count_stream_use(monkeypatch):
+    """Replace the binding call of ``streams`` with a recorder of ``(thread, door, handle)``; the doors of the rows are fakes."""
+    calls = []
+
+    def record(function, *arguments):
+        calls.append((threading.get_ident(), function, arguments[0]))
+
+    monkeypatch.setattr(streams, "through_door", record)
+    return calls
+
+
+class _FakeDoor:
+    """A door of the rows that need no library: ``apply`` only names its ``stream_use`` to the (replaced) binding call."""
+
+    stream_use = "stream_use"
+
+
+def test_two_threads_each_in_their_own_scope_launch_on_their_own_stream(monkeypatch):
+    """The scope is read on the calling thread at call time: each thread's launch states its own stream to the door."""
+    calls = _count_stream_use(monkeypatch)
+    door = _FakeDoor()
+    barrier = threading.Barrier(2)
+    idents = {}
+
+    def run(handle):
+        idents[handle] = threading.get_ident()
+        with hawk.Stream(handle):
+            barrier.wait()  # both threads are inside their own scope before either launches
+            streams.apply(door)
+
+    threads = [threading.Thread(target=run, args=(h,)) for h in (11, 12)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    launches = [
+        (thread, handle) for thread, _, handle in calls if handle != 0
+    ]  # not the puts back
+    assert sorted(launches) == sorted((idents[h], h) for h in (11, 12))
+
+
+def test_a_thread_started_inside_a_scope_is_in_no_scope_unless_it_is_given_the_context(
+    monkeypatch,
+):
+    """A new thread starts with an empty context: it launches on the default stream. A thread that runs inside a copy of the
+    starter's context is in the starter's scope and states that stream on itself."""
+    calls = _count_stream_use(monkeypatch)
+    door = _FakeDoor()
+    seen = []
+
+    def launch():
+        seen.append(streams._SCOPE.get())
+        streams.apply(door)
+
+    with hawk.Stream(21) as starter:
+        plain = threading.Thread(target=launch)
+        plain.start()
+        plain.join()
+        shared = threading.Thread(target=contextvars.copy_context().run, args=(launch,))
+        shared.start()
+        shared.join()
+    assert seen[0] is None and seen[1][0] is starter
+    assert [handle for _, _, handle in calls] == [21]
+    assert calls[0][0] != threading.get_ident()
+
+
+def test_a_scope_puts_back_only_the_doors_its_own_thread_stated(monkeypatch):
+    """Leaving a scope restores the doors of the leaving thread: the other thread's door is on its own, never touched here."""
+    calls = _count_stream_use(monkeypatch)
+    stream = hawk.Stream(41)
+
+    def other_thread_launches():
+        with stream:
+            streams.apply(_FakeDoor())
+
+    with stream:
+        thread = threading.Thread(target=other_thread_launches)
+        thread.start()
+        thread.join()
+        streams.apply(_FakeDoor())
+    leaving = [handle for ident, _, handle in calls if ident == threading.get_ident()]
+    assert leaving == [41, 0]
+
+
 # ---- device rows (run on a machine with a card) ----
 
 
@@ -189,7 +276,12 @@ def test_nested_scopes_of_adopted_streams_restore_the_outer_stream_also_after_an
     for got in (first, second, third):
         np.testing.assert_allclose(cupy.asnumpy(got), x.sum(axis=1), rtol=1e-13)
     assert streams._SCOPE.get() is None
-    del first, second, third, got  # the results were made while the streams were in scope: they go before the streams do
+    del (
+        first,
+        second,
+        third,
+        got,
+    )  # the results were made while the streams were in scope: they go before the streams do
 
 
 @pytest.mark.gpu

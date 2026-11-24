@@ -344,19 +344,134 @@ def test_a_condition_is_tested_at_every_replay_of_the_tangent(taken):
 # the refusals
 
 
-def test_a_running_minimum_is_refused_by_name_with_its_reason():
+def _running_program(op: str, exclusive: bool):
     @hawk.Graph.builder
     def running(x, y, s) -> hawk.Graph:
         g = hawk.Graph(record=True)
         square(x, y=y)
-        hawk.scan(y, "min", out=s)
+        hawk.scan(y, op, exclusive=exclusive, out=s)
         return g
 
-    with pytest.raises(
-        HawkError,
-        match="hawk.diff.jvp: scan min: the tangent of a running minimum or maximum",
-    ):
-        hawk.diff.jvp(running)(X.copy(), *_zeros(N, N))
+    return running
+
+
+#: Squares with ties (lanes 1 and 4, lanes 2 and 9) and a smaller value late.
+_TIED = np.array(
+    [
+        0.9,
+        0.5,
+        1.4,
+        -0.3,
+        -0.5,
+        0.8,
+        0.2,
+        -1.1,
+        0.6,
+        -1.4,
+        1.0,
+        0.1,
+        0.3,
+        1.2,
+        -0.9,
+        0.4,
+    ]
+)
+
+
+def _winners(squares, op: str, exclusive: bool):
+    """The loop the test checks against: the lowest lane among the winners of each prefix (a NaN never wins), -1 for none."""
+    found, best = [], -1
+    for lane, value in enumerate(squares):
+        if exclusive:
+            found.append(best)
+        better = not np.isnan(value) and (
+            best < 0
+            or (value < squares[best] if op == "min" else value > squares[best])
+        )
+        best = lane if better else best
+        if not exclusive:
+            found.append(best)
+    return np.array(found)
+
+
+@pytest.mark.parametrize("op", ["min", "max"])
+@pytest.mark.parametrize("exclusive", [False, True])
+def test_the_tangent_of_a_running_extremum_is_the_tangent_at_the_running_winner_and_agrees_with_the_gradient(
+    op, exclusive
+):
+    """Oracle: a loop over the lanes for the winner of each prefix; the two directions agree on ``<bar, J dot>``."""
+    running = _running_program(op, exclusive)
+    graph = hawk.diff.jvp(running)(
+        _TIED.copy(), *_zeros(N, N), tangents={"x": DX.copy()}
+    )
+    graph()
+    dy = 2.0 * _TIED * DX
+    winner = _winners(_TIED * _TIED, op, exclusive)
+    want = np.where(winner >= 0, dy[np.maximum(winner, 0)], 0.0)
+    got = graph.tangent_of(graph._params["s"])
+    assert np.array_equal(got, want)
+    seed = np.arange(1.0, N + 1.0)
+    gradient = hawk.diff.vjp(running)(
+        _TIED.copy(), *_zeros(N, N), cotangents={"s": seed}
+    )["x"]
+    assert abs(gradient @ DX - seed @ got) <= 8.0 * N * EPS * np.abs(seed) @ np.abs(
+        want
+    )
+
+
+@hawk.Graph.builder
+def minimum_of_squares(x, y, t) -> hawk.Graph:
+    g = hawk.Graph(record=True)
+    square(x, y=y)
+    hawk.reduce(y, "min", out=t)
+    return g
+
+
+def test_a_minimum_over_an_all_nan_column_has_a_zero_tangent_and_no_lane_receives_the_cotangent():
+    """Oracle: no lane wins, so the derivative is zero both ways (the old gather read the last lane's tangent)."""
+    nan = np.full(N, np.nan)
+    graph = hawk.diff.jvp(minimum_of_squares)(
+        nan.copy(), *_zeros(N, 1), tangents={"x": DX.copy()}
+    )
+    graph()
+    assert graph.tangent_of(graph._params["t"])[0] == 0.0
+    gradient = hawk.diff.vjp(minimum_of_squares)(
+        nan.copy(), *_zeros(N, 1), cotangents={"t": np.ones(1)}
+    )["x"]
+    assert np.all(
+        np.isnan(gradient) | (gradient == 0.0)
+    )  # 2 * NaN * 0 is NaN: never a number
+    assert not np.any(gradient[~np.isnan(gradient)])
+
+
+@pytest.mark.parametrize("exclusive", [False, True])
+@pytest.mark.parametrize("op", ["min", "max"])
+def test_a_running_extremum_over_a_prefix_of_only_nan_has_a_zero_tangent_and_drops_its_cotangent(
+    op, exclusive
+):
+    """Oracle: the loop of the winners; lanes before the first number have none, so their tangent is zero and their cotangent
+    reaches no lane."""
+    running = _running_program(op, exclusive)
+    base = _TIED.copy()
+    base[:3] = np.nan
+    graph = hawk.diff.jvp(running)(
+        base.copy(), *_zeros(N, N), tangents={"x": DX.copy()}
+    )
+    graph()
+    got = graph.tangent_of(graph._params["s"])
+    winner = _winners(base * base, op, exclusive)
+    assert np.all(winner[: 3 + exclusive] < 0) and np.all(got[: 3 + exclusive] == 0.0)
+    seed = np.arange(1.0, N + 1.0)
+    gradient = hawk.diff.vjp(running)(
+        base.copy(), *_zeros(N, N), cotangents={"s": seed}
+    )["x"]
+    received = np.zeros(N)
+    np.add.at(received, winner[winner >= 0], seed[winner >= 0])
+    valid = ~np.isnan(base)
+    assert np.allclose(gradient[valid], (2.0 * base * received)[valid], rtol=1e-13)
+    assert abs(gradient[valid] @ DX[valid] - seed @ got) <= 8.0 * N * EPS * (
+        np.abs(seed) @ np.abs(got)
+    )
 
 
 def test_a_function_that_is_not_a_builder_is_refused_by_name():

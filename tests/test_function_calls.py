@@ -5,7 +5,7 @@
 
 * A function used sixteen times is written once; a plain helper stays inlined.
 * Values equal the same helper inlined, within a stated bound, and equal NumPy on the closed form.
-* A function may call a function; a wrong count, a wrong type, a missing annotation and recursion are refused by name.
+* A function may call a function; a wrong count, a wrong type, an annotation that is no payload type and recursion are refused by name.
 * The device text refuses a call by name.
 """
 
@@ -212,13 +212,13 @@ def test_a_wrong_argument_type_is_refused_by_the_function_name():
             out = blend_sqrt(v, y)
 
 
-def test_a_parameter_without_a_payload_type_is_refused_by_name():
+def test_an_annotation_that_is_not_a_payload_type_is_refused_by_name():
     with pytest.raises(
         HawkError, match="function 'bare': parameter 'a' needs a payload type"
     ):
 
         @hawk.function
-        def bare(a):
+        def bare(a: int):
             return a
 
 

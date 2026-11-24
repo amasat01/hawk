@@ -501,7 +501,7 @@ def asarray(x, device: str | None = None):
     import numpy as np
 
     if device is None:
-        return to_numpy(x) if hasattr(x, "__dlpack__") and not isinstance(x, np.ndarray) else np.asarray(x)
+        return _host_array(x)
     served, ordinal = _device_target(device, "hawk.asarray")
     here = _place.device_of(x)
     if here not in (None, _place.HOST):
@@ -509,6 +509,13 @@ def asarray(x, device: str | None = None):
             return x
         raise HawkError(f"hawk.asarray: the array is on the DLPack device {here}, not on {device!r}")
     return through_door(_place.to_device, np.asarray(x), served.id, ordinal)
+
+
+def _host_array(x):
+    """``x`` as a NumPy array on the host (see :func:`asarray`)."""
+    import numpy as np
+
+    return to_numpy(x) if hasattr(x, "__dlpack__") and not isinstance(x, np.ndarray) else np.asarray(x)
 
 
 def synchronize() -> None:

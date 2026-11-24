@@ -177,7 +177,8 @@ class Maker:
         layout = self.door.array_layout(array)
         source = wrap(self.door, array)
         try:
-            made = self.door.plane_new(list(layout["shape"]), *layout["dtype"][:2], kind=_osprey.EG_MEM_DEVICE)
+            made = self.door.plane_new(list(layout["shape"]), *layout["dtype"][:2], kind=_osprey.EG_MEM_DEVICE,
+                                       device=self.device[1])
             try:
                 self.door.copy(source, made)
                 self.door.sync()
@@ -199,8 +200,11 @@ class Maker:
     def _made(self, shape, dtype: tuple):
         """The zeroed plane of ``shape`` and DLPack ``dtype`` the door makes, read by the array library of this place and freed
         as a handle at once: the array keeps the memory."""
-        kind = _osprey.EG_MEM_HOST if self.device == HOST else _osprey.EG_MEM_DEVICE
-        plane = self.door.plane_new([int(n) for n in shape], *dtype, kind=kind, flags=_osprey.EG_PLANE_ZERO)
+        if self.device == HOST:
+            kind, member = _osprey.EG_MEM_HOST, _osprey.EG_DEVICE_DEFAULT
+        else:
+            kind, member = _osprey.EG_MEM_DEVICE, self.device[1]
+        plane = self.door.plane_new([int(n) for n in shape], *dtype, kind=kind, flags=_osprey.EG_PLANE_ZERO, device=member)
         try:
             return read(self.door, plane, self.device, self._like)
         finally:

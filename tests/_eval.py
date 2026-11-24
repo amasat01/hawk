@@ -446,6 +446,18 @@ def _compute(node, env: dict, memo: dict):
         # a primitive's FORWARD is its inlined subgraph; the boundary node adds
         # no arithmetic, which is exactly what the emitter renders too.
         return _value(node.operands[0], env, memo)
+    if _ir.is_a(node, "call"):
+        # a call is its function's body evaluated over the argument values, in a memo of its own: the body is a graph over the
+        # function's parameters, which are not nodes of the caller's graph
+        function = node.field_nodes("callee")[0]
+        (body,) = function.field_nodes("body")
+        bound = {
+            p.field_text("name"): _value(arg, env, memo)
+            for p, arg in zip(function.field_nodes("params"), node.operands)
+        }
+        return _value(body, {"__lane__": env["__lane__"], **bound}, {})
+    if _ir.is_a(node, "param"):
+        return env[node.field_text("name")]
     if _ir.is_a(node, "leaf"):
         name = node.field_text("name")
         if name not in env:

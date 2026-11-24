@@ -150,8 +150,6 @@ def _winner_tangent(
     """The nodes that give the tangent of a one-column minimum or maximum: the same fold over the plane again, which says where
     the winner is (the lowest lane among equals), then a gather of the plane's tangent at that lane."""
     from ..collectives import reduce
-    from ..graph import _Launch
-    from ..plans import deploy
 
     plane, result = node.arrays[:2]
     if plane.ndim != 1:
@@ -167,6 +165,37 @@ def _winner_tangent(
         _, where = reduce(plane, node.op, with_index=True)
     finally:
         graph_builder._ACTIVE.reset(token)
+    return _gathered(plane, where, dots, capture, cache)
+
+
+def _running_winner_tangent(
+    node: Any, tangents: _Tangents, capture: _Capture, cache: dict
+) -> list:
+    """The nodes that give the tangent of a running minimum or maximum: the same scan over the plane again, writing the winner of
+    every prefix (the lowest lane among equals), then a gather of the plane's tangent at those lanes. A prefix with no winner
+    (the first lane of an exclusive scan) gets a zero tangent."""
+    from ..collectives import _scan_with_winners
+
+    plane, result = node.arrays[:2]
+    dots = tangents.of(plane), tangents.of(result)
+    if any(d is None for d in dots):
+        return []
+    token = graph_builder._ACTIVE.set(capture)
+    try:
+        _, where = _scan_with_winners(plane, node.op, node.exclusive)
+    finally:
+        graph_builder._ACTIVE.reset(token)
+    return _gathered(plane, where, dots, capture, cache)
+
+
+def _gathered(
+    plane: Any, where: Any, dots: tuple, capture: _Capture, cache: dict
+) -> list:
+    """The nodes recorded so far in ``capture`` (which made ``where``) and the launch that writes ``dots[1]`` as the tangent
+    ``dots[0]`` of ``plane`` read at the lanes ``where`` names."""
+    from ..graph import _Launch
+    from ..plans import deploy
+
     scalar = str(plane.dtype)
     if ("gather", scalar) not in cache:
         # built as the program's own kernels were, when it has any, for the plane's type
@@ -174,19 +203,24 @@ def _winner_tangent(
         cache[("gather", scalar)] = deploy(_gather_kernel(), **settings)
     made, capture.nodes = capture.nodes, []
     launch = _Launch(
-        cache[("gather", scalar)].bind(table=dots[0], where=where, y=dots[1]),
+        cache[("gather", scalar)].bind(
+            table=dots[0], where=where, count=float(plane.shape[0]), y=dots[1]
+        ),
         "winner tangent",
     )
     return [*made, launch]
 
 
 def _gather_kernel() -> Any:
-    """The kernel that reads the plane ``table`` at the lane ``where`` names."""
-    from .. import Index, Mutable, Scalar, Table, kernel
+    """The kernel that reads the plane ``table`` at the lane ``where`` names; a lane at or beyond ``count`` (no winner) gives zero."""
+    import hawk
+    from .. import Index, Mutable, Param, Scalar, Table, kernel
 
     @kernel
-    def winner_tangent(table: Table[Scalar], where: Index, y: Mutable[Scalar]):
-        y = table.at(where)
+    def winner_tangent(
+        table: Table[Scalar], where: Index, count: Param, y: Mutable[Scalar]
+    ):
+        y = hawk.math.where(where < count, table.at(where), 0.0)
 
     return winner_tangent
 
@@ -202,10 +236,7 @@ def _tangent_nodes(
     if kind in ("compact", "sort") or node.op in ("all", "any"):
         return []  # integer or mask planes only: no tangent
     if node.kind == "scan" and node.op in ("min", "max"):
-        raise HawkError(
-            f"hawk.diff.jvp: {node.label}: the tangent of a running minimum or maximum is the tangent at the running winner, "
-            "a lane the library names only inside the reverse of a recorded run, so it is not built forward"
-        )
+        return _running_winner_tangent(node, tangents, capture, cache)
     if node.op in ("min", "max"):
         return _winner_tangent(node, tangents, capture, cache)
     dots = [tangents.of(a) for a in arrays]

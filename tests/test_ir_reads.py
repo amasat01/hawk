@@ -59,8 +59,9 @@ def test_post_order_lists_children_first_each_once_and_a_stop_node_is_a_leaf_of_
 def test_a_node_of_another_context_is_refused_at_once(graph):
     _context, a, *_ = graph
     stranger = _ir.const(_ir.new_context(), 1.0, SCALAR)
-    with pytest.raises(TypeError, match="another Ctx"):
+    with pytest.raises(HawkError, match="another Ctx") as refused:
         _ir.make("add", [a, stranger])
+    assert refused.value.code == "foreign_node"
 
 
 def test_adopt_copies_a_foreign_root_with_its_graph_and_keeps_a_root_that_is_already_there(

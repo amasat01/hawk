@@ -12,11 +12,17 @@ of function with the author's own text per target instead of a traced body.
 A function has two derivative directions. Each is a function of the same table: the author's rule, traced once per kernel
 into ordinary IR, or, for a traced function without one, the function :mod:`hawk.diff.functions` derives from the body. A
 forward rule is ONE function of the reads and a tangent per read; the reverse rules are one function per read, each of
-the reads and the adjoint of the result."""
+the reads and the adjoint of the result.
+
+A parameter without an annotation takes its type from each call: the function is then declared once per distinct signature of
+the calls, each declaration holding its own body, rules and derived functions. A parameter with an annotation is checked as
+written."""
 
 from __future__ import annotations
 
+import copy
 import inspect
+import re
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
@@ -40,25 +46,56 @@ DIRECTIONS = ("jvp", "vjp")
 class FunctionDef:
     """A definition decorated with :func:`function`; calling it in a kernel body records a ``Call``."""
 
+    #: Whether this is the declaration of one signature of an untyped function, whose errors then name the signature.
+    _inferred = False
+
     def __init__(
-        self, fn: Callable, jvp: Callable | None = None, vjp: Callable | None = None
+        self,
+        fn: Callable,
+        jvp: Callable | None = None,
+        vjp: Callable | None = None,
+        name: str | None = None,
     ) -> None:
+        if name is not None and not (isinstance(name, str) and name.isidentifier()):
+            raise HawkError(
+                f"function {fn.__name__!r}: name= must be an identifier, got {name!r}"
+            )
         self.fn = fn
-        self.__name__ = self.__qualname__ = fn.__name__
+        self.__name__ = self.__qualname__ = self._base_name = name or fn.__name__
         self.__doc__ = fn.__doc__
         self.params = self._declared_params()
         self.result = self._declared_result()
         self._recorded: dict = {}
-        self._install_rules(jvp, vjp)
+        #: The declarations of the types this function was called with, by the tuple of its parameters' types; used only
+        #: while a parameter has no annotation.
+        self._signatures: dict = {}
+        self._rule_callables = (jvp, vjp)
+        self._check_rules(jvp, vjp)
+        # the rules' signatures hold the result type, which an unannotated result only gets when the body is traced
+        self.author = None
+        if self.result is not None and self._typed():
+            self._build_rules(jvp, vjp)
+
+    def _typed(self) -> bool:
+        """Whether every parameter carries its type, so that this is one declaration and not one per signature."""
+        return all(t is not None for _, t in self.params)
 
     def _install_rules(self, jvp: Callable | None, vjp: Callable | None) -> None:
-        """Keep the author's rules as the derivative functions they trace into; a direction without one stays empty."""
+        """Check the author's rules and keep them as the derivative functions they trace into."""
+        self._check_rules(jvp, vjp)
+        self._build_rules(jvp, vjp)
+
+    def _check_rules(self, jvp: Callable | None, vjp: Callable | None) -> None:
+        """Refuse a rule that is not callable, by the function's name."""
         for direction, rule in (("jvp", jvp), ("vjp", vjp)):
             if rule is not None and not callable(rule):
                 raise HawkError(
                     f"function {self.__name__!r}: {direction} must be a callable of the reads and "
                     f"{'a tangent per read' if direction == 'jvp' else 'the adjoint of the result'}, got {rule!r}"
                 )
+
+    def _build_rules(self, jvp: Callable | None, vjp: Callable | None) -> None:
+        """Keep the author's rules as the derivative functions they trace into; a direction without one stays empty."""
         #: The author's derivative functions by direction: one for ``jvp``, one per read for ``vjp``, none when not given.
         self.author = {
             "jvp": () if jvp is None else (RuleDef(self, "jvp", jvp, 0),),
@@ -68,7 +105,8 @@ class FunctionDef:
         }
 
     def _declared_params(self) -> tuple:
-        """``((name, type), ...)`` from the annotations; a parameter without a payload type is refused by name."""
+        """``((name, type), ...)`` from the annotations, ``None`` for a parameter without one; an annotation that is not a payload
+        type is refused by name."""
         out = []
         for name, p in inspect.signature(self.fn, eval_str=True).parameters.items():
             if p.kind is not p.POSITIONAL_OR_KEYWORD or p.default is not p.empty:
@@ -76,11 +114,13 @@ class FunctionDef:
                     f"function {self.__name__!r}: parameter {name!r} must be a plain positional "
                     "parameter with no default"
                 )
+            if p.annotation is p.empty:
+                out.append((name, None))
+                continue
             if not isinstance(p.annotation, _ir.TensorType):
                 raise HawkError(
                     f"function {self.__name__!r}: parameter {name!r} needs a payload type annotation "
-                    "(Scalar, Int32, Vector[W], Matrix[R, C], ...), got "
-                    f"{'none' if p.annotation is p.empty else repr(p.annotation)}"
+                    f"(Scalar, Int32, Vector[W], Matrix[R, C], ...) or none, got {p.annotation!r}"
                 )
             out.append((name, p.annotation))
         return tuple(out)
@@ -104,6 +144,34 @@ class FunctionDef:
                 f"function {self.__name__!r} takes {len(self.params)} argument(s), got {len(args)}"
             )
         operands = [node_of(a) for a in args]
+        return self._at(operands)._call(operands)
+
+    def _at(self, operands: list) -> FunctionDef:
+        """The declaration this call goes to: this function, or, while a parameter has no annotation, the declaration of the
+        types the call's arguments have (made on the first call of each signature)."""
+        if self._typed():
+            return self
+        types = tuple(
+            declared if declared is not None else _plain(_ir.type_of(operand))
+            for (_, declared), operand in zip(self.params, operands)
+        )
+        held = self._signatures.get(types)
+        if held is None:
+            held = copy.copy(self)
+            held.params = tuple((n, t) for (n, _), t in zip(self.params, types))
+            held._recorded, held._signatures, held._inferred = {}, {}, True
+            # the function table holds one function per name, so each signature is named by the types its parameters
+            # without an annotation took: stable across runs and distinct per signature
+            held.__name__ = held.__qualname__ = "__".join(
+                [self.__name__]
+                + [_label(t) for (_, d), t in zip(self.params, types) if d is None]
+            )
+            held.author = None
+            self._signatures[types] = held
+        return held
+
+    def _call(self, operands: list) -> Value:
+        """Record a ``Call`` of this declaration over the argument nodes ``operands``."""
         context = operands[0].ctx if operands else current_context()
         _, node, name, digest = self._held(context)
         result = _ir.type_of(node)
@@ -157,15 +225,30 @@ class FunctionDef:
             params = self._param_nodes(context)
             with trace_context(context):
                 body = node_of(self._body(context, [Value(p) for p in params]))
+            result = _ir.type_of(body)
+            if self.result is not None and self.result != result:
+                raise HawkError(
+                    f"function {self.__name__!r} is declared to return {self.result!r} but its body "
+                    f"computes {result!r}"
+                )
+            if self.author is None:
+                self.result = _plain(result)
+                self._build_rules(*self._rule_callables)
             rules = self._rule_nodes(context)
+        except HawkError as refusal:
+            if getattr(refusal, "code", None) == "foreign_node":
+                raise HawkError(
+                    f"function {self.__name__!r}: its body holds a value of another trace; a body sees its "
+                    "parameters only, so pass the value as an argument"
+                ) from refusal
+            if not self._inferred:
+                raise
+            kinds = ", ".join(_label(t) for _, t in self.params)
+            raise HawkError(
+                f"function {self._base_name!r} called with ({kinds}): {refusal}"
+            ) from refusal
         finally:
             active.pop()
-        result = _ir.type_of(body)
-        if self.result is not None and self.result != result:
-            raise HawkError(
-                f"function {self.__name__!r} is declared to return {self.result!r} but its body "
-                f"computes {result!r}"
-            )
         return _ir.function(context, self.__name__, params, body, (), result, **rules)
 
 
@@ -241,6 +324,19 @@ class RuleDef(FunctionDef):
         return grads[self.index]
 
 
+def _plain(declared: Any) -> _ir.TensorType:
+    """``declared`` as a :class:`~hawk._ir.TensorType` (a type read off a node answers the same shape, dtype and tag)."""
+    return _ir.TensorType(declared.shape, declared.dtype, declared.tag)
+
+
+def _label(declared: _ir.TensorType) -> str:
+    """The identifier text of a type: its dtype, then its extents and its tag when it has them (``f64``, ``f64_3``)."""
+    parts = [declared.dtype, *map(str, declared.shape)]
+    if declared.tag:
+        parts.append(str(declared.tag))
+    return re.sub(r"\W", "_", "_".join(parts))
+
+
 def param_nodes(context: Any, params: Sequence) -> list:
     """One ``Param`` node per ``(name, type)`` of ``params``, the leaves of a function's declaration."""
     return [
@@ -288,6 +384,7 @@ def _active() -> list:
 def function(
     fn: Callable | None = None,
     *,
+    name: str | None = None,
     jvp: Callable | None = None,
     vjp: Callable | None = None,
 ) -> FunctionDef | Callable:
@@ -302,13 +399,18 @@ def function(
     A call in a kernel body, ``a = drag(v, rho)``, records one call; a plain helper without the decorator stays
     inlined. A wrong number of arguments or a wrong argument type is refused by the function's name.
 
+    A parameter may be left without a type: it then takes the type of the argument of each call, and the function is
+    written once per distinct signature of its calls (a body that cannot be traced for one is refused naming the function
+    and that signature). The result annotation is optional then. ``name=`` names the function when that is not the name of
+    the ``def``.
+
     A traced function is differentiated through its body, in both directions, with no more from you. ``jvp=`` and
     ``vjp=`` replace that with your own rules: ``jvp(reads..., dot_reads...)`` returns the tangent of the result and
     ``vjp(reads..., bar_result)`` returns one gradient per read (a tuple when there are several); each is traced once into
     ordinary functions that the derivative kernels call."""
     if fn is None:
-        return lambda f: FunctionDef(f, jvp, vjp)
-    return FunctionDef(fn, jvp, vjp)
+        return lambda f: FunctionDef(f, jvp, vjp, name)
+    return FunctionDef(fn, jvp, vjp, name)
 
 
 def native(

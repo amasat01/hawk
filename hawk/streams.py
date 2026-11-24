@@ -12,6 +12,7 @@ is the runtime's to find; hawk carries the handle and the scope and decides noth
 from __future__ import annotations
 
 import contextvars
+import threading
 import weakref
 from typing import Any
 
@@ -28,14 +29,16 @@ _SCOPE: contextvars.ContextVar = contextvars.ContextVar(
 
 
 def apply(door: Any) -> None:
-    """Put ``door``'s next launch on the stream in scope here; outside every scope there is nothing to do, because leaving a
-    scope has already put the doors it used back. Called before every launch a door queues, so a scope reaches exactly the doors
-    it launches on."""
+    """State the stream of the scope to ``door`` on the calling thread, at call time, before every launch a door queues. The
+    scope is read on the calling thread and the door keeps its stream in use per thread, so a launch made on another thread is
+    placed by that thread's own scope. Outside every scope there is nothing to state: leaving a scope has already put back the
+    doors its thread used."""
     scope = _SCOPE.get()
     if scope is None:
         return
     through_door(door.stream_use, scope[0]._handle)
     scope[0]._doors.add(door)
+    scope[0]._stated_here().add(door)
 
 
 def door_in_scope() -> Any:
@@ -101,6 +104,7 @@ class Stream:
                 "hawk.Stream: give theirs (a stream to adopt) or device= (a stream to make), not both and not neither"
             )
         self._doors: set = set()
+        self._stated = threading.local()
         self._finalizer = None
         if theirs is not None:
             self._handle = _raw_handle(theirs)
@@ -120,15 +124,23 @@ class Stream:
         _SCOPE.set((self, _SCOPE.get()))
         return self
 
+    def _stated_here(self) -> set:
+        """The doors this stream was stated to on the calling thread: only those are put back when that thread leaves the scope,
+        because a door keeps its stream in use per thread."""
+        return self._stated.__dict__.setdefault("doors", set())
+
     def __exit__(self, *exc: object) -> None:
-        """Leave the scope: the outer stream is in scope again on every door this scope launched on, also after an exception."""
+        """Leave the scope: the outer stream is in scope again on every door this thread stated this stream to, also after an
+        exception."""
         outer = _SCOPE.get()[1]
         _SCOPE.set(outer)
         back = 0 if outer is None else outer[0]._handle
-        for door in list(self._doors):
+        for door in self._stated_here():
             through_door(door.stream_use, back)
             if outer is not None:
                 outer[0]._doors.add(door)
+                outer[0]._stated_here().add(door)
+        self._stated_here().clear()
 
     def synchronize(self) -> None:
         """Return when everything queued on this stream has run. A stream nothing was launched on has nothing to wait for."""

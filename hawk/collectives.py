@@ -66,7 +66,7 @@ class Collective:
     a matrix product (``None`` for the others), freed with the node. ``kind`` is the operation (``"reduce"``, ``"scan"``,
     ``"reorder"``, ``"copy"``, ``"matmul"``, ``"fft"``, ``"compact"``, ``"sort"``) and ``op`` its fold where it has one;
     ``redo(arrays)`` calls the same operation over other ``arrays`` of the same roles (the derivative of a program calls it
-    over tangent planes), and is ``None`` where that has no meaning.
+    over tangent planes), and is ``None`` where that has no meaning. ``exclusive`` is the form of a scan.
     """
 
     def __init__(
@@ -81,10 +81,11 @@ class Collective:
         kind: str = "",
         op: str | None = None,
         redo: Callable | None = None,
+        exclusive: bool = False,
     ) -> None:
         """Make the node ``label`` over ``arrays`` held by ``door``; ``run(door, planes)`` calls the door, ``free(door, plan)`` drops its plan."""
         self.label, self.arrays, self.run, self.plan = label, arrays, run, plan
-        self.kind, self.op, self.redo = kind, op, redo
+        self.kind, self.op, self.redo, self.exclusive = kind, op, redo, exclusive
         self.door = door
         if plan is not None:
             weakref.finalize(self, free, self.door, plan)
@@ -200,28 +201,48 @@ def scan(p: Any, op: str, exclusive: bool = False, out: Any = None) -> Any:
     The result has the shape and dtype of ``p``; ``out=`` passes the caller's plane instead. An integer sum is exact (it wraps),
     a minimum and a maximum are exact, and a real sum has the same bits on every run but is not the bits of a left-to-right loop.
     Typing (one axis, a scalar value, the six numeric types) is the runtime's, and its reason for a refusal is shown as given."""
+    return _scan(p, op, exclusive, out, with_winners=False)
+
+
+def _scan_with_winners(p: Any, op: str, exclusive: bool = False) -> tuple:
+    """``(values, where)``: the running ``"min"`` or ``"max"`` of ``p`` as :func:`scan` gives it, and the int32 plane the runtime
+    writes beside it with the lane of each prefix's winner (the lowest lane among equals; the extent of ``p`` for a prefix with
+    none). The derivative of a recorded program asks for it; it is not a public form."""
+    return _scan(p, op, exclusive, None, with_winners=True)
+
+
+def _scan(p: Any, op: str, exclusive: bool, out: Any, with_winners: bool) -> Any:
+    """The one scan node of :func:`scan` and :func:`_scan_with_winners`."""
     if op not in _SCAN_OPS:
         raise HawkError(f"hawk.scan: op={op!r} is not one of {tuple(_SCAN_OPS)}")
     door = _door_of(p, "scan")
     layout = _layout(door, p)
     result = _result(out, p, tuple(layout["shape"]), layout["dtype"])
+    where = _made(p, tuple(layout["shape"]), (0, 32, 1)) if with_winners else None
     flags = _osprey.EG_SCAN_EXCLUSIVE if exclusive else 0
 
     def run(door: Any, planes: list) -> None:
-        door.scan(planes[0], planes[1], _SCAN_OPS[op], flags)
+        door.scan(
+            planes[0],
+            planes[1],
+            _SCAN_OPS[op],
+            flags,
+            index=planes[2] if with_winners else None,
+        )
 
     _call(
         Collective(
             f"scan {op}",
             door,
-            (p, result),
+            (p, result, where) if with_winners else (p, result),
             run,
             kind="scan",
             op=op,
             redo=lambda a: scan(a[0], op, exclusive, a[1]),
+            exclusive=exclusive,
         )
     )
-    return result
+    return (result, where) if with_winners else result
 
 
 def compact(keep: Any, out: tuple | None = None) -> tuple:

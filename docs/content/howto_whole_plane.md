@@ -76,8 +76,15 @@ A device queues its work on one ordered queue, its own. `hawk.Stream(device="cud
 `hawk.Stream(theirs)` adopts a stream of yours, a raw handle or an object with `__cuda_stream__`, which stays yours to free.
 `with stream:` puts every launch made inside it on that stream (a kernel call, a whole-plane operation, a graph replay), scopes
 nest, and the outer one is back on leaving, an exception included. `stream.synchronize()` returns when the work queued on it has
-run. A stream scope cannot be opened inside a graph builder or block: there the queues follow from `parallel()` branches and
+run. A scope belongs to the thread that opened it: a thread you start inside it is in no scope, and one that should be in it runs inside `contextvars.copy_context().run`. A stream scope cannot be opened inside a graph builder or block: there the queues follow from `parallel()` branches and
 `wait(planes)`. A host context is one queue, so `hawk.Stream(device=...)` on it is refused with the library's reason.
+
+## Devices
+
+`hawk.asarray(x, device="cuda:1")` puts an array on a device by its number; without `device` it is on the host. A call runs on the
+device of its planes, so it follows where you put them; `hawk.copy(src, dst)` between two devices is the transfer, and a call
+whose planes sit on two devices is refused by name with that copy as the way. The library answers for every device: a host
+context has one member.
 
 ## Events
 

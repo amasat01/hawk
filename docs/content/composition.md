@@ -22,7 +22,7 @@ A plain `def` called from a kernel is inlined when it is given traced values, so
 
 A helper defined in the kernel's own module and traced as a kernel has no parameter declarations, and the error says so: move the helper to another module, or call it with traced values so it is inlined.
 
-A helper used many times can be written once in the generated text instead of at every use: decorate it with `@hawk.function` and annotate its parameters (and, optionally, its result) with payload types. The function has one definition in the unit's source and one call per use; a plain helper stays inlined. A scalar is passed by value, a vector or a matrix by constant reference.
+A helper used many times can be written once in the generated text instead of at every use: decorate it with `@hawk.function`. Parameters may carry payload types (and the result may); a parameter without a type takes the type of its argument at each call, and the function is written once per distinct signature of its calls (a name of its own, `drag__f64_3` for a `Vector[3]`). `@hawk.function(name="...", jvp=..., vjp=...)` names it when that is not the name of the `def`, and supplies your own derivative rules. The function has one definition in the unit's source and one call per use; a plain helper stays inlined. A scalar is passed by value, a vector or a matrix by constant reference.
 
 ```python
 @hawk.function
