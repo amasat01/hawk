@@ -1,6 +1,6 @@
 #!/bin/sh
 # The gate of the OSPREY libraries (components/lowering, osprey_cpu, osprey_cuda) and the tools that prove them. Usage: sh ci/gate.sh [leg ...]   (no argument: every leg, in this order)
-#   fmt clippy test exports binding py39 abi wheels ruff cformat tidy replay
+#   fmt clippy test exports binding py39 abi wheels ruff cformat tidy replay words
 # Environment: PYTHON (the interpreter the binding is built for; the binding leg is red without it), OSPREY_EAGLE_SRC (the eagle source root; every leg that builds is red without it), CXX (the C++ compiler of the cpu library's runtime), CLANG_TIDY (the clang-tidy
 # program; the tidy leg is RED without it), the cformat leg skips, saying so, unless clang-format is major version 23, PYTHON39 and PY39_INCLUDE (a Python 3.9 interpreter and its headers; the py39 leg
 # skips, saying so, when the interpreter is absent; the default is the macOS command line tools' one). The siblings ../raptor and ../aether are inputs (RAPTOR names the first);
@@ -240,7 +240,24 @@ oracle() {
   echo "examined: facts oracle, $(passed) test passed"; need oracle "$(passed)"
 }
 
-legs=${*:-fmt clippy test exports binding py39 abi wheels ruff cformat tidy replay}
+# The base crates name no backend: no file of components/lowering, components/toolkit or components/manifest holds a word of
+# ci/base_words.txt (the rule of matching and the one accepted token are stated in that file).
+leg_words() {
+  files=$(git ls-files components/lowering components/toolkit components/manifest | grep -E '\.(rs|json|toml|md)$')
+  n=$(echo "$files" | grep -c .); echo "examined: $n files of the three base crates"; need words "$n" || return 1
+  grep -vE '^(#|accept |[[:space:]]*$)' ci/base_words.txt >"$out.words"
+  strip=$(sed -n 's/^accept \([^ ]*\) .*$/-e s\/\1\/\/g/p' ci/base_words.txt)
+  : >"$out.hits"
+  for f in $files; do
+    # shellcheck disable=SC2086
+    sed $strip "$f" | grep -n -i -E -f "$out.words" | sed "s|^|$f:|" >>"$out.hits"
+  done
+  hits=$(grep -c . "$out.hits")
+  echo "examined: $(grep -c . "$out.words") words, $hits hits"
+  [ "$hits" -eq 0 ] || { head -8 "$out.hits"; echo "RED: the base names a backend"; return 1; }
+}
+
+legs=${*:-fmt clippy test exports binding py39 abi wheels ruff cformat tidy replay words}
 green=; red=
 for l in $legs; do
   echo "== $l"

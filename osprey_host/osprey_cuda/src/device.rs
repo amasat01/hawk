@@ -1,12 +1,86 @@
 //! The device arch policy, from a table's `device` member: ask the driver library the table names (by the functions the table names)
 //! for the running GPU and the driver's release, take a pin from the ask or from the environment variable the table names, and clamp
-//! the result to the archs the toolkit can target. Nothing here names a vendor: library names, function names, attribute numbers and
-//! the spelling of an arch are the table's.
-use crate::dl::Library;
-use crate::refusal::{Done, Refusal};
-use crate::wire;
+//! the result to the archs the toolkit can target. Library names, function names, attribute numbers and the spelling of an arch are
+//! the table's; [`probe`] is what the library registers under the table's `device` member.
 use rcore::json::J;
 use std::ffi::c_int;
+use toolkit::dl::Library;
+use toolkit::refusal::{Done, Refusal};
+use toolkit::{wire, Machine, ProbeAnswer, ProbeInput};
+
+/// The name of the table member the library's device probe reads, and the member of the machine answer it states.
+pub const SECTION: &str = "device";
+
+/// The device record of the machine answer: the arch chosen and why, the GPU and driver the driver library stated, and the
+/// toolkit's archs; and, when the driver library gives no device, why this machine cannot run the library's builds.
+///
+/// # Errors
+/// Refuses a table whose `device` member is malformed, a pinned arch the toolkit cannot serve, and a driver probe that fails.
+pub fn probe(input: &ProbeInput<'_>) -> Done<ProbeAnswer> {
+    let device = input
+        .section
+        .ok_or_else(|| Refusal::bad("the device probe needs the table's `device` member"))?;
+    let found = probe_driver(wire::need(device, "driver", "device")?)?;
+    let blocked = match &found {
+        Err(why) => Some(why.clone()),
+        Ok(driver) if driver.gpu_arch.is_none() => {
+            Some("the driver library initialised and states no device".to_string())
+        }
+        Ok(_) => None,
+    };
+    let driver = found.unwrap_or_default();
+    let policy = wire::need(device, "arch", "device")?;
+    let toolkit = match input.runtime {
+        Some(runtime) => runtime.archs(),
+        None => tool_archs(policy, input.machine),
+    };
+    let env_pin = policy
+        .get("pin_env")
+        .and_then(J::str)
+        .and_then(|var| input.env.get(var).map(|v| (var, v)));
+    let inputs = Inputs {
+        asked: input.ask.get("device_arch").and_then(J::str),
+        env_pin,
+        gpu: driver.gpu_arch.as_deref(),
+        toolkit: toolkit.as_deref(),
+    };
+    let (arch, why) = choose_arch(policy, &inputs)?;
+    let nullable = |v: Option<String>| v.map_or(J::Null, |t| wire::s(&t));
+    let facts = wire::obj(vec![
+        ("arch", wire::s(&arch)),
+        ("why", wire::s(&why)),
+        ("gpu_arch", nullable(driver.gpu_arch)),
+        ("driver_release", nullable(driver.release)),
+        (
+            "driver_encoded",
+            driver
+                .encoded
+                .map_or(J::Null, |e| wire::n(u64::try_from(e).unwrap_or(0))),
+        ),
+        (
+            "toolkit_archs",
+            toolkit.map_or(J::Null, |t| J::Arr(t.into_iter().map(wire::n).collect())),
+        ),
+    ]);
+    Ok(ProbeAnswer { facts, blocked })
+}
+
+/// The archs a tool states by the probe the table's `device.arch.toolkit` record names (`tool`, `probe`); `None` when it does not.
+fn tool_archs(policy: &J, machine: &Machine) -> Option<Vec<u64>> {
+    let source = policy.get("toolkit")?;
+    let tool = machine.tool(source.get("tool")?.str()?)?;
+    let probe = source.get("probe")?.str()?;
+    let list = tool
+        .facts
+        .iter()
+        .find(|(name, _)| name == probe)?
+        .1
+        .arr()
+        .iter()
+        .map(|a| u64::try_from(a.int()).unwrap_or(0))
+        .collect();
+    Some(list)
+}
 
 /// What the driver library states.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]

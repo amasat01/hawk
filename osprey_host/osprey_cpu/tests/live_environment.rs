@@ -25,11 +25,9 @@ fn a_variable_changed_between_two_asks_is_read_by_the_second_and_back_again() {
         fake_compiler(&dir.join(name), "cxx");
     }
     let at = |name: &str| dir.join(name).join("cxx").display().to_string();
-    let table = fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../osprey_cpu/facts/tools.json"),
-    )
-    .unwrap();
-    let tk = Toolkit::new(&table, &[], Env::process()).unwrap();
+    let table =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("facts/tools.json")).unwrap();
+    let tk = common::new_toolkit(&table, &[], Env::process()).unwrap();
     for name in [
         "HAWK_HOST_PROFILE",
         "HAWK_OPT_LEVEL",

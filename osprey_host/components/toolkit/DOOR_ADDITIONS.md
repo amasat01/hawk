@@ -25,7 +25,7 @@ refusal reads in `rx_last_error(ctx)`, its text starting with the refusal kind n
 /* The machine the OSPREY's tools run on. ask is JSON: {"key_terms": [text...], "host": bool, "root": <store root>?, "device_arch":
    <pin>?, "reserved_names": {"prelude": <the unit's include block>}?, "witnesses": [<witness>...]?}. key_terms are the texts the key
    must cover beyond what the machine states (the OSPREY's facts identity and flags); host asks for the host's own facts
-   (architecture, vector instruction set, cache sizes, a CPU digest); root is the store root, needed by the facts that serve a header
+   (architecture, vector instruction set, cache sizes, a processor digest); root is the store root, needed by the facts that serve a header
    tree or keep a verdict (reserved_names, witnesses); device_arch is a pin. A witness is {"name", "source", "source_suffix"?,
    "compile": [argv template], "link": [argv template], "exit_verdicts": {"<exit code>": "<verdict word>"}, "timeout": seconds}.
    Answer: {"key": <opaque>, "stated": {"tools": {name: {"path", "identity", <probe facts>}}, "headers": {tree: digest}, "host":
@@ -114,9 +114,9 @@ not UTF-8). The four entries are listed in the `OspreyV1` table the library retu
 
 JSON members: `name` (names the files), `text`, `template` (the argv, as the facts state it), `lists` ({"{defines}": [..]}: a list
 place that is a whole element of the template stands for one element per item), `extra` (appended after the template), `key_terms`
-(texts the key covers: target, mode, profile, optimisation level, C library, CPU digest; the library's answers state them),
+(texts the key covers: target, mode, profile, optimisation level, C library, processor digest; the library's answers state them),
 `keep_source` (publish the source text beside the output; the answer's `files.source`), `source_suffix` (default `.cpp`), `output_suffix` (default `.o`), `figures` (the grammar of the figures to read from the tool's
-output; `ptxas_info` is the one that exists), `places` ({"{include:facts}": "<text>"} for a place the OSPREY fills itself),
+output; the grammars a backend registers are the ones that exist), `places` ({"{include:facts}": "<text>"} for a place the OSPREY fills itself),
 `as` ({"compiler": "host_compiler"}: the place `{compiler}` is the tool the table calls `host_compiler`; a link of a device OSPREY
 needs it), and `runtime` ({"options": [text with places...], "target": <image kind>, "headers": [tree names]}): the in-process compile used when the machine has no offline compiler (`stated.runtime` present); the unit's `template` is used when the tool exists. `figures` also knows `image_resources`: the register and frame figures read off an ELF image (no tool, no device).
 
@@ -157,21 +157,14 @@ the bytes (`include_bytes!`); a served tree is written once under `<root>/header
   not resolve; first_word: the first word of the value, as `$CXX` is), `{"path": "name"}` (on `PATH`), `{"env_flag": {"var", "flags":
   [...]}}` (the value after a flag inside a variable that holds flags), `{"tool": "other"}`; any rule may add `"dir_child": "g++"`
   (a folder resolves to that file inside it).
-- Probes: `{"name", "args", "after": "<marker>", "as": "version" | "int_list" | "gcc_family"}`; the answers are stated beside the
-  tool's `path` and `identity`. `gcc_family` reads `-dM -E` output and states `{"gcc": bool, "gcc_release": "major.minor" | null}`.
+- Probes: `{"name", "args", "after": "<marker>", "as": "version" | "int_list" | <a grammar a backend registered>}`; the answers are stated beside the
+  tool's `path` and `identity`. A registered grammar reads a probe's output and states what it reads.
 - `process_env`: `strip_flags` {vars, flags}, `remove` [vars], `path_prepend` [tools], `root_of` {VAR: tool} (the folder above the
   tool's folder).
 - `limits`: `address_cap`, `source_budget`, `timeout`, each `{"env": "VAR", "default": n}`; 0 disables. Without the member the
   defaults are 12 GiB, 8 MiB and 1800 s, and no variable is read.
 
-cpu, as the Python states it today: `compiler` = rules `[{"env":"HAWK_CXX","required":true},{"env":"CXX","first_word":true},
-{"path":"g++"}]`, probes `[{"name":"family","args":["-dM","-E","-x","c++","/dev/null"],"as":"gcc_family"}]`; limits
-`HAWK_COMPILE_ADDRESS_CAP`, `HAWK_COMPILE_SOURCE_BUDGET`, `HAWK_COMPILE_TIMEOUT`. cuda: `compiler` = `[{"env":"HAWK_NVCC","required":
-true},{"path":"nvcc"}]` with probes `release` (`--version`, after `release `, version) and `archs` (`--list-gpu-arch`, after
-`compute_`, int_list); `host_compiler` = `[{"env":"HAWK_NVCC_CCBIN","dir_child":"g++"},{"env_flag":{"var":"NVCC_PREPEND_FLAGS","flags":
-["-ccbin","--compiler-bindir"]},"dir_child":"g++"},{"env_flag":{"var":"NVCC_APPEND_FLAGS","flags":["-ccbin","--compiler-bindir"]},
-"dir_child":"g++"},{"env":"NVCC_CCBIN","dir_child":"g++"},{"path":"g++"}]`; `process_env`: `strip_flags` over both flag variables with
-the two ccbin flags, `remove` [`NVCC_CCBIN`], `path_prepend` [`compiler`], `root_of` {`CUDA_PATH`: `compiler`}.
+Each backend's own `facts/tools.json` is the worked example of a table: its compiler rules, probes, limits and process environment.
 
 ## 6. The device, reserved-name, witness and runtime members of the table
 
@@ -202,22 +195,7 @@ the two ccbin flags, `remove` [`NVCC_CCBIN`], `path_prepend` [`compiler`], `root
   space separates, single quotes keep everything, double quotes keep everything but `\"` and `\\`, a backslash outside quotes escapes
   the next character; an unclosed quote means no value.
 
-cuda, as the Python states it today (data the OSPREY's `tools.json` carries): `device.driver`: libraries `["libcuda.so.1",
-"libcuda.so"]` (none opens on macOS, so the arch there is the portable virtual one), calls `cuInit`, `cuDriverGetVersion`, `cuCtxGetDevice`,
-`cuDeviceGet`, `cuDeviceGetAttribute`, `version_decode` `[1000, 10]`, attributes major 75 and minor 76, `arch_format` `sm_{major}{minor}`;
-`device.arch`: `pin_env` `HAWK_CUDA_ARCH`, `fallback` `compute_61`, `portable_min` 60, `toolkit` `{"tool": "compiler", "probe":
-"archs"}`; `runtime_compile`: `replaces` `compiler`, libraries `["libnvrtc.so", "libnvrtc.so.12"]`, `force` `{"env":
-"HAWK_DEVICE_COMPILER", "tool": "nvcc", "runtime": "nvrtc"}`, calls `nvrtcVersion`, `nvrtcGetNumSupportedArchs`,
-`nvrtcGetSupportedArchs`, `nvrtcCreateProgram`, `nvrtcCompileProgram`, `nvrtcGetProgramLogSize`, `nvrtcGetProgramLog`,
-`nvrtcDestroyProgram`, images `ptx` (`nvrtcGetPTXSize`, `nvrtcGetPTX`, text) and `cubin` (`nvrtcGetCUBINSize`, `nvrtcGetCUBIN`).
-The runtime options the Python builds are, as a request's `runtime.options`: `-std=c++20`, `-arch={arch}`, `-default-device`,
-`-D__builtin_inf()=__longlong_as_double(0x7ff0000000000000LL)` and any `-I` of a header root, then the caller's defines and extras;
-`{arch}` is a request place (`compute_<n>` for a PTX target, `sm_<n>` for a CUBIN). `reserved_names` for cpu: `tool` `compiler`, `args`
-`["-E","-P","-x","c++","-std=c++23","-DAETHER_CPP_MODE","-I{include:aether}","-I{include:eagle}","{source}"]` (the header shape of the
-facts picks the trees), `system_headers` `["cstdlib","cstdio","cstring","cmath","unistd.h"]`; the ask's `prelude` is the writers'
-include block. The masked-call witness for cpu is the ask's `witnesses` record: `source` the witness file, `compile` the unit's own
-`compile_unit` template (its `{include:*}` places become one empty folder, `{defines}` is dropped), `link` `["{compiler}", "{object}",
-"-o", "{output}"]`, `exit_verdicts` `{"0": "fixed", "1": "miscompile"}`, `timeout` 120; a verdict `unrun` is not kept.
+Each backend's own `facts/tools.json` carries its driver, architecture, runtime-compile, reserved-name and witness members.
 
 ## 6b. The cap on tool processes
 

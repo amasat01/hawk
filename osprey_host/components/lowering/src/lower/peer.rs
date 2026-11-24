@@ -1,14 +1,14 @@
 //! The record that lets several libraries lower one build to the same cut: what a library states of its own decisions
 //! (`record`), how a library that lowers beside it takes them over (`lay_over`, `fusion_row`) and the check that its units are the
 //! units the leader named (`check_cut`).
-use super::card::BuildCard;
+use super::card::BuildNumbers;
 use super::request::KernelRequest;
 use super::unit_meta::{PeerFusion, PeerNumbers, PeerRecord, UnitMeta};
 use crate::facts::FusionRow;
 use aether_writers::refuse::{bad, Refusal};
 
 /// The numbers the steps of a lowering decide on, as a card states them.
-fn numbers_of(card: &BuildCard) -> PeerNumbers {
+fn numbers_of(card: &BuildNumbers) -> PeerNumbers {
     PeerNumbers {
         rolled_fold_min: card.rolled_fold_min,
         linalg_max_dim: card.linalg_max_dim,
@@ -24,8 +24,8 @@ fn numbers_of(card: &BuildCard) -> PeerNumbers {
 
 /// The card a library decides on when it lowers beside a leader: its own card with the leader's numbers over it. The rows of
 /// `steps_reverse` stay the library's own: each states the rows of its target.
-pub(super) fn lay_over(card: BuildCard, peer: &PeerNumbers) -> BuildCard {
-    BuildCard {
+pub(super) fn lay_over(card: BuildNumbers, peer: &PeerNumbers) -> BuildNumbers {
+    BuildNumbers {
         rolled_fold_min: peer.rolled_fold_min,
         linalg_max_dim: peer.linalg_max_dim,
         linalg_team_max_dim: peer.linalg_team_max_dim,
@@ -53,7 +53,7 @@ pub(super) fn fusion_row(row: &PeerFusion) -> FusionRow {
 /// The record a library states of a lowering it has done: the numbers it decided on, the fusion row of a chain (none for another
 /// body), whether its contraction runs directly, the setting keys its target declares, and the names of its units.
 pub(super) fn record(
-    deciding: &BuildCard,
+    deciding: &BuildNumbers,
     fusion: Option<&FusionRow>,
     (direct_contraction, settings): (bool, &[String]),
     units: &[&UnitMeta],

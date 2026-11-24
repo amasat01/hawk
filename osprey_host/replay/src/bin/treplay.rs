@@ -220,7 +220,10 @@ fn find<'a>(json: &'a Json, key: &str) -> Option<&'a Json> {
 /// The machine the recording states for its build (its instruction set, cache sizes and host profile in effect) and the
 /// compiler identity that fits it (GCC when the recording says so, or when it builds the vector math profile on x86): what a
 /// caller building for that machine would pass to the facts entry, so that the rules are what the oracle tests.
-fn recorded_machine(unit: &Unit, contract: &Contract) -> (facts::Stated, &'static str) {
+fn recorded_machine(
+    unit: &Unit,
+    contract: &Contract,
+) -> (osprey_cpu_lib::host_state::Stated, &'static str) {
     let isa = unit.machine.isa.as_ref().map(|isa| match isa {
         Isa::Arm64 => "arm64".to_string(),
         Isa::X86_64 => "x86_64".to_string(),
@@ -228,7 +231,7 @@ fn recorded_machine(unit: &Unit, contract: &Contract) -> (facts::Stated, &'stati
     let host_profile = find(&contract.0, "host_profile").and_then(Json::str);
     let gcc = matches!(find(&contract.0, "arm64_gcc"), Some(Json::Bool(true)))
         || (isa.as_deref() == Some("x86_64") && host_profile.is_some_and(|p| p.contains("vector")));
-    let stated = facts::Stated {
+    let stated = osprey_cpu_lib::host_state::Stated {
         isa,
         vector_isa: find(&contract.0, "vector_isa")
             .and_then(Json::str)
@@ -236,7 +239,6 @@ fn recorded_machine(unit: &Unit, contract: &Contract) -> (facts::Stated, &'stati
         caches: unit.machine.caches.clone(),
         host_profile: host_profile.map(String::from),
         headers: Some("roots".into()),
-        device_arch: None,
         ..Default::default()
     };
     (stated, COMPILER_IDENTITIES[gcc as usize])
@@ -251,7 +253,8 @@ fn facts_machine(unit: &Unit, contract: &Contract) -> Result<Machine, String> {
         dir,
         &osprey_cpu_lib::Cpu,
         compiler,
-        &facts::probe(),
+        &[],
+        &osprey_cpu_lib::host_state::probe(),
         &stated,
     )
     .map_err(String::from)?;

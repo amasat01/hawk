@@ -3,7 +3,7 @@
 //! name across the stages). The IR decisions are the wing's; this module turns each stage into a pending unit and notes what the
 //! answer's stage block says of it.
 use super::active::{self, COUNT_PLANE, MAP_PLANE};
-use super::card::BuildCard;
+use super::card::BuildNumbers;
 use super::meta_fill;
 use super::placed::{interchanged, place_sinks, place_unit};
 use super::request::{DeclaredSlot, KernelRequest, Member, DTYPES, ROLES};
@@ -64,7 +64,7 @@ pub(super) fn split(
 
 /// The warp rows the build may take: those of the card for the build's scalar type when the build has no target but a device (a
 /// host has no warp), none otherwise. The card has already dropped a double row for a device whose FP64 rate is low.
-fn warp_rows(request: &KernelRequest, card: &BuildCard) -> Vec<WarpEntry> {
+fn warp_rows(request: &KernelRequest, card: &BuildNumbers) -> Vec<WarpEntry> {
     let scalar = match request.scalar {
         Scalar::Float32 => "float32",
         Scalar::Float64 => "float64",
@@ -78,7 +78,7 @@ fn warp_rows(request: &KernelRequest, card: &BuildCard) -> Vec<WarpEntry> {
 }
 
 /// What the split reads besides the IR: the request's settings and the deciding card's limits.
-pub(super) fn stage_facts(request: &KernelRequest, card: &BuildCard) -> StageFacts {
+pub(super) fn stage_facts(request: &KernelRequest, card: &BuildNumbers) -> StageFacts {
     StageFacts {
         routed: request.settings.route_to_ordered || request.scalar == Scalar::Banded,
         team: TeamLimits {
@@ -103,7 +103,7 @@ pub(super) fn stage_facts(request: &KernelRequest, card: &BuildCard) -> StageFac
 fn one_unit(
     ctx: *mut Ctx,
     request: &KernelRequest,
-    card: &BuildCard,
+    card: &BuildNumbers,
     mut unit: Pending,
 ) -> Result<Vec<Pending>, Refusal> {
     // A warp per lane is one launch with no stages and no placed value: the slicing already decided where its values live.
@@ -290,7 +290,7 @@ pub(super) fn source_unit(
 fn staged(
     ctx: *mut Ctx,
     request: &KernelRequest,
-    card: &BuildCard,
+    card: &BuildNumbers,
     (unit, cut): (Pending, Cut),
 ) -> Result<Vec<Pending>, Refusal> {
     // SAFETY: `ctx` is the live context the caller holds; it is only read here.

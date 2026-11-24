@@ -1947,6 +1947,23 @@ def run(done, raises, not_run, backends):
     door.copy(pout, pcopy)
     assert copy_to[0] == total[0]
     done.append("reduce and copy: a compensated sum equals fsum, a max, a copy; a shape refused")
+    ties = np.array([[4.0, 2.0, 7.0, 2.0, 7.0]])
+    low, lane = np.zeros(1), np.full(1, -1, dtype=np.int32)
+    pties, plow, plane = (door.plane_wrap(a) for a in (ties, low, lane))
+    door.reduce(pties, plow, o.EG_REDUCE_MIN, o.EG_REDUCE_COMPENSATED, index=plane)
+    assert (low[0], lane[0]) == (2.0, 1), (low, lane)
+    door.reduce(pties, plow, o.EG_REDUCE_MAX, o.EG_REDUCE_COMPENSATED, index=plane)
+    assert (low[0], lane[0]) == (7.0, 2), (low, lane)
+    raises(
+        o.BadRequest,
+        lambda: door.reduce(pties, plow, o.EG_REDUCE_SUM, o.EG_REDUCE_COMPENSATED, index=plane),
+        "reduce: an index with a sum",
+    )
+    flags_in, flag_out = np.array([[0, 0, 1]], dtype=np.bool_), np.zeros(1, dtype=np.bool_)
+    pflags, pflag = door.plane_wrap(flags_in), door.plane_wrap(flag_out)
+    door.reduce(pflags, pflag, o.EG_REDUCE_ANY, o.EG_REDUCE_COMPENSATED)
+    assert flag_out[0]
+    done.append("reduce with index and any: the lowest lane of a tie, a refusal by name, the or of a mask")
     e = raises(o.BadRequest, lambda: door.record_end(), "record_end: not recording")
     refusal_text(door, e)
     e = raises(o.BadRequest, lambda: door.record_cond_end(), "record_cond_end: no conditional open")
@@ -2025,6 +2042,33 @@ def run(done, raises, not_run, backends):
     door.event_free(second)
     raises(ValueError, lambda: door.event_record(first), "an event handle after its free")
     done.append("event_new, event_record, event_wait, event_elapsed, event_free on a host context")
+
+    # ---- scan: the running fold of a plane, numpy as the oracle ----
+    values = np.arange(1, 2051, dtype=np.int32) % 17 - 8
+    result = np.zeros_like(values)
+    source, scanned = door.plane_wrap(values), door.plane_wrap(result)
+    door.scan(source, scanned, o.EG_SCAN_SUM)
+    assert (result == np.cumsum(values, dtype=np.int32)).all()
+    door.scan(source, scanned, o.EG_SCAN_MAX, o.EG_SCAN_EXCLUSIVE)
+    e = raises(o.BadRequest, lambda: door.scan(source, source, o.EG_SCAN_SUM), "scan: out is in")
+    assert "overlaps" in refusal_text(door, e)
+    door.plane_free(source)
+    door.plane_free(scanned)
+    done.append("scan: an inclusive sum equals numpy cumsum, an exclusive maximum runs, out = in is refused by name")
+
+    # ---- compact: the ascending lanes a bool plane keeps, numpy as the oracle ----
+    wanted_mask = np.arange(3000) % 7 == 0
+    compacted = np.full(3000, -1, dtype=np.int32)
+    compact_total = np.zeros(1, dtype=np.uint32)
+    keep_p, kept_p, compact_total_p = door.plane_wrap(wanted_mask), door.plane_wrap(compacted), door.plane_wrap(compact_total)
+    door.compact(keep_p, kept_p, compact_total_p)
+    wanted_ids = np.flatnonzero(wanted_mask)
+    assert compact_total[0] == len(wanted_ids) and (compacted[: compact_total[0]] == wanted_ids).all() and (compacted[compact_total[0] :] == -1).all()
+    e = raises(o.BadRequest, lambda: door.compact(keep_p, keep_p, compact_total_p), "compact: kept is keep")
+    refusal_text(door, e)
+    for handle in (keep_p, kept_p, compact_total_p):
+        door.plane_free(handle)
+    done.append("compact: kept[:count] equals flatnonzero, the tail is untouched, a wrong kept is refused by name")
 
     # ---- the arms of a conditional, by kind ----
     cell = door.plane_wrap(np.zeros(1, dtype=np.int32))

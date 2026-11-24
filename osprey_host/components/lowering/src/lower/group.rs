@@ -309,9 +309,8 @@ mod tests {
     //! lanes over one scratch `t` of 8 doubles, two phases each; `rows` spans the axis `col` of 4 lanes, has no scratch and two phases.
     use super::super::{canonical, lower, typed_walk, Cards, Pending};
     use super::*;
-    use crate::facts::{answer, probe, CardSet, Stated};
+    use crate::facts::CardSet;
     use crate::lower::request::{LaneAxis, Member};
-    use crate::lower::unit_meta::ImageFormat;
     use crate::testing::{load_cards, shipped, TestDevice, TestHost, ALL_CARDS};
     use aether_writers::contract::types::{Scalar, Target};
     use aether_writers::refuse::RefusalKind;
@@ -365,24 +364,10 @@ mod tests {
 
     /// The facts answer of a backend under the shipped cards.
     fn facts_of(target: Target) -> String {
-        let (compiler, stated) = match target {
-            Target::Host => (
-                "/usr/bin/c++ || Apple clang version 21.0.0 || 0",
-                Stated {
-                    headers: Some("roots".into()),
-                    ..Stated::default()
-                },
-            ),
-            Target::Device => (
-                "/usr/local/cuda/bin/nvcc || Cuda compilation tools, release 12.6, V12.6.77 || 0",
-                Stated::default(),
-            ),
-        };
         match target {
-            Target::Host => answer(&shipped(), &TestHost, compiler, &probe(), &stated),
-            Target::Device => answer(&shipped(), &TestDevice, compiler, &probe(), &stated),
+            Target::Host => crate::testing::host_facts(&[]),
+            Target::Device => crate::testing::device_facts(None, &[]),
         }
-        .unwrap()
     }
 
     /// A request for the kernel `name` whose one sink is `group`, over the lane axes `lanes` (label, extent), on `target`.
@@ -397,7 +382,7 @@ mod tests {
         ))
         .unwrap();
         request.targets = vec![target];
-        request.image_format = (target == Target::Device).then_some(ImageFormat::Ptx);
+        request.image_format = (target == Target::Device).then(|| "Blob".to_string());
         request.facts = vec![(target, facts_of(target))];
         request.lane_space = lanes
             .iter()
@@ -434,7 +419,8 @@ mod tests {
             ctx,
             request,
             card: &cards.deciding,
-            image: cards.image.as_ref(),
+            image: cards.target.image(),
+            artifact: cards.artifact.as_deref(),
             pending: &pending,
             walk,
             digest: &digest,

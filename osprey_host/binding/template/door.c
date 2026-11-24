@@ -45,6 +45,8 @@
     X(eg_run_events)                                                                               \
     X(eg_reverse)                                                                                  \
     X(eg_reduce)                                                                                   \
+    X(eg_scan)                                                                                     \
+    X(eg_compact)                                                                                  \
     X(eg_copy)                                                                                     \
     X(eg_record_begin)                                                                             \
     X(eg_record_abort)                                                                             \
@@ -1027,21 +1029,22 @@ static PyObject* m_reverse(PyObject* self, PyObject* args)
 
 /* ---- graph operations and recording -------------------------------------------------------- */
 
-/* reduce(source, out, op, policy, comp=None, flags=0). */
+/* reduce(source, out, op, policy, comp=None, flags=0, index=None): index receives the lane of a min or max. */
 static PyObject* m_reduce(PyObject* self, PyObject* args, PyObject* kw)
 {
-    static char* names[] = { "source", "out", "op", "policy", "comp", "flags", NULL };
+    static char* names[] = { "source", "out", "op", "policy", "comp", "flags", "index", NULL };
     Door* d              = (Door*)self;
-    PyObject *osource, *oout, *ocomp = Py_None;
+    PyObject *osource, *oout, *ocomp = Py_None, *oindex = Py_None;
     int op, policy;
     unsigned int flags = 0;
     if (!PyArg_ParseTupleAndKeywords(
-            args, kw, "OOii|OI", names, &osource, &oout, &op, &policy, &ocomp, &flags)
+            args, kw, "OOii|OIO", names, &osource, &oout, &op, &policy, &ocomp, &flags, &oindex)
         || !door_ready(d))
         return NULL;
-    void *source, *out, *comp;
+    void *source, *out, *comp, *index;
     if (handle_ptr(d, osource, KIND_PLANE, &source) < 0 || handle_ptr(d, oout, KIND_PLANE, &out) < 0
-        || handle_ptr_or_none(d, ocomp, KIND_PLANE, &comp) < 0)
+        || handle_ptr_or_none(d, ocomp, KIND_PLANE, &comp) < 0
+        || handle_ptr_or_none(d, oindex, KIND_PLANE, &index) < 0)
         return NULL;
     struct eg_reduce_desc desc = { .struct_size = sizeof desc,
         .flags                                  = flags,
@@ -1049,8 +1052,46 @@ static PyObject* m_reduce(PyObject* self, PyObject* args, PyObject* kw)
         .out                                    = out,
         .comp                                   = comp,
         .op                                     = op,
-        .policy                                 = policy };
+        .policy                                 = policy,
+        .index                                  = index };
     if (door_check(d, d->fn.eg_reduce(d->ctx, &desc)) < 0)
+        return NULL;
+    Py_RETURN_NONE;
+}
+
+/* scan(source, out, op, flags=0): the running sum, minimum or maximum of source into out. */
+static PyObject* m_scan(PyObject* self, PyObject* args)
+{
+    Door* d = (Door*)self;
+    PyObject *osource, *oout;
+    int op;
+    unsigned int flags = 0;
+    if (!PyArg_ParseTuple(args, "OOi|I", &osource, &oout, &op, &flags) || !door_ready(d))
+        return NULL;
+    void *source, *out;
+    if (handle_ptr(d, osource, KIND_PLANE, &source) < 0 || handle_ptr(d, oout, KIND_PLANE, &out) < 0)
+        return NULL;
+    struct eg_scan_desc desc
+        = { .struct_size = sizeof desc, .flags = flags, .in = source, .out = out, .op = op };
+    if (door_check(d, d->fn.eg_scan(d->ctx, &desc)) < 0)
+        return NULL;
+    Py_RETURN_NONE;
+}
+
+/* compact(keep, kept, count): the ascending lanes a bool plane keeps into kept, and their number into count. */
+static PyObject* m_compact(PyObject* self, PyObject* args)
+{
+    Door* d = (Door*)self;
+    PyObject *okeep, *okept, *ocount;
+    if (!PyArg_ParseTuple(args, "OOO", &okeep, &okept, &ocount) || !door_ready(d))
+        return NULL;
+    void *keep, *kept, *count;
+    if (handle_ptr(d, okeep, KIND_PLANE, &keep) < 0 || handle_ptr(d, okept, KIND_PLANE, &kept) < 0
+        || handle_ptr(d, ocount, KIND_PLANE, &count) < 0)
+        return NULL;
+    struct eg_compact_desc desc
+        = { .struct_size = sizeof desc, .keep = keep, .kept = kept, .count = count };
+    if (door_check(d, d->fn.eg_compact(d->ctx, &desc)) < 0)
         return NULL;
     Py_RETURN_NONE;
 }
@@ -1541,12 +1582,12 @@ static PyObject* m_stream_new(PyObject* self, PyObject* args)
 {
     Door* d = (Door*)self;
     const char* device = NULL;
-    unsigned long long stream = 0;
+    uint64_t stream = 0;
     if (!PyArg_ParseTuple(args, "|z", &device) || !door_ready(d))
         return NULL;
     if (door_check(d, d->fn.eg_stream_new(d->ctx, device, &stream)) < 0)
         return NULL;
-    return PyLong_FromUnsignedLongLong(stream);
+    return PyLong_FromUnsignedLongLong((unsigned long long)stream);
 }
 
 static PyObject* m_stream_free(PyObject* self, PyObject* args)
@@ -2341,6 +2382,8 @@ static PyMethodDef door_methods[] = {
     { "run_events", m_run_events, METH_VARARGS, NULL },
     { "reverse", m_reverse, METH_VARARGS, NULL },
     { "reduce", KEYWORD_CALL(m_reduce), METH_VARARGS | METH_KEYWORDS, NULL },
+    { "scan", m_scan, METH_VARARGS, NULL },
+    { "compact", m_compact, METH_VARARGS, NULL },
     { "copy", m_copy, METH_VARARGS, NULL },
     { "record_begin", m_record_begin, METH_VARARGS, NULL },
     { "record_abort", m_record_abort, METH_VARARGS, NULL },
@@ -2449,6 +2492,11 @@ static PyType_Spec handle_spec    = { "_osprey.Handle", sizeof(Handle), 0,
     X(EG_REDUCE_MAX)                                                                               \
     X(EG_REDUCE_MIN)                                                                               \
     X(EG_REDUCE_ALL)                                                                               \
+    X(EG_REDUCE_ANY)                                                                               \
+    X(EG_SCAN_SUM)                                                                                 \
+    X(EG_SCAN_MIN)                                                                                 \
+    X(EG_SCAN_MAX)                                                                                 \
+    X(EG_SCAN_EXCLUSIVE)                                                                           \
     X(EG_REDUCE_PAIR)                                                                              \
     X(EG_STEPS_REVERSE_PER_STEP)                                                                   \
     X(EG_STEPS_REVERSE_FUSED)                                                                      \
@@ -2495,6 +2543,8 @@ static PyType_Spec handle_spec    = { "_osprey.Handle", sizeof(Handle), 0,
     X(EG_GNODE_BRANCH)                                                                             \
     X(EG_GNODE_JOIN)                                                                               \
     X(EG_GNODE_WAIT)                                                                               \
+    X(EG_GNODE_SCAN)                                                                               \
+    X(EG_GNODE_COMPACT)                                                                            \
     X(EG_GNODE_HOST)                                                                               \
     X(EG_ACCESS_READ)                                                                              \
     X(EG_ACCESS_WRITE)                                                                             \

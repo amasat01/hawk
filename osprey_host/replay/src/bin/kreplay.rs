@@ -333,14 +333,12 @@ fn facts_answer(
     if let Some(found) = cache.get(&key) {
         return Ok(found.clone());
     }
-    let stated = facts::Stated {
+    let stated = osprey_cpu_lib::host_state::Stated {
         isa,
         vector_isa: text(get("vector_isa")).map(String::from),
         caches,
         host_profile: profile,
         headers: Some("roots".into()),
-        device_arch: None,
-        cards: cards.to_vec(),
         ..Default::default()
     };
     let dir = Path::new(osprey_replay::CPU_FACTS);
@@ -348,7 +346,8 @@ fn facts_answer(
         dir,
         &osprey_cpu_lib::Cpu,
         COMPILERS[gcc as usize],
-        &facts::probe(),
+        cards,
+        &osprey_cpu_lib::host_state::probe(),
         &stated,
     )
     .map_err(String::from)?;
@@ -1207,12 +1206,13 @@ fn request_for(
 
 /// The image format the build call compiled its device texts to, as the recorder stored it; a recording made before the recorder
 /// kept the field gets a binary for one architecture.
-fn recorded_image_format(call: &J) -> meta::ImageFormat {
-    match call.get("image_format").and_then(J::str) {
-        Some("ptx") => meta::ImageFormat::Ptx,
-        Some("fatbin") => meta::ImageFormat::Fatbin,
-        _ => meta::ImageFormat::Cubin,
-    }
+fn recorded_image_format(call: &J) -> String {
+    let form = match call.get("image_format").and_then(J::str) {
+        Some("ptx") => "Ptx",
+        Some("fatbin") => "Fatbin",
+        _ => "Cubin",
+    };
+    form.to_string()
 }
 
 /// The cap of an auto step count for a record that holds none (an older recording): hawk's own constant (`AUTO_K_MAX` of its step
@@ -1294,12 +1294,16 @@ fn call_cards(call: &J, device: bool) -> Vec<(String, String)> {
         (
             "cuda.json",
             None,
-            facts::device_fusion(&set).map(|rows| rows.defaults),
+            osprey_cuda_lib::device_facts::device_fusion(&set).map(|rows| rows.defaults),
         )
     } else {
         let (name, record, vector) = host_row_place(call);
         let answer = format!("{{\"isa\":\"{record}\",\"vector_isa\":\"{vector}\"}}");
-        (name, Some(vector), facts::host_fusion(&set, &answer))
+        (
+            name,
+            Some(vector),
+            osprey_cpu_lib::host_facts::host_fusion(&set, &answer),
+        )
     };
     if shipped.as_ref().ok() == Some(&row) {
         return cards;
@@ -1321,7 +1325,7 @@ fn host_row_place(call: &J) -> (&'static str, &'static str, String) {
     let mp = machine
         .and_then(|m| m.get("facts"))
         .and_then(|f| f.get("mp"));
-    let probed = facts::probe();
+    let probed = osprey_cpu_lib::host_state::probe();
     let isa = machine
         .and_then(|m| text(m.get("isa")))
         .unwrap_or(&probed.isa);
@@ -1937,16 +1941,16 @@ fn device_facts(call: &J, cards: &[(String, String)]) -> Result<String, String> 
     let stated =
         text(build_option(call, "device_arch")).or_else(|| text(build_option(call, "arch")));
     let dir = Path::new(osprey_replay::CUDA_FACTS);
-    let machine = facts::Stated {
+    let machine = osprey_cuda_lib::device_state::Stated {
         device_arch: stated.map(String::from),
-        cards: cards.to_vec(),
-        ..facts::Stated::default()
+        ..Default::default()
     };
     facts::answer(
         dir,
         &osprey_cuda_lib::Cuda,
         DEVICE_COMPILER,
-        &facts::probe(),
+        cards,
+        &(),
         &machine,
     )
     .map_err(String::from)

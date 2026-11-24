@@ -15,8 +15,9 @@
 //! flags of a unit (the entities its headers define with external linkage must be identical across the objects of one library)
 //! and one more include root, the door's. The link is `-shared` on both systems, as the old command had it; only the Linux
 //! spelling is unverified here.
-use crate::facts::{closed, member, names_of, text_of, CardSet, Failed, ISA_CARDS};
+use crate::host_facts::ISA_CARDS;
 use aether_writers::contract::Json;
+use osprey_lowering::facts::{closed, member, names_of, text_of, CardSet, Failed};
 
 /// What the facts question states that the commands depend on: the profile in effect, where the headers are, whether the compiler
 /// is GCC, the optimisation level asked for, and for a GCC the release and the verdict of the masked-call witness (none: it did not run).

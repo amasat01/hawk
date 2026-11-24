@@ -30,7 +30,7 @@ fn stated(tk: &Toolkit, ask: &str) -> J {
 #[test]
 fn the_reserved_names_are_read_from_the_preprocessed_headers_of_the_real_compiler() {
     let dir = scratch("reserved");
-    let tk = Toolkit::new(&table(), &[OWN], Env::process()).unwrap();
+    let tk = common::new_toolkit(&table(), &[OWN], Env::process()).unwrap();
     let ask = format!(
         "{{\"root\":\"{}\",\"reserved_names\":{{\"prelude\":\"#include \\\"own.h\\\"\\n\"}}}}",
         dir.display()
@@ -86,7 +86,7 @@ fn witness(name: &str, source: &str, compile_flags: &[&str]) -> String {
 #[test]
 fn the_masked_call_witness_runs_on_the_real_compiler_and_its_verdict_is_kept() {
     let dir = scratch("witness");
-    let tk = Toolkit::new(&table(), &[OWN], Env::process()).unwrap();
+    let tk = common::new_toolkit(&table(), &[OWN], Env::process()).unwrap();
     let flags = ["-O3", "-ffp-contract=fast", "-fno-trapping-math", "-w"];
     let ask = format!(
         "{{\"root\":\"{}\",\"witnesses\":[{},{},{},{}]}}",
@@ -142,7 +142,7 @@ fn the_masked_call_witness_runs_on_the_real_compiler_and_its_verdict_is_kept() {
 #[test]
 fn a_verdict_kept_for_one_witness_text_is_not_read_for_another() {
     let dir = scratch("witness_text");
-    let tk = Toolkit::new(&table(), &[OWN], Env::process()).unwrap();
+    let tk = common::new_toolkit(&table(), &[OWN], Env::process()).unwrap();
     let verdict_of = |source: &str| {
         let ask = format!(
             "{{\"root\":\"{}\",\"witnesses\":[{}]}}",

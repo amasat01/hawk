@@ -7,11 +7,23 @@ use aether_writers::contract::Json;
 use aether_writers::refuse::Refusal;
 use osprey_lowering::backend::{Backend, Renderer};
 use osprey_lowering::door::{table as door_table, OspreyV1};
-use osprey_lowering::facts::{device_machine, CardSet, Failed, Probe, Stated};
-use osprey_lowering::lower::card::{device_build_of, DeviceCard};
+use osprey_lowering::facts::{CardSet, Failed};
+use osprey_lowering::lower::card::TargetCards;
+use osprey_lowering::lower::request::KernelRequest;
 use std::ffi::CStr;
 use std::sync::OnceLock;
 use toolkit::{Env, Toolkit};
+
+pub mod card;
+mod device;
+mod device_build;
+pub mod device_facts;
+pub mod device_state;
+mod figures;
+mod fusion;
+mod image;
+mod local_memory;
+mod unit_build;
 
 /// The table's abi number, read from include/osprey.h by the build script (the one source of it).
 const ABI: u32 = include!(concat!(env!("OUT_DIR"), "/abi.rs"));
@@ -29,13 +41,32 @@ const TOOL_TABLE: &str = include_str!("../facts/tools.json");
 /// What the machine answer says first when the build had no CUDA toolkit and so left the device runtime out.
 const WITHOUT_RUNTIME: &str = "built without the device runtime";
 
+/// `toolkit` with what only this backend states: the device probe of the machine answer and the two grammars that read the
+/// figures of a compile (the assembler's report and the image's own resource records).
+#[must_use]
+pub fn register(toolkit: Toolkit) -> Toolkit {
+    toolkit
+        .with_probe(device::SECTION, device::probe)
+        .with_grammar("ptxas_info", figures::ptxas_info_grammar)
+        .with_grammar("image_resources", figures::image_resources_grammar)
+}
+
 /// The backend of this library.
 #[derive(Default)]
 pub struct Cuda;
 
 impl Backend for Cuda {
+    type Probe = ();
+    type Stated = device_state::Stated;
     fn name(&self) -> &'static CStr {
         c"cuda"
+    }
+    fn target_name(&self) -> &'static str {
+        "cuda"
+    }
+    fn probe(&self) {}
+    fn read_stated(&self, record: &Json) -> Result<device_state::Stated, Failed> {
+        device_state::read_stated(record)
     }
     fn abi(&self) -> u32 {
         ABI
@@ -49,6 +80,15 @@ impl Backend for Cuda {
     fn format(&self) -> &'static str {
         "ptx"
     }
+    fn artifact_form(&self, request: &KernelRequest) -> Result<Option<String>, Refusal> {
+        match image::form_of(request)? {
+            Some(form) => Ok(Some(form.word().to_string())),
+            None if request.targets.contains(&Target::Device) => Err(aether_writers::refuse::bad(
+                "request key image_format: a device target needs one",
+            )),
+            None => Ok(None),
+        }
+    }
     fn card_names(&self) -> &'static [&'static str] {
         &CARDS
     }
@@ -59,13 +99,55 @@ impl Backend for Cuda {
         &self,
         cards: &CardSet,
         compiler: &str,
-        _probe: &Probe,
-        stated: &Stated,
+        _probe: &(),
+        stated: &device_state::Stated,
     ) -> Result<Json, Failed> {
-        device_machine(cards, compiler, stated)
+        device_facts::device_machine(cards, compiler, stated)
     }
-    fn device_card(&self, docs: &CardSet) -> Result<Option<DeviceCard>, Refusal> {
-        device_build_of(docs).map(Some)
+    fn cards(
+        &self,
+        docs: &CardSet,
+        request: &KernelRequest,
+    ) -> Result<Box<dyn TargetCards>, Refusal> {
+        card::DeviceCards::of_request(docs, request)
+            .map(|cards| Box::new(cards) as Box<dyn TargetCards>)
+    }
+    fn opt_levels(&self, cards: &CardSet) -> Result<Vec<String>, Failed> {
+        device_facts::opt_levels(cards)
+    }
+    fn default_opt_level(&self, cards: &CardSet) -> Result<String, Failed> {
+        device_facts::default_opt_level(cards)
+    }
+    fn machine_ask(&self, options: &Json) -> Vec<(String, Json)> {
+        unit_build::machine_ask(options)
+    }
+    fn stated_machine(&self, cards: &CardSet, machine: &Json) -> Result<(String, String), Failed> {
+        unit_build::stated_machine(cards, machine)
+    }
+    fn with_facts_request(
+        &self,
+        own: &Json,
+        answer: &str,
+        parts: &mut Vec<(String, Json)>,
+    ) -> Result<(), Refusal> {
+        unit_build::with_facts_request(self.option_names(), own, answer, parts)
+    }
+    fn build_unit(
+        &self,
+        req: &Json,
+        machine: &Json,
+        root: &std::path::Path,
+    ) -> Result<String, toolkit::Refusal> {
+        unit_build::build_unit(req, machine, root)
+    }
+    fn link(
+        &self,
+        parts: &str,
+        set_text: &str,
+        name: &str,
+        root: &std::path::Path,
+    ) -> Result<String, toolkit::Refusal> {
+        unit_build::link(parts, set_text, name, root)
     }
     fn index_bytes(&self, defines: &[String]) -> Result<Option<i64>, Refusal> {
         osprey_lowering::index_width::of_trees(trees::TREES, defines).map(Some)
@@ -75,19 +157,44 @@ impl Backend for Cuda {
         static TOOLKIT: OnceLock<Result<Toolkit, toolkit::Refusal>> = OnceLock::new();
         TOOLKIT
             .get_or_init(|| {
-                Toolkit::new(TOOL_TABLE, trees::TREES, Env::process()).map(|toolkit| {
-                    if cfg!(device_runtime) {
-                        toolkit
-                    } else {
-                        toolkit.without_runtime(WITHOUT_RUNTIME)
-                    }
-                })
+                Toolkit::new(TOOL_TABLE, trees::TREES, Env::process())
+                    .map(register)
+                    .map(|toolkit| {
+                        if cfg!(device_runtime) {
+                            toolkit
+                        } else {
+                            toolkit.without_runtime(WITHOUT_RUNTIME)
+                        }
+                    })
             })
             .as_ref()
             .map_err(Clone::clone)
     }
     fn render(&self) -> Renderer {
         aether_writers::cuda_render
+    }
+}
+
+/// The shipped documents of the library, for the tests that read what they state.
+#[cfg(test)]
+mod testing {
+    use std::path::{Path, PathBuf};
+
+    /// Every document a caller may replace.
+    pub const ALL_CARDS: &[&str] = &super::CARDS;
+
+    /// The folder of the shipped documents.
+    pub fn shipped() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("facts")
+    }
+
+    /// The text of the shipped document `name`, kept for the life of the process.
+    pub fn text(name: &str) -> &'static str {
+        Box::leak(
+            std::fs::read_to_string(shipped().join(name))
+                .unwrap()
+                .into_boxed_str(),
+        )
     }
 }
 

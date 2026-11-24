@@ -1,0 +1,1 @@
+{"tools": {}, "limits": {"jobs": {"env": "HAWK_COMPILE_JOBS", "default": 2}}}

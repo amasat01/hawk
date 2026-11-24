@@ -1,4 +1,4 @@
-//! The argv the build instructions of the host facts fill to, against argv written out by hand.
+//! The argv the build instructions of a unit template card fill to, against argv written out by hand.
 use super::*;
 use crate::discover::Env;
 use crate::headers::HeaderTree;
@@ -21,11 +21,15 @@ const EAGLE: HeaderTree = HeaderTree {
     files: &[("c.h", b"")],
 };
 
-/// The members of `facts/host_build.json` a template is made of, read from the file.
+/// The members of a unit template card a template is made of, read from the fixture `tests/data/unit_template_card.json` (the shape
+/// of a backend's build card, as the toolkit fills it).
 fn card() -> J {
-    let path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../osprey_cpu/facts/host_build.json");
-    wire::parse("host_build.json", &fs::read_to_string(path).unwrap()).unwrap()
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/unit_template_card.json");
+    wire::parse(
+        "unit_template_card.json",
+        &fs::read_to_string(path).unwrap(),
+    )
+    .unwrap()
 }
 
 /// A member of the card that is a list of texts.
@@ -96,7 +100,7 @@ fn strings(parts: &[&str]) -> Vec<String> {
 fn a_served_unit_template_fills_to_the_hand_written_argv() {
     let root = std::env::temp_dir().join(format!("toolkit-argv-a-{}", std::process::id()));
     let tk = toolkit(&[FACTS, SERVED]);
-    let template = unit_template(&card(), "served", &["-mcpu=native"]);
+    let template = unit_template(&card(), "served", &["-mnative-flag"]);
     let argv = tk
         .argv_of(
             &job(&template, &["-g"]),
@@ -114,7 +118,7 @@ fn a_served_unit_template_fills_to_the_hand_written_argv() {
         "-O3",
         "-ffp-contract=fast",
         "-fno-math-errno",
-        "-mcpu=native",
+        "-mnative-flag",
         "-std=c++23",
         "-fPIC",
         "-DAETHER_CPP_MODE",
@@ -137,7 +141,7 @@ fn a_served_unit_template_fills_to_the_hand_written_argv() {
 fn a_roots_unit_template_puts_both_roots_before_the_defines_and_the_facts_include() {
     let root = std::env::temp_dir().join(format!("toolkit-argv-b-{}", std::process::id()));
     let tk = toolkit(&[FACTS, AETHER, EAGLE]);
-    let template = unit_template(&card(), "roots", &["-mcpu=native"]);
+    let template = unit_template(&card(), "roots", &["-mnative-flag"]);
     let argv = tk
         .argv_of(
             &job(&template, &[]),
@@ -152,7 +156,7 @@ fn a_roots_unit_template_puts_both_roots_before_the_defines_and_the_facts_includ
         "-O3",
         "-ffp-contract=fast",
         "-fno-math-errno",
-        "-mcpu=native",
+        "-mnative-flag",
         "-std=c++23",
         "-fPIC",
         "-DAETHER_CPP_MODE",

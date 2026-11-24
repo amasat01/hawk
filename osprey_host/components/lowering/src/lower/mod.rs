@@ -1,7 +1,7 @@
 //! The lowering: one request per kernel in, the units the kernel lowers to out. The caller's kernel is already in the context as
 //! IR nodes; the request names its sinks and states what the IR cannot (kind, scalar, settings, the facts answer). The lowering
 //! takes the canonical walk, reads the walk's arguments back, builds the writers' unit with the numbers of the target's card
-//! (`build.json` for the host, `cuda_build.json` for the device) and renders it. This module holds no code of the host library's table, so a second backend library can link it.
+//! (the build card each backend ships) and renders it. This module holds no code of the host library's table, so a second backend library can link it.
 //!
 //! Written so far: the plain kernel, a segmented or placed one, an active set, two paths, split stages with their team stages, a
 //! chain of kernels (cut where the fusion rule of the build's target says) and fused lanes, for the host and the device target.
@@ -45,7 +45,6 @@ use aether_writers::RxCtx;
 use crate::backend::{unserved, Backend, Renderer};
 use crate::facts::CardSet;
 use aether_writers::unit::extent_name;
-use card::{BuildCard, DeviceCard};
 use raptor_ir::canon::{Tt, WalkRes};
 use raptor_ir::record::{Ctx, Fault};
 use raptor_ir::value::{text_val, Val};
@@ -201,24 +200,20 @@ const STEPS: [Step; 5] = [
     active::set,
 ];
 
-/// The cards a request is lowered with: the backend's own card for the target it serves, and the numbers the steps decide on (the
-/// device card's when the request has a device target, else the host card's).
+/// The cards a request is lowered with: what the backend answers for the target it serves, and the numbers the steps decide on.
 pub(crate) struct Cards {
-    /// The host build card, held by a backend that serves the host.
-    host: Option<BuildCard>,
-    /// The device build card, held by a backend that serves the device.
-    device: Option<DeviceCard>,
+    /// The backend's answers for the request.
+    target: Box<dyn card::TargetCards>,
+    /// The kind of target the backend serves.
+    served: Target,
+    /// The name the backend gives its target in answers and refusals.
+    served_name: &'static str,
+    /// The form of the artifact the backend builds for the request, in the backend's own word.
+    artifact: Option<String>,
     /// The writer of the backend, which renders every unit of the request.
     render: Renderer,
-    /// The card the steps decide on.
-    deciding: BuildCard,
-    /// The command that makes the device image, when the request names the device.
-    image: Option<image::DeviceImage>,
-    /// The build settings the library's target declares.
-    settings: Vec<String>,
-    /// The name of the device card's wide class for the architecture the request's device facts state, whose thresholds place the
-    /// kernel's wide values; none when the request has no device target.
-    wide_class: Option<String>,
+    /// The numbers the steps decide on: the backend's, laid over by the leader's when the library lowers beside one.
+    deciding: card::BuildNumbers,
 }
 
 impl Cards {
@@ -228,67 +223,35 @@ impl Cards {
         request: &KernelRequest,
         docs: &CardSet,
     ) -> Result<Cards, Refusal> {
-        let host = backend.host_card(docs)?;
-        let device = backend.device_card(docs)?;
-        if let (Some(device), Some(bounds)) = (&device, request.settings.launch_bounds) {
-            device.check_launch_bounds(bounds)?;
-        }
-        if let Some(device) = &device {
-            device.check_block_settings(request.settings.warps, request.settings.team_threads)?;
-        }
-        let (deciding, wide_class) = match (&device, &host) {
-            (Some(device), _) => {
-                let arch = device_arch(request)?;
-                (
-                    device.deciding(&arch)?,
-                    Some(device.wide_class(&arch)?.name.clone()),
-                )
-            }
-            (None, Some(host)) => (host.clone(), None),
-            (None, None) => return Err(fault("the backend holds no build card")),
-        };
+        let artifact = backend.artifact_form(request)?;
+        let target = backend.cards(docs, request)?;
         let deciding = match &request.peer {
-            Some((_, leader)) => peer::lay_over(deciding, &leader.numbers),
-            None => deciding,
-        };
-        let image = match request.image_format {
-            Some(format) if device.is_some() => {
-                Some(image::DeviceImage::of_request(request, format)?)
-            }
-            _ => None,
-        };
-        let settings = match (&device, &host) {
-            (Some(device), _) => device.settings.clone(),
-            (None, Some(host)) => host.settings.clone(),
-            (None, None) => vec![],
+            Some((_, leader)) => peer::lay_over(target.deciding().clone(), &leader.numbers),
+            None => target.deciding().clone(),
         };
         Ok(Cards {
-            host,
-            device,
+            target,
+            served: backend.target(),
+            served_name: backend.target_name(),
+            artifact,
             render: backend.render(),
-            settings,
             deciding,
-            image,
-            wide_class,
         })
     }
 
-    /// How the device card runs a dense contraction of the request's scalar type; `Gemm` for a request without a device target.
+    /// How the card runs a dense contraction of the request's scalar type; the plan's own choice when the card states none: the
+    /// leader's, else `Gemm`.
     fn contraction_route(
         &self,
         request: &KernelRequest,
     ) -> Result<card::ContractionRoute, Refusal> {
-        let Some(device) = &self.device else {
-            return Ok(match &request.peer {
+        Ok(self
+            .target
+            .contraction_route(request.scalar)
+            .unwrap_or(match &request.peer {
                 Some((_, leader)) if leader.direct_contraction => card::ContractionRoute::Direct,
                 _ => card::ContractionRoute::Gemm,
-            });
-        };
-        let scalar = match request.scalar {
-            Scalar::Float32 => "float32",
-            _ => "float64",
-        };
-        Ok(device.contraction_route(&device_arch(request)?, scalar))
+            }))
     }
 
     /// Refuses a build setting the request states that neither the library's target declares nor, for a library that lowers beside
@@ -305,71 +268,33 @@ impl Cards {
         };
         match stated
             .iter()
-            .find(|(key, _)| !self.settings.contains(key) && !leader_declares(key))
+            .find(|(key, _)| !self.target.settings().contains(key) && !leader_declares(key))
         {
             Some((key, _)) => Err(bad(format!(
                 "build settings key {key:?} is declared by none of the targets {:?}: the target's card names the setting keys it accepts",
-                request.targets.iter().map(|t| crate::backend::target_name(*t)).collect::<Vec<_>>()
+                request.targets.iter().map(|_| self.served_name).collect::<Vec<_>>()
             ))),
             None => Ok(()),
         }
     }
 
-    /// The measured `steps_reverse` rows of the target this library serves: the key of the other target is empty.
-    fn steps_reverse(&self) -> unit_meta::StepsPair {
-        unit_meta::StepsPair {
-            host: self
-                .host
-                .as_ref()
-                .and_then(|host| host.steps_reverse.clone()),
-            device: self
-                .device
-                .as_ref()
-                .map(|device| device.steps_reverse.clone()),
-        }
-    }
-
-    /// What a dispatch of the device costs for the request's architecture and scalar type; none for a library that serves no
-    /// device.
-    fn dispatch_costs(
-        &self,
-        request: &KernelRequest,
-        docs: &CardSet,
-    ) -> Result<Option<unit_meta::DispatchCosts>, Refusal> {
-        if self.device.is_none() {
-            return Ok(None);
-        }
-        let row = chain::device_row(&device_arch(request)?, request.scalar, docs)?;
-        Ok(Some(unit_meta::DispatchCosts {
-            launch_us: row.launch_us,
-            plane_us_per_byte: row.plane_us_per_byte,
-            local_over_plane: row.local_over_plane,
-        }))
-    }
-
     /// The build numbers of a target's card, before the caller's settings are laid over them.
     fn numbers(&self, target: Target) -> Result<Build, Refusal> {
-        match (target, &self.device) {
-            (Target::Host, _) => self
-                .host
-                .as_ref()
-                .map(BuildCard::build)
-                .ok_or_else(|| fault("a host target without its card")),
-            (Target::Device, Some(device)) => Ok(device.build()),
-            (Target::Device, None) => Err(fault("a device target without its card")),
-        }
+        self.served_by_cards(target)?;
+        Ok(self.target.numbers())
     }
 
     /// The thread box lanes the card of a target holds, by scalar type name.
     fn box_lanes(&self, target: Target) -> Result<&[(String, i64)], Refusal> {
-        match (target, &self.device) {
-            (Target::Host, _) => self
-                .host
-                .as_ref()
-                .map(|host| host.box_lanes.as_slice())
-                .ok_or_else(|| fault("a host target without its card")),
-            (Target::Device, Some(device)) => Ok(&device.box_lanes),
-            (Target::Device, None) => Err(fault("a device target without its card")),
+        self.served_by_cards(target)?;
+        Ok(self.target.box_lanes())
+    }
+
+    /// Refuses a target this library's cards are not for.
+    fn served_by_cards(&self, target: Target) -> Result<(), Refusal> {
+        match target == self.served {
+            true => Ok(()),
+            false => Err(fault(format!("a {target:?} target without its card"))),
         }
     }
 }
@@ -393,16 +318,6 @@ fn facts_under_cards(answers: &[(Target, String)], docs: &CardSet) -> Result<(),
         }
     }
     Ok(())
-}
-
-/// The architecture the device facts answer of the request states.
-pub(super) fn device_arch(request: &KernelRequest) -> Result<String, Refusal> {
-    let machine = Contract::parse(request.facts_for(Target::Device)?)?.0;
-    machine
-        .get("device_arch")
-        .and_then(aether_writers::contract::Json::str)
-        .map(String::from)
-        .ok_or_else(|| bad("the device facts answer names no architecture"))
 }
 
 /// Refuses a refine unit over a stop rule that cannot be refined.
@@ -439,21 +354,21 @@ pub fn lower<B: Backend>(
     peer::check_cut(&request, &metas)?;
     let meta_source = meta_c::source(&library, &metas)?;
     let fusion = match request.body {
-        Body::Chain(_) => Some(chain::fusion_row(&request, docs)?),
+        Body::Chain(_) => Some(chain::fusion_row(&request, cards.target.as_ref(), docs)?),
         _ => None,
     };
     let direct = cards.contraction_route(&request)? == card::ContractionRoute::Direct;
     let peer = peer::record(
         &cards.deciding,
         fusion.as_ref(),
-        (direct, &cards.settings),
+        (direct, cards.target.settings()),
         &metas,
     );
     Ok(KernelAnswer {
         working_set_bytes: working_set(ctx, &request, &cards)?,
-        wide_class: cards.wide_class.clone(),
-        steps_reverse: cards.steps_reverse(),
-        dispatch_costs: cards.dispatch_costs(&request, docs)?,
+        wide_class: cards.target.wide_class().map(String::from),
+        steps_reverse: cards.target.steps_reverse(),
+        dispatch_costs: cards.target.dispatch_costs(&request, docs)?,
         index_bytes: backend.index_bytes(&[])?,
         peer: Some(peer),
         units,
@@ -465,7 +380,7 @@ pub fn lower<B: Backend>(
 /// Refuses a request that names a target the backend does not serve, naming the target and the library.
 fn serves_all<B: Backend>(backend: &B, request: &KernelRequest) -> Result<(), Refusal> {
     match request.targets.iter().find(|t| **t != backend.target()) {
-        Some(other) => Err(unserved(backend, crate::backend::target_name(*other))),
+        Some(other) => Err(unserved(backend, request::target_word(*other))),
         None => Ok(()),
     }
 }
@@ -606,7 +521,9 @@ fn kernel_units(
     group::refuse_unwritten(ctx, request)?;
     let mut pending = match &request.body {
         Body::Plain(member) => vec![Pending::of(member, request.one_step.as_ref())],
-        Body::Chain(members) => chain::expand(ctx, request, members, docs)?,
+        Body::Chain(members) => {
+            chain::expand(ctx, request, members, (cards.target.as_ref(), docs))?
+        }
         Body::Fused(lanes) => vec![fused::expand(ctx, lanes, &request.name)?],
     };
     for unit in &mut pending {
@@ -680,7 +597,8 @@ fn write(
         ctx,
         request,
         card: &cards.deciding,
-        image: cards.image.as_ref(),
+        image: cards.target.image(),
+        artifact: cards.artifact.as_deref(),
         pending: &pending,
         walk,
         digest: &digest,
@@ -695,7 +613,10 @@ fn write(
     Ok(UnitAnswer {
         texts,
         meta,
-        defines,
+        defines: defines
+            .into_iter()
+            .map(|(_, define)| (cards.served_name.to_string(), define))
+            .collect(),
         contraction,
     })
 }
@@ -835,7 +756,7 @@ fn scope(request: &KernelRequest) -> Result<(), Refusal> {
     }
     if request.scalar == Scalar::Banded && request.build_has(Target::Host) {
         return Err(bad(format!(
-            "{:?}: banded runs on device execution paths; on a CPU use float64 (target 'host' is not a device)",
+            "{:?}: banded runs on device execution paths; on the host use float64 (target 'host' is not a device)",
             request.name
         )));
     }
@@ -1114,7 +1035,7 @@ mod tests {
     //! The scalar width has one answer, a merge that would drop something is refused by name, and the fast-entry setting becomes
     //! the macro of the texts that gate on it.
     use super::*;
-    use crate::facts::{answer, probe, Stated};
+
     use crate::testing::{TestDevice, TestHost};
 
     #[test]
@@ -1134,95 +1055,27 @@ mod tests {
         crate::testing::shipped()
     }
 
-    /// The shipped build card with the lean width changed to 64, as a stated document.
+    /// A document of the fixture stated in place of the shipped one, with a number of its own.
     fn lean_card() -> Vec<(String, String)> {
-        let text = std::fs::read_to_string(shipped().join("build.json")).unwrap();
-        vec![(
-            "build.json".into(),
-            text.replace("\"lean_width\": 4", "\"lean_width\": 64"),
-        )]
+        vec![("numbers.json".into(), "{\"lean_width\": 64}".into())]
     }
 
     /// The device facts answer made under the cards `stated`.
     fn device_facts(stated: &[(String, String)]) -> String {
-        let machine = Stated {
-            cards: stated.to_vec(),
-            ..Stated::default()
+        crate::testing::device_facts(None, stated)
+    }
+
+    #[test]
+    fn a_request_for_the_other_kind_is_refused_naming_both_kinds_in_the_words_of_a_request() {
+        let request = KernelRequest {
+            targets: vec![Target::Device],
+            ..plain_request()
         };
-        let compiler =
-            "/usr/local/cuda/bin/nvcc || Cuda compilation tools, release 12.6, V12.6.77 || 0";
-        answer(
-            &shipped(),
-            &crate::testing::TestDevice,
-            compiler,
-            &probe(),
-            &machine,
-        )
-        .unwrap()
-    }
-
-    /// The device build card the cards state, with `old` of the shipped text replaced by `new`.
-    fn device_card_with(old: &str, new: &str) -> DeviceCard {
-        let text = std::fs::read_to_string(shipped().join("cuda_build.json")).unwrap();
-        assert!(text.contains(old), "the shipped card holds {old}");
-        let stated = [("cuda_build.json".to_string(), text.replacen(old, new, 1))];
-        let docs = CardSet::new(&shipped(), &stated, crate::testing::ALL_CARDS);
-        card::device_build(&docs.text("cuda_build.json").unwrap()).unwrap()
-    }
-
-    /// Oracle: a launch needs threads a multiple of the warp size (32) and threads times blocks at most the resident threads of
-    /// a multiprocessor, which the shipped card states as 2048; the same bounds are refused once the card states 1024.
-    #[test]
-    fn the_resident_threads_of_the_device_card_decide_which_launch_bounds_are_refused() {
-        let shipped_card = device_card_with("\"warp_size\": 32", "\"warp_size\": 32");
-        let small = device_card_with(
-            "\"max_threads_per_sm\": 2048",
-            "\"max_threads_per_sm\": 1024",
+        let why = serves_all(&TestHost, &request).unwrap_err();
+        assert_eq!(
+            why.reason,
+            "the library test_host serves the target host, not Device"
         );
-        assert!(shipped_card.check_launch_bounds((128, 16)).is_ok());
-        assert!(small.check_launch_bounds((128, 16)).is_err());
-        assert!(small.check_launch_bounds((128, 8)).is_ok());
-        for bad_bounds in [(100, 1), (16, 1), (128, 17), (2048, 1)] {
-            let why = shipped_card.check_launch_bounds(bad_bounds).unwrap_err();
-            assert!(why.reason.contains("launch_bounds"), "{}", why.reason);
-        }
-    }
-
-    /// Oracle: a block holds at most the threads the shipped card states (1024) of 32 lanes a warp, so 32 warps are the most and a
-    /// team of 2048 threads is refused; the same card stating 512 refuses 17 warps.
-    #[test]
-    fn the_threads_of_a_block_of_the_device_card_decide_which_block_settings_are_refused() {
-        let shipped_card = device_card_with("\"warp_size\": 32", "\"warp_size\": 32");
-        assert!(shipped_card.check_block_settings(32, 1024).is_ok());
-        assert!(shipped_card.check_block_settings(0, 0).is_err());
-        assert!(shipped_card.check_block_settings(33, 0).is_err());
-        assert!(shipped_card.check_block_settings(4, 2048).is_err());
-        let small = device_card_with(
-            "\"max_threads_per_block\": 1024",
-            "\"max_threads_per_block\": 512",
-        );
-        assert!(small.check_block_settings(16, 512).is_ok());
-        let why = small.check_block_settings(17, 0).unwrap_err();
-        assert!(why.reason.contains("warps 17"), "{}", why.reason);
-    }
-
-    /// Oracle: a card without the matrix dimension a thread holds is refused by the name of the number, never read as zero.
-    #[test]
-    fn a_device_card_without_the_linalg_dimension_is_refused_by_name() {
-        let text = std::fs::read_to_string(shipped().join("cuda_build.json")).unwrap();
-        assert!(text.contains("\"linalg_max_dim\": 32,"));
-        let why = card::device_build(&text.replacen("\"linalg_max_dim\": 32,", "", 1)).unwrap_err();
-        assert!(why.reason.contains("linalg_max_dim"), "{}", why.reason);
-    }
-
-    /// Oracle: the shipped build card states a lean width of 4.
-    #[test]
-    fn a_build_card_stated_in_the_request_replaces_the_file_for_that_request() {
-        let kept = CardSet::new(&shipped(), &[], crate::testing::ALL_CARDS);
-        let stated = CardSet::new(&shipped(), &lean_card(), crate::testing::ALL_CARDS);
-        let host = |docs: &CardSet| card::host_build(&docs.text("build.json").unwrap()).unwrap();
-        assert_eq!(host(&kept).lean_width, 4);
-        assert_eq!(host(&stated).lean_width, 64);
     }
 
     #[test]
@@ -1243,29 +1096,11 @@ mod tests {
         assert!(facts_under_cards(&hand_written, &lean).is_err());
     }
 
-    /// A request cannot reach the lowering with a device document its facts call refused: the answer a request needs carries the
-    /// digest of the request's cards, and the facts call states none for a document it does not accept.
+    /// A request cannot reach the lowering with answers made under other cards than its own: the answer a request needs carries the
+    /// digest of the request's cards, and an answer made under none is refused for a request that states some.
     #[test]
-    fn a_stated_document_the_facts_call_refuses_has_no_answer_to_lower_under() {
-        let text = std::fs::read_to_string(shipped().join("cuda.json")).unwrap();
-        let broken = [(
-            "cuda.json".to_string(),
-            format!("{{\"nonsense\": 1,{}", &text[1..]),
-        )];
-        let machine = Stated {
-            cards: broken.to_vec(),
-            ..Stated::default()
-        };
-        let compiler =
-            "/usr/local/cuda/bin/nvcc || Cuda compilation tools, release 12.6, V12.6.77 || 0";
-        assert!(answer(
-            &shipped(),
-            &crate::testing::TestDevice,
-            compiler,
-            &probe(),
-            &machine
-        )
-        .is_err());
+    fn an_answer_made_under_no_cards_is_refused_for_a_request_that_states_some() {
+        let broken = [("fusion.json".to_string(), "{\"nonsense\": 1}".to_string())];
         let plain = [(Target::Device, device_facts(&[]))];
         let why = facts_under_cards(
             &plain,
@@ -1278,10 +1113,10 @@ mod tests {
     /// Oracle: a stated copy of the shipped file has the digest of the text it states, which differs from that of another text.
     #[test]
     fn the_digest_is_none_without_stated_cards_and_follows_the_stated_text_with_them() {
-        let text = std::fs::read_to_string(shipped().join("cuda.json")).unwrap();
+        let text = std::fs::read_to_string(shipped().join("fusion.json")).unwrap();
         let same = CardSet::new(
             &shipped(),
-            &[("cuda.json".into(), text)],
+            &[("fusion.json".into(), text)],
             crate::testing::ALL_CARDS,
         );
         assert_eq!(
@@ -1299,7 +1134,7 @@ mod tests {
             shipped_text
         );
     }
-    use crate::lower::unit_meta::{ImageFormat, SlotRole};
+    use crate::lower::unit_meta::SlotRole;
     use aether_writers::contract::types::Role;
     use aether_writers::refuse::RefusalKind;
     use raptor_ir::door::{rx_ctx_free, rx_ctx_new, RX_OK};
@@ -1358,19 +1193,6 @@ mod tests {
         assert_eq!(checked, 15);
     }
 
-    /// The cards the shipped files give, plus a second wide class measured on capability 70 (a copy of the shipped class's
-    /// thresholds), as the old tests of the class choice stated it: `sm_61` and `sm_75` are nearest the shipped class, `sm_80` is
-    /// nearest the class of capability 70.
-    fn two_class_cards() -> Vec<(String, String)> {
-        let text = std::fs::read_to_string(shipped().join("cuda_build.json")).unwrap();
-        let first = "\"wide_classes\": {";
-        assert!(text.contains(first), "the shipped card holds {first}");
-        let second = format!(
-            "{first}\"fake70\": {{\"capability\": 70, \"runtime_min\": {{\"read\": {{\"4\": 16, \"8\": 2}}, \"slot_read\": {{\"4\": 16, \"8\": 4}}, \"rotate\": {{\"4\": 16, \"8\": 0}}, \"write\": {{\"4\": 96, \"8\": 8}}, \"accum\": {{\"4\": 4096, \"8\": 4096}}}}, \"wide_min\": {{\"4\": 128, \"8\": 64}}}},"
-        );
-        vec![("cuda_build.json".into(), text.replacen(first, &second, 1))]
-    }
-
     /// A request for the device whose facts answer states `device_facts`.
     fn device_request(device_facts: String) -> KernelRequest {
         KernelRequest {
@@ -1382,49 +1204,7 @@ mod tests {
 
     /// The device facts answer for a stated architecture (none: the card's default), under the cards `stated`.
     fn facts_of_arch(arch: Option<&str>, stated: &[(String, String)]) -> String {
-        let machine = Stated {
-            cards: stated.to_vec(),
-            device_arch: arch.map(String::from),
-            ..Stated::default()
-        };
-        let compiler =
-            "/usr/local/cuda/bin/nvcc || Cuda compilation tools, release 12.6, V12.6.77 || 0";
-        answer(
-            &shipped(),
-            &crate::testing::TestDevice,
-            compiler,
-            &probe(),
-            &machine,
-        )
-        .unwrap()
-    }
-
-    /// Oracle: the old tests of the class choice (`test_build_cards.py`): with a class measured on capability 70 beside the shipped
-    /// one, sm_61 is its own class, sm_75 (FP64 1:32, 1024 threads) is one step from Pascal and sm_80 (1:2, 2048 threads) is nearest
-    /// the class of capability 70.
-    #[test]
-    fn the_answer_names_the_wide_class_nearest_the_architecture_of_the_device_facts() {
-        let stated = two_class_cards();
-        let docs = CardSet::new(&shipped(), &stated, crate::testing::ALL_CARDS);
-        for (arch, class) in [("sm_61", "sm61"), ("sm_75", "sm61"), ("sm_80", "fake70")] {
-            let request = device_request(facts_of_arch(Some(arch), &stated));
-            let cards = crate::testing::load_cards(&request, &docs).unwrap();
-            assert_eq!(cards.wide_class.as_deref(), Some(class), "{arch}");
-        }
-    }
-
-    /// Oracle: the old device card's `default_arch` is `sm_61` (a fact of the card the library applies when the caller states none),
-    /// so the class of the default is the shipped one.
-    #[test]
-    fn a_device_request_that_states_no_architecture_takes_the_class_of_the_cards_default() {
-        let stated = two_class_cards();
-        let request = device_request(facts_of_arch(None, &stated));
-        let cards = crate::testing::load_cards(
-            &request,
-            &CardSet::new(&shipped(), &stated, crate::testing::ALL_CARDS),
-        )
-        .unwrap();
-        assert_eq!(cards.wide_class.as_deref(), Some("sm61"));
+        crate::testing::device_facts(arch, stated)
     }
 
     /// The warp rows a request's split may take, for the scalar type, targets and architecture the request states.
@@ -1452,17 +1232,17 @@ mod tests {
     }
 
     /// Oracle: the old rule of the warp form (the removed hawk test): a float32 build takes the row on any device; a float64 build
-    /// only where FP64 is fast: sm_80 and sm_90 yes, sm_61, sm_89 and no stated architecture (which is sm_61) no; a build with a
+    /// only where the double rate is fast: the `fast` words yes, the `slow` words and no stated architecture no; a build with a
     /// host target has no warp.
     #[test]
     fn a_double_build_takes_the_warp_row_only_where_fp64_is_fast_and_a_host_target_takes_none() {
         let row = |scalar: &str| vec![(32, scalar.to_string())];
         for (arch, double) in [
-            (Some("sm_61"), false),
-            (Some("sm_89"), false),
+            (Some("slow_a"), false),
+            (Some("slow_b"), false),
             (None, false),
-            (Some("sm_80"), true),
-            (Some("sm_90"), true),
+            (Some("fast_a"), true),
+            (Some("fast_b"), true),
         ] {
             let rows = warp_rows_of(Scalar::Float64, vec![Target::Device], arch);
             assert_eq!(
@@ -1474,27 +1254,11 @@ mod tests {
             assert_eq!(rows, row("float32"), "{arch:?}");
         }
         for targets in [vec![Target::Host], vec![Target::Device, Target::Host]] {
-            assert_eq!(warp_rows_of(Scalar::Float32, targets, Some("sm_80")), []);
+            assert_eq!(warp_rows_of(Scalar::Float32, targets, Some("fast_a")), []);
         }
         assert_eq!(
-            warp_rows_of(Scalar::Banded, vec![Target::Device], Some("sm_80")),
+            warp_rows_of(Scalar::Banded, vec![Target::Device], Some("fast_a")),
             []
-        );
-    }
-
-    #[test]
-    fn a_device_facts_answer_naming_an_unknown_architecture_is_refused_by_name() {
-        let request = device_request(r#"{"device_arch": "cuda"}"#.into());
-        let Err(why) = crate::testing::load_cards(
-            &request,
-            &CardSet::new(&shipped(), &[], crate::testing::ALL_CARDS),
-        ) else {
-            panic!("an architecture that is not one was taken");
-        };
-        assert!(
-            why.reason.contains("is not a device architecture"),
-            "{}",
-            why.reason
         );
     }
 
@@ -1505,7 +1269,7 @@ mod tests {
             &CardSet::new(&shipped(), &[], crate::testing::ALL_CARDS),
         )
         .unwrap();
-        assert_eq!(cards.wide_class, None);
+        assert_eq!(cards.target.wide_class(), None);
     }
 
     /// A host request with no body of its own, the caller's settings all at their defaults.
@@ -1558,7 +1322,7 @@ mod tests {
             let why = scope(&scalar_request(Scalar::Banded, targets)).unwrap_err();
             assert_eq!(
                 why.reason,
-                "\"k\": banded runs on device execution paths; on a CPU use float64 (target 'host' is not a device)"
+                "\"k\": banded runs on device execution paths; on the host use float64 (target 'host' is not a device)"
             );
         }
     }
@@ -1621,18 +1385,7 @@ mod tests {
             )
         };
         assert_eq!(status, RX_OK);
-        let machine = Stated {
-            headers: Some("roots".into()),
-            ..Stated::default()
-        };
-        let facts = answer(
-            &shipped(),
-            &crate::testing::TestHost,
-            "/usr/bin/c++ || Apple clang version 21.0.0 || 0",
-            &probe(),
-            &machine,
-        )
-        .unwrap();
+        let facts = crate::testing::host_facts(&[]);
         let mut request = plain_request();
         request.facts = vec![(Target::Host, facts)];
         request.body = Body::Plain(Member {
@@ -1703,7 +1456,7 @@ mod tests {
                 .unwrap();
             let mut request = scalar_request(Scalar::Banded, vec![Target::Device]);
             request.facts = vec![(Target::Device, facts_of_arch(None, &[]))];
-            request.image_format = Some(ImageFormat::Ptx);
+            request.image_format = Some("Blob".into());
             request.settings.route_to_ordered = route;
             request.body = Body::Plain(Member {
                 sinks: vec![out],
@@ -1715,7 +1468,7 @@ mod tests {
             answer.unwrap().to_json()
         };
         assert_eq!(banded(false), banded(true));
-        let card = card::host_build(crate::testing::text("build.json")).unwrap();
+        let card = card::TargetCards::deciding(&crate::testing::FixtureCards::host()).clone();
         for (scalar, route, routed) in [
             (Scalar::Float64, false, false),
             (Scalar::Float64, true, true),

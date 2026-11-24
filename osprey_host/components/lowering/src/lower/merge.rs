@@ -1,8 +1,9 @@
 //! The merge of the answers of the libraries of one build: each library lowered the kernel for its own target, and the merge
 //! returns the one answer a single library serving every target would have given.
 use super::meta_c;
-use super::request::{KernelAnswer, UnitAnswer, TARGETS};
+use super::request::{KernelAnswer, UnitAnswer};
 use super::unit_meta::UnitMeta;
+use aether_writers::contract::types::Target;
 use aether_writers::contract::Contract;
 use aether_writers::refuse::{bad, Refusal};
 
@@ -50,7 +51,7 @@ fn order_of(answer: &KernelAnswer) -> usize {
         .flat_map(|unit| &unit.texts)
         .map(|text| text.target)
         .next();
-    TARGETS.iter().position(|t| Some(*t) == target).unwrap_or(0)
+    usize::from(target == Some(Target::Device))
 }
 
 /// The member two answers state: the one that is stated, or the value they share.
@@ -149,7 +150,7 @@ fn device_members(dst: &mut UnitMeta, src: &UnitMeta) {
     dst.device_image = src.device_image.clone();
     dst.device_function = src.device_function.clone();
     dst.device_image_bytes = src.device_image_bytes;
-    dst.device_image_format = src.device_image_format;
+    dst.device_image_format = src.device_image_format.clone();
     dst.device_image_size = src.device_image_size.clone();
     dst.device_compiler = src.device_compiler.clone();
     dst.device_flags = src.device_flags.clone();

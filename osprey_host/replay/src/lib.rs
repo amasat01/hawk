@@ -53,20 +53,63 @@ pub fn merged_facts() -> std::path::PathBuf {
         .clone()
 }
 
-/// The facts answer of the library that serves the target named `host` or `cuda`; any other name is refused.
+/// The facts answer of the library that serves the target named `host` or `cuda` for the stated machine record `stated` (its
+/// `cards` member included); any other name is refused. The device library has no probe, so `probe` is the host's alone.
 pub fn answer_named(
     dir: &std::path::Path,
     target: &str,
     compiler: &str,
-    probe: &osprey_lowering::facts::Probe,
-    stated: &osprey_lowering::facts::Stated,
+    probe: &osprey_cpu_lib::host_state::Probe,
+    stated: &str,
 ) -> Result<String, osprey_lowering::facts::Failed> {
-    use osprey_lowering::facts::{answer, Failed};
+    use osprey_lowering::facts::{answer, split_stated, Failed};
+    let (record, docs) = split_stated(stated)?;
     match target {
-        "host" => answer(dir, &osprey_cpu_lib::Cpu, compiler, probe, stated),
-        "cuda" => answer(dir, &osprey_cuda_lib::Cuda, compiler, probe, stated),
+        "host" => {
+            let stated = osprey_cpu_lib::host_state::read_stated(&record)?;
+            answer(dir, &osprey_cpu_lib::Cpu, compiler, &docs, probe, &stated)
+        }
+        "cuda" => {
+            let stated = osprey_cuda_lib::device_state::read_stated(&record)?;
+            answer(dir, &osprey_cuda_lib::Cuda, compiler, &docs, &(), &stated)
+        }
         other => Err(Failed::Bad(format!("no facts for the target {other}"))),
     }
+}
+
+/// The facts answer of the host library for a compiler identity, the probe and the stated machine, under the library's own documents.
+pub fn answer_host(
+    dir: &std::path::Path,
+    compiler: &str,
+    probe: &osprey_cpu_lib::host_state::Probe,
+    stated: &osprey_cpu_lib::host_state::Stated,
+) -> Result<String, osprey_lowering::facts::Failed> {
+    osprey_lowering::facts::answer(dir, &osprey_cpu_lib::Cpu, compiler, &[], probe, stated)
+}
+
+/// The stated host machine of the JSON record `text`, as a caller of the facts entry states it.
+pub fn host_stated(
+    text: &str,
+) -> Result<osprey_cpu_lib::host_state::Stated, osprey_lowering::facts::Failed> {
+    let (record, _) = osprey_lowering::facts::split_stated(text)?;
+    osprey_cpu_lib::host_state::read_stated(&record)
+}
+
+/// The stated device machine of the JSON record `text`, as a caller of the facts entry states it.
+pub fn device_stated(
+    text: &str,
+) -> Result<osprey_cuda_lib::device_state::Stated, osprey_lowering::facts::Failed> {
+    let (record, _) = osprey_lowering::facts::split_stated(text)?;
+    osprey_cuda_lib::device_state::read_stated(&record)
+}
+
+/// The facts answer of the device library for a compiler identity and the stated machine, under the library's own documents.
+pub fn answer_device(
+    dir: &std::path::Path,
+    compiler: &str,
+    stated: &osprey_cuda_lib::device_state::Stated,
+) -> Result<String, osprey_lowering::facts::Failed> {
+    osprey_lowering::facts::answer(dir, &osprey_cuda_lib::Cuda, compiler, &[], &(), stated)
 }
 
 /// The text of the shipped document `name`, from the library that ships it.

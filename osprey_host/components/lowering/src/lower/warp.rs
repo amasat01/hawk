@@ -2,7 +2,7 @@
 //! lanes. The slicing is the wing's; this step decides whether a kernel takes the form, how many lanes one block serves (the
 //! rows of the tile its vector outputs go through) and what the answer's stage block says of the launch. The numbers come from
 //! the device card.
-use super::card::DeviceCard;
+use super::card::WarpForm;
 use super::request::{Body, KernelRequest, Member, WideForm};
 use super::stage_block::TeamRecord;
 use super::stages::{stage_facts, Note};
@@ -66,14 +66,17 @@ pub(super) fn slice(
     cards: &Cards,
     pending: Vec<Pending>,
 ) -> Result<Vec<Pending>, Refusal> {
-    let (Some(explicit), Some(device)) = (asked(request)?, cards.device.as_ref()) else {
+    let Some(explicit) = asked(request)? else {
+        return Ok(pending);
+    };
+    let Some(form) = cards.target.warp_form(request.scalar) else {
         return Ok(pending);
     };
     let plain = matches!(request.body, Body::Plain(_)) && request.group == 1;
     pending
         .into_iter()
         .map(|unit| match plain && unit.segment.is_none() {
-            true => one_unit(ctx, request, (&cards.deciding, device, explicit), unit),
+            true => one_unit(ctx, request, (&cards.deciding, form, explicit), unit),
             false => Ok(unit),
         })
         .collect()
@@ -83,7 +86,7 @@ pub(super) fn slice(
 fn one_unit(
     ctx: *mut Ctx,
     request: &KernelRequest,
-    (deciding, device, explicit): (&super::card::BuildCard, &DeviceCard, bool),
+    (deciding, form, explicit): (&super::card::BuildNumbers, WarpForm, bool),
     mut unit: Pending,
 ) -> Result<Pending, Refusal> {
     let facts = stage_facts(request, deciding);
@@ -95,17 +98,13 @@ fn one_unit(
             return Ok(unit);
         }
     }
-    let scalar = match real_bytes(request.scalar) {
-        4 => "float32",
-        _ => "float64",
-    };
-    if device.wide_rows.iter().any(|row| row.dtype == scalar) {
+    if form.card_row {
         return Err(nib("staged rows over a card row or a forced wide setting"));
     }
     let spec = SliceSpec {
-        warp: device.warp_size,
-        slice_min: device.slice_min,
-        team_min: device.team_min,
+        warp: form.warp_size,
+        slice_min: form.slice_min,
+        team_min: form.team_min,
         explicit,
     };
     let Some(main) = sliced(ctx, &unit.member, spec)? else {
@@ -122,7 +121,7 @@ fn one_unit(
     let bodies = 1 + i64::from(single.is_some());
     let plain = !request.kind.active_set && request.kind.lanes.is_none();
     let rows = if plain {
-        tile_rows(ctx, &main, request.scalar, bodies, device)
+        tile_rows(ctx, &main, request.scalar, bodies, form)
     } else {
         1
     };
@@ -134,7 +133,7 @@ fn one_unit(
     let warp = Warp {
         rows,
         warps: if rows == 1 { request.settings.warps } else { 1 },
-        size: device.warp_size,
+        size: form.warp_size,
     };
     unit.note = Some(note(ctx, &unit.member, &warp)?);
     unit.boxable = false;
@@ -177,7 +176,7 @@ fn kept_slots(
 
 /// The lanes a block serves: the most of 8, 4 and 2 whose output tiles fit the card's bytes (a kernel with two bodies declares
 /// them twice), else 1 (a warp per block, storing straight to the planes). Only vector outputs are staged.
-fn tile_rows(ctx: *mut Ctx, sinks: &[u32], scalar: Scalar, bodies: i64, card: &DeviceCard) -> i64 {
+fn tile_rows(ctx: *mut Ctx, sinks: &[u32], scalar: Scalar, bodies: i64, card: WarpForm) -> i64 {
     // SAFETY: `ctx` is the live context the caller holds; it is only read here.
     let context = unsafe { &*ctx };
     let widths: Vec<&Vec<i64>> = sinks

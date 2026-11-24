@@ -113,7 +113,7 @@ fn fixture(name: &str) -> Fixture {
 fn toolkit(f: &Fixture, extra: &[(&str, &str)]) -> Toolkit {
     let mut pairs = vec![("PATH", "/bin:/usr/bin")];
     pairs.extend_from_slice(extra);
-    Toolkit::new(&table(&f.library), &[DEVICE], Env::from_pairs(&pairs)).unwrap()
+    common::new_toolkit(&table(&f.library), &[DEVICE], Env::from_pairs(&pairs)).unwrap()
 }
 
 #[test]
@@ -239,7 +239,7 @@ fn the_environment_chooses_between_the_offline_tool_and_the_library() {
 #[test]
 fn with_neither_a_tool_nor_the_library_the_absence_names_everything_tried() {
     let f = fixture("rt-none");
-    let tk = Toolkit::new(
+    let tk = common::new_toolkit(
         &table("libno-such-runtime.so"),
         &[DEVICE],
         Env::from_pairs(&[("PATH", "/bin")]),
@@ -259,7 +259,7 @@ fn include_toolkit_and_request(f: &Fixture) -> (Toolkit, String) {
         r#""calls":"#,
         r#""include":{"cccl":{"marker":"cuda/std/version","beside":["include","lib"]}},"calls":"#,
     );
-    let toolkit = Toolkit::new(
+    let toolkit = common::new_toolkit(
         &table,
         &[DEVICE],
         Env::from_pairs(&[("PATH", "/bin:/usr/bin")]),

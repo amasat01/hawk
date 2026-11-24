@@ -2,7 +2,7 @@
 //! needs a plane in a scratch plane, so the lane rows hold what a loop carries. The IR rewrite is the wing's; this module decides
 //! when it runs, with which numbers of the deciding card, and how a two-path kernel's single step shares the planes of the fused
 //! body.
-use super::card::BuildCard;
+use super::card::BuildNumbers;
 use super::real_bytes;
 use super::request::{KernelRequest, Member, WideForm};
 use super::{canonical, leaf_slots, Pending};
@@ -25,7 +25,7 @@ pub(super) fn interchanged(ctx: *mut Ctx, member: &Member) -> Result<bool, Refus
 pub(super) fn place_unit(
     ctx: *mut Ctx,
     request: &KernelRequest,
-    card: &BuildCard,
+    card: &BuildNumbers,
     unit: &mut Pending,
 ) -> Result<bool, Refusal> {
     let (walk, _) = canonical(ctx, &unit.member)?;
@@ -82,7 +82,7 @@ fn share_planes(ctx: *mut Ctx, unit: &mut Pending) -> Result<(), Refusal> {
 pub(super) fn place_sinks(
     ctx: *mut Ctx,
     request: &KernelRequest,
-    card: &BuildCard,
+    card: &BuildNumbers,
     sinks: &[u32],
     taken: &[String],
 ) -> Result<Option<Vec<u32>>, Refusal> {

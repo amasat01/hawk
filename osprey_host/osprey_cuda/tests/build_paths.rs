@@ -14,8 +14,7 @@ const TABLE: &str = r#"{"tools":{
 
 /// The embed recipe of the device facts, read from the file.
 fn recipe() -> J {
-    let path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../osprey_cuda/facts/cuda_image.json");
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("facts/cuda_image.json");
     let card = wire::parse("cuda_image.json", &fs::read_to_string(path).unwrap()).unwrap();
     card.get("embed").cloned().unwrap()
 }
@@ -45,7 +44,7 @@ fn a_device_image_is_built_embedded_and_linked_with_fake_tools_and_a_second_link
         ("FAKE_HOST", host.to_str().unwrap()),
         ("PATH", "/bin:/usr/bin"),
     ]);
-    let tk = Toolkit::new(TABLE, &[], env).unwrap();
+    let tk = common::new_toolkit(TABLE, &[], env).unwrap();
     let store = dir.join("store");
     let image = wire::render(&wire::obj(vec![
         ("name", wire::s("k")),
@@ -114,7 +113,7 @@ fn limited(dir: &std::path::Path, extra: &[(&str, &str)]) -> Toolkit {
     let fake = dir.join("fakecc").display().to_string();
     let mut pairs = vec![("FAKE_CXX", fake.as_str()), ("PATH", "/bin:/usr/bin")];
     pairs.extend_from_slice(extra);
-    Toolkit::new(table, &[], Env::from_pairs(&pairs)).unwrap()
+    common::new_toolkit(table, &[], Env::from_pairs(&pairs)).unwrap()
 }
 
 #[test]
@@ -192,7 +191,7 @@ fn a_failing_tool_is_refused_with_its_command_and_complaint_and_an_allocation_fa
 fn an_unknown_table_member_in_a_request_is_a_named_refusal() {
     let dir = scratch("badreq");
     fake_compiler(&dir, "fakecc");
-    let tk = Toolkit::new(
+    let tk = common::new_toolkit(
         &one_tool_table("FAKE_CXX"),
         &[],
         Env::from_pairs(&[
@@ -224,7 +223,7 @@ fn a_request_with_no_template_is_refused_by_name_and_a_tool_that_writes_no_outpu
         ("FAKE_HOST", silent.to_str().unwrap()),
         ("PATH", "/bin:/usr/bin"),
     ]);
-    let tk = Toolkit::new(TABLE, &[], env).unwrap();
+    let tk = common::new_toolkit(TABLE, &[], env).unwrap();
     let request = |template: &[&str]| {
         wire::render(&wire::obj(vec![
             ("name", wire::s("kern")),
@@ -289,7 +288,7 @@ fn a_hit_on_an_object_built_under_another_unit_name_links_the_file_the_store_hol
     let table = r#"{"tools":{
       "compiler":{"rules":[{"env":"FAKE_NVCC","required":true}]},
       "linker":{"rules":[{"env":"FAKE_HOST","required":true}]}}}"#;
-    let tk = Toolkit::new(table, &[], env).unwrap();
+    let tk = common::new_toolkit(table, &[], env).unwrap();
     let store = dir.join("store");
     let (first_unit, second_unit) = (
         tk.build(&unit("first_set", "int helper;"), &store).unwrap(),

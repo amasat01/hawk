@@ -1,0 +1,37 @@
+# Words the three base crates (components/lowering, components/toolkit, components/manifest) never contain: no backend, no
+# tool, no image form, no architecture, no card file of a backend. `sh ci/gate.sh words` reads this file.
+# Matching rule: every file of the three crates that ends in .rs, .json, .toml or .md is read line by line; first each
+# `accept` token below is removed from the line (as an exact, case-sensitive text), then the line is searched, ignoring case,
+# for each pattern below (an extended regular expression). A pattern is a plain text, so it also hits inside a longer word
+# (`cpu` hits `cpuinfo`: that is a backend word and is fixed by moving or renaming it), except where it states its own
+# boundary: `arm` is only hit as a whole word, so `alarm` and `warm` stay free. `host` and `device` name the two execution
+# kinds of the writers' contract and are allowed.
+# Lines that start with `#` and empty lines are ignored.
+
+# backend names
+cuda
+cpu
+# tools and tool families
+nvcc
+nvrtc
+ptxas
+gcc
+clang
+# image forms
+ptx
+cubin
+fatbin
+# architectures and instruction sets
+sm_[0-9]
+(^|[^a-z])arm([^a-z]|$)
+aarch64
+x86
+openmp
+# card and facts files of the two backends (the names that no pattern above already spells)
+(^|[^a-z_])build\.json
+host_build\.json
+
+# Accepted: the one exception. A member of the unit meta whose NAME carries a banned word because the runtime's header names it
+# so. The list may only shrink: a line is deleted when the member is renamed in the header, and no line is added.
+accept device_ptx_isa the unit meta member `device_ptx_isa` is the runtime header's own name for the image's instruction-set version
+accept cuda_render the aether writers crate exports the writer of the launched kind under this name; the test device renders with it

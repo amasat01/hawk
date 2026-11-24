@@ -178,15 +178,34 @@ closed! {
         /** Banded accumulators. */ Banded = 2 => "EG_SCALAR_BANDED",
     }
 }
-closed! {
-    /// The format of a device image.
-    pub enum ImageFormat {
-        /** No image. */ None = 0 => "EG_IMAGE_NONE",
-        /** Text assembly. */ Ptx = 1 => "EG_IMAGE_PTX",
-        /** A binary for one architecture. */ Cubin = 2 => "EG_IMAGE_CUBIN",
-        /** Binaries for several architectures. */ Fatbin = 3 => "EG_IMAGE_FATBIN",
+/// The form of the artifact a unit's library builds: the word of the backend that builds it, carried as stated and never read here.
+/// A unit with no artifact has the word `None`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArtifactForm(pub String);
+
+impl Default for ArtifactForm {
+    /// No artifact: the header's `EG_IMAGE_NONE`.
+    fn default() -> Self {
+        ArtifactForm("None".into())
     }
 }
+
+impl ArtifactForm {
+    /// The header's macro name of the form: `EG_IMAGE_` and the word in capitals.
+    pub fn c_name(&self) -> String {
+        format!("EG_IMAGE_{}", self.0.to_uppercase())
+    }
+}
+
+impl Wire for ArtifactForm {
+    fn put(&self) -> Json {
+        Json::Str(self.0.clone())
+    }
+    fn get(json: Option<&Json>, key: &str) -> Result<Self, Refusal> {
+        text_of(present(json, key)?, key).map(ArtifactForm)
+    }
+}
+
 closed! {
     /// What a slot holds.
     pub enum SlotRole {
@@ -882,8 +901,8 @@ record! {
         pub device_function: Option<String>,
         /// The image's length when the size symbol is not used: written 0.
         pub device_image_bytes: i64,
-        /// The format of the image.
-        pub device_image_format: ImageFormat,
+        /// The form of the image, the word the backend that builds it gives (`None` for a unit with no image).
+        pub device_image_format: ArtifactForm,
         /// The stages of a split unit.
         pub stages: Vec<Stage>,
         /// The typed walk.
@@ -896,11 +915,11 @@ record! {
         pub device_image_size: Option<String>,
         /// What the unit is to its primal, absent for a primal unit.
         pub derived: Option<Derived>,
-        /// The compiler that made the image (`nvcc 12.6`), absent without an image.
+        /// The compiler that made the image (its tool and release), absent without an image.
         pub device_compiler: Option<String>,
         /// The flags of the compile command, as given, absent without an image.
         pub device_flags: Option<String>,
-        /// The PTX version of the image's PTX as major * 10 + minor (85 is 8.5); 0 when it holds no PTX.
+        /// The instruction-set version of a text image as major * 10 + minor (85 is 8.5); 0 when the image is not text.
         pub device_ptx_isa: i64,
         /// The matrix products the unit is, when it is one dense contraction the card routes.
         pub gemm: Option<Gemm>,

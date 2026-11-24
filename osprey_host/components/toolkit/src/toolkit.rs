@@ -1,13 +1,13 @@
 //! The handle an OSPREY holds: its tool table, its embedded header trees and the environment it was started in; and the two
 //! door functions that need no compile, `machine` and `state`.
-use crate::device;
 use crate::discover::{self, Env, Machine};
 use crate::headers::HeaderTree;
 use crate::refusal::{Done, Kind, Refusal};
+use crate::registry::{names, Grammar, Probe, ProbeAnswer, ProbeInput};
+use crate::run;
 use crate::runtime::Runtime;
 use crate::store;
 use crate::wire;
-use crate::{host, run};
 use rcore::json::J;
 use rcore::sha256;
 use std::collections::HashMap;
@@ -24,6 +24,12 @@ pub struct Toolkit {
     pub(crate) env: Env,
     /// Why the library this toolkit belongs to cannot run a target on any machine, when its build left the runtime out.
     pub(crate) runtime_absent: Option<String>,
+    /// The probes the backend registered, by name.
+    probes: Vec<(&'static str, Probe)>,
+    /// The grammars the backend registered, by name.
+    grammars: Vec<(&'static str, Grammar)>,
+    /// The digest naming the machine's processor that a witness key carries, when the backend registered one.
+    identity: Option<fn() -> String>,
 }
 
 impl Toolkit {
@@ -39,7 +45,56 @@ impl Toolkit {
             trees: trees.to_vec(),
             env,
             runtime_absent: None,
+            probes: vec![],
+            grammars: vec![],
+            identity: None,
         })
+    }
+
+    /// Registers `probe` under `name`: `machine` asks it when the table has a member `name` or the ask has a true member `name`, and
+    /// states its record under `name`.
+    #[must_use]
+    pub fn with_probe(mut self, name: &'static str, probe: Probe) -> Self {
+        self.probes.push((name, probe));
+        self
+    }
+
+    /// Registers the function that digests the machine's processor; a witness key carries the digest, so one processor's verdict is
+    /// never served to another.
+    #[must_use]
+    pub fn with_identity(mut self, identity: fn() -> String) -> Self {
+        self.identity = Some(identity);
+        self
+    }
+
+    /// The processor digest a witness key carries: empty when the backend registered none.
+    pub(crate) fn processor_identity(&self) -> String {
+        self.identity.map_or_else(String::new, |digest| digest())
+    }
+
+    /// Registers `grammar` under `name`, for the tool probes whose `as` names it and the jobs whose `figures` names it.
+    #[must_use]
+    pub fn with_grammar(mut self, name: &'static str, grammar: Grammar) -> Self {
+        self.grammars.push((name, grammar));
+        self
+    }
+
+    /// The figures a job states under the grammar `name`, read from the tool's `text` output or from the `image` it wrote; no name
+    /// states none.
+    ///
+    /// # Errors
+    /// Refuses a name no grammar was registered under.
+    pub(crate) fn figures(&self, name: Option<&str>, text: &str, image: &[u8]) -> Done<J> {
+        let Some(name) = name else {
+            return Ok(wire::obj(vec![]));
+        };
+        match self.grammars.iter().find(|(known, _)| *known == name) {
+            Some((_, grammar)) => Ok(grammar(text, image)),
+            None => Err(Refusal::bad(format!(
+                "figures grammar {name:?} is not one of: {}",
+                names(&self.grammars)
+            ))),
+        }
     }
 
     /// States that the library was built without the runtime a target runs on: `machine` then answers `runs_here` false whatever
@@ -52,22 +107,25 @@ impl Toolkit {
 
     /// The machine the tools run on, always stated: `{"key": <opaque>, "stated": {"tools", "headers", ...}, "tools_absent": <reason> |
     /// null}`. A missing tool (with no runtime compile library standing in for it) is not a different answer: the tools found, the
-    /// header digests, the host facts and the arch policy are stated, and `tools_absent` names every tool tried and how each rule
+    /// header digests and the registered probes' records are stated, and `tools_absent` names every tool tried and how each rule
     /// failed. The reserved names and the witness verdicts need a tool and are left out while one is missing. `ask` is
-    /// `{"key_terms": [text...], "host": bool, "root": <store root>?, "device_arch": <pin>?, "reserved_names": {"prelude": <include
-    /// block>}?, "witnesses": [<witness>...]?}`: the texts the key must cover beyond what the machine states, whether to state the
-    /// host's own facts, and the facts to determine: the device arch (when the table has a `device` member), the reserved names (when
-    /// the table has `reserved_names`) and the verdict of each witness. `root` is where served header trees and kept verdicts live;
-    /// the facts that need it refuse without it. The key covers the whole stated record and the texts.
+    /// `{"key_terms": [text...], "root": <store root>?, "reserved_names": {"prelude": <include block>}?, "witnesses":
+    /// [<witness>...]?}` and any member a registered probe reads: the texts the key must cover beyond what the machine states, and
+    /// the facts to determine: the reserved names (when the table has `reserved_names`) and the verdict of each witness. A probe
+    /// states its record when the table has a member of its name or the ask has a true member of its name. `root` is where served
+    /// header trees and kept verdicts live; the facts that need it refuse without it. The key covers the whole stated record and
+    /// the texts.
     ///
     /// # Errors
-    /// Refuses a malformed ask or table, a pinned arch the toolkit cannot serve, and a probe whose tool fails.
+    /// Refuses a malformed ask or table and a probe that refuses.
     pub fn machine(&self, ask: &str) -> Done<String> {
         let ask = wire::parse("the machine ask", ask)?;
+        let env = self.env.fresh();
         let found = discover::find(
             &self.spec,
-            &self.env.fresh(),
+            &env,
             ask.get("root").and_then(J::str).map(Path::new),
+            &self.grammars,
         )?;
         let (runtime, absent) = self.runtime_for(&found)?;
         let tools = J::Obj(
@@ -84,20 +142,39 @@ impl Toolkit {
                 .collect(),
         );
         let mut stated = vec![("tools", tools), ("headers", headers)];
-        if matches!(ask.get("host"), Some(J::Bool(true))) {
-            stated.push(("host", host::facts()));
+        let input = |section| ProbeInput {
+            section,
+            ask: &ask,
+            env: &env,
+            machine: &found,
+            runtime: runtime.as_ref(),
+        };
+        // the probes the ask calls for state before the runtime record, those of a table member after it
+        let mut blocked = vec![];
+        for (name, probe) in &self.probes {
+            if self.spec.get(name).is_none() && matches!(ask.get(name), Some(J::Bool(true))) {
+                let ProbeAnswer {
+                    facts,
+                    blocked: why,
+                } = probe(&input(None))?;
+                stated.push((*name, facts));
+                blocked.extend(why);
+            }
         }
         if let Some(runtime) = &runtime {
             stated.push(("runtime", runtime_stated(runtime)?));
         }
-        let driver = self.probe_device()?;
-        stated.extend(self.determined(
-            &ask,
-            &found,
-            runtime.as_ref(),
-            absent.is_some(),
-            driver.as_ref(),
-        )?);
+        for (name, probe) in &self.probes {
+            if let Some(section) = self.spec.get(name) {
+                let ProbeAnswer {
+                    facts,
+                    blocked: why,
+                } = probe(&input(Some(section)))?;
+                stated.push((*name, facts));
+                blocked.extend(why);
+            }
+        }
+        stated.extend(self.determined(&ask, &found, absent.is_some())?);
         let stated = wire::obj(stated);
         let terms = wire::texts(&ask, "key_terms", "the machine ask")?;
         let key = sha256::hex(
@@ -109,7 +186,10 @@ impl Toolkit {
             .as_bytes(),
         );
         let reason = absent.map_or(J::Null, |r| wire::s(&r));
-        let (runs_here, why) = runs_here(driver.as_ref());
+        let (runs_here, why) = match blocked.first() {
+            Some(why) => (false, why.clone()),
+            None => (true, String::new()),
+        };
         let (runs_here, why) = match &self.runtime_absent {
             Some(reason) if why.is_empty() => (false, reason.clone()),
             Some(reason) => (false, format!("{reason}; {why}")),
@@ -122,15 +202,6 @@ impl Toolkit {
             ("runs_here", J::Bool(runs_here)),
             ("why", wire::s(&why)),
         ])))
-    }
-
-    /// What the driver library states about the device, when the table has a `device` member: the driver, or the reason there is none.
-    fn probe_device(&self) -> Done<Option<Result<device::Driver, String>>> {
-        let Some(device) = self.spec.get("device") else {
-            return Ok(None);
-        };
-        let spec = wire::need(device, "driver", "device")?;
-        device::probe_driver(spec).map(Some)
     }
 
     /// The runtime compile library when a tool was replaced by it, and the reason for the tools still missing: the machine's own,
@@ -160,20 +231,15 @@ impl Toolkit {
         ))
     }
 
-    /// The facts of an ask that need more than a lookup: the device arch, the reserved names and the witness verdicts.
+    /// The facts of an ask that need more than a lookup: the reserved names and the witness verdicts.
     fn determined(
         &self,
         ask: &J,
         machine: &Machine,
-        runtime: Option<&Runtime>,
         tool_missing: bool,
-        driver: Option<&Result<device::Driver, String>>,
     ) -> Done<Vec<(&'static str, J)>> {
         let root = ask.get("root").and_then(J::str).map(Path::new);
         let mut out = vec![];
-        if self.spec.get("device").is_some() {
-            out.push(("device", self.device_stated(ask, machine, runtime, driver)?));
-        }
         if let (Some(reserved), false) = (ask.get("reserved_names"), tool_missing) {
             let names =
                 self.reserved_names(machine, wire::text_or(reserved, "prelude", ""), root)?;
@@ -183,55 +249,6 @@ impl Toolkit {
             out.push(("witnesses", self.witnesses(machine, list, root)?));
         }
         Ok(out)
-    }
-
-    /// The device record: the arch chosen and why, the GPU and driver the driver library stated, and the toolkit's archs.
-    fn device_stated(
-        &self,
-        ask: &J,
-        machine: &Machine,
-        runtime: Option<&Runtime>,
-        driver: Option<&Result<device::Driver, String>>,
-    ) -> Done<J> {
-        let device = wire::need(&self.spec, "device", "the tool table")?;
-        let driver = driver
-            .and_then(|found| found.as_ref().ok())
-            .cloned()
-            .unwrap_or_default();
-        let env = self.env.fresh();
-        let policy = wire::need(device, "arch", "device")?;
-        let toolkit = match runtime {
-            Some(runtime) => runtime.archs(),
-            None => tool_archs(policy, machine),
-        };
-        let env_pin = policy
-            .get("pin_env")
-            .and_then(J::str)
-            .and_then(|var| env.get(var).map(|v| (var, v)));
-        let inputs = device::Inputs {
-            asked: ask.get("device_arch").and_then(J::str),
-            env_pin,
-            gpu: driver.gpu_arch.as_deref(),
-            toolkit: toolkit.as_deref(),
-        };
-        let (arch, why) = device::choose_arch(policy, &inputs)?;
-        let nullable = |v: Option<String>| v.map_or(J::Null, |t| wire::s(&t));
-        Ok(wire::obj(vec![
-            ("arch", wire::s(&arch)),
-            ("why", wire::s(&why)),
-            ("gpu_arch", nullable(driver.gpu_arch)),
-            ("driver_release", nullable(driver.release)),
-            (
-                "driver_encoded",
-                driver
-                    .encoded
-                    .map_or(J::Null, |e| wire::n(u64::try_from(e).unwrap_or(0))),
-            ),
-            (
-                "toolkit_archs",
-                toolkit.map_or(J::Null, |t| J::Arr(t.into_iter().map(wire::n).collect())),
-            ),
-        ]))
     }
 
     /// The counters of this process (`op` `"stats"`: `{"hits", "misses", "tool_runs"}`) or their reset (`op` `"reset"`, which
@@ -263,7 +280,7 @@ impl Toolkit {
 
     /// The tools of the table, found, or the refusal that names what is missing.
     pub(crate) fn tools(&self, root: Option<&Path>) -> Done<Machine> {
-        let machine = discover::find(&self.spec, &self.env.fresh(), root)?;
+        let machine = discover::find(&self.spec, &self.env.fresh(), root, &self.grammars)?;
         match &machine.absent {
             Some(reason) => Err(Refusal::new(
                 crate::refusal::Kind::ToolAbsent,
@@ -364,36 +381,6 @@ impl Toolkit {
     }
 }
 
-/// Whether the target runs on this machine, and why not: a table with a `device` member needs a driver library that initialises and
-/// states a device; a table without one has no such requirement.
-fn runs_here(driver: Option<&Result<device::Driver, String>>) -> (bool, String) {
-    match driver {
-        Some(Err(why)) => (false, why.clone()),
-        Some(Ok(found)) if found.gpu_arch.is_none() => (
-            false,
-            "the driver library initialised and states no device".to_string(),
-        ),
-        _ => (true, String::new()),
-    }
-}
-
-/// The archs a tool states by the probe the table's `device.arch.toolkit` record names (`tool`, `probe`); `None` when it does not.
-fn tool_archs(policy: &J, machine: &Machine) -> Option<Vec<u64>> {
-    let source = policy.get("toolkit")?;
-    let tool = machine.tool(source.get("tool")?.str()?)?;
-    let probe = source.get("probe")?.str()?;
-    let list = tool
-        .facts
-        .iter()
-        .find(|(name, _)| name == probe)?
-        .1
-        .arr()
-        .iter()
-        .map(|a| u64::try_from(a.int()).unwrap_or(0))
-        .collect();
-    Some(list)
-}
-
 /// The stated record of a runtime compile library: its name, version and archs.
 fn runtime_stated(runtime: &Runtime) -> Done<J> {
     let (major, minor) = runtime.version()?;
@@ -414,13 +401,13 @@ mod tests {
     use super::*;
     use crate::discover::Env;
 
-    /// The host library's shipped tool table with the environment `pairs`.
+    /// A tool table with a `jobs` limit, with the environment `pairs`: the fixture `tests/data/limits_table.json`.
     fn host_toolkit(pairs: &[(&str, &str)]) -> Toolkit {
-        let table = include_str!("../../../osprey_cpu/facts/tools.json");
+        let table = include_str!("../tests/data/limits_table.json");
         Toolkit::new(table, &[], Env::from_pairs(pairs)).unwrap()
     }
 
-    /// Oracle: the shipped table's `jobs` limit states a default of 2 and the variable `HAWK_COMPILE_JOBS`.
+    /// Oracle: the fixture table's `jobs` limit states a default of 2 and the variable `HAWK_COMPILE_JOBS`.
     #[test]
     fn the_job_count_is_two_unless_the_variable_says_another() {
         assert_eq!(host_toolkit(&[]).limit("jobs", 99).unwrap(), 2);
@@ -429,6 +416,23 @@ mod tests {
         // the table states that 0 disables a limit: no cap on the compiles that run at once
         let none = host_toolkit(&[("HAWK_COMPILE_JOBS", "0")]);
         assert_eq!(none.limit("jobs", 99).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_grammar_nobody_registered_is_refused_naming_the_registered_ones() {
+        fn nothing(_: &str, _: &[u8]) -> J {
+            wire::obj(vec![])
+        }
+        let toolkit = Toolkit::new(r#"{"tools":{}}"#, &[], Env::from_pairs(&[]))
+            .unwrap()
+            .with_grammar("known", nothing);
+        assert_eq!(wire::render(&toolkit.figures(None, "", &[]).unwrap()), "{}");
+        assert!(toolkit.figures(Some("known"), "", &[]).is_ok());
+        let why = toolkit.figures(Some("nope"), "", &[]).unwrap_err();
+        assert!(
+            why.message.contains("\"nope\"") && why.message.contains("known"),
+            "{why}"
+        );
     }
 
     #[test]

@@ -3,6 +3,7 @@
 //! `table::<Backend>()`, so every library offers the same door.
 use crate::backend::Backend;
 use crate::{facts, lower, tool};
+use aether_writers::contract::Json;
 use aether_writers::refuse::{bad, fault, Refusal, RefusalKind};
 use aether_writers::RxCtx;
 use raptor_ir::canon::rx_canonical;
@@ -264,16 +265,19 @@ extern "C" fn facts<B: Backend>(
         let (target, compiler) = args.map_err(|why| bad_arg(&why))?;
         let backend = B::default();
         facts::serves(&backend, target).map_err(facts::Failed::refusal)?;
-        let stated = if stated.is_null() {
-            facts::Stated::default()
+        let (record, docs) = if stated.is_null() {
+            (Json::Obj(vec![]), vec![])
         } else {
             let text = text_arg(stated, "stated").map_err(|why| bad_arg(&why))?;
-            facts::stated_from_json(text).map_err(facts::Failed::refusal)?
+            facts::split_stated(text).map_err(facts::Failed::refusal)?
         };
+        let stated = backend
+            .read_stated(&record)
+            .map_err(facts::Failed::refusal)?;
         let given = dir_arg(facts_dir).map_err(|why| bad_arg(&why))?;
         let dir =
             facts::facts_dir(given).map_err(|reason| facts::Failed::Card(reason).refusal())?;
-        facts::answer(&dir, &backend, compiler, &facts::probe(), &stated)
+        facts::answer(&dir, &backend, compiler, &docs, &backend.probe(), &stated)
             .map_err(facts::Failed::refusal)
     }))
     .unwrap_or_else(|_| Err(fault("panic in facts")));

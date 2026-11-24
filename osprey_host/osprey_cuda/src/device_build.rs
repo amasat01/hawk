@@ -4,8 +4,9 @@
 //! `{host_compiler}` (the compiler of the set's host objects, which the device compiler is told with `-ccbin` so that one C++
 //! runtime serves the whole library), `{source}`, `{output}`, `{depfile}`, `{include:aether}`, `{include:eagle}`, `{include:facts}`
 //! and `{defines}`, as the host compile writes them; `{defines}` stands for one `-D<define>` element for each define and for nothing when there is none.
-use crate::facts::{arch_names, closed, flags_of, member, names_of, text_of, Failed};
+use crate::device_facts::{arch_names, flags_of};
 use aether_writers::contract::Json;
+use osprey_lowering::facts::{closed, member, names_of, text_of, Failed};
 
 /// The release `major.minor` of a stated compiler or driver as a pair; `what` names it in the refusal.
 fn release_pair(text: &str, what: &str) -> Result<(u32, u32), Failed> {

@@ -199,12 +199,11 @@ impl Tools {
         let line = String::from_utf8_lossy(&version.stdout);
         let identity = format!("c++ || {} || 0", line.lines().next().unwrap_or(""));
         let facts_dir = osprey_replay::merged_facts();
-        let stated = osprey_lowering::facts::stated_from_json(r#"{"headers":"roots"}"#).unwrap();
-        let answer = osprey_replay::answer_named(
+        let stated = osprey_replay::host_stated(r#"{"headers":"roots"}"#).unwrap();
+        let answer = osprey_replay::answer_host(
             &facts_dir,
-            "host",
             &identity,
-            &osprey_lowering::facts::probe(),
+            &osprey_cpu_lib::host_state::probe(),
             &stated,
         )
         .expect("the facts of this machine");
@@ -415,10 +414,9 @@ fn the_units_of_three_kernels_and_the_set_text_link_into_one_library_that_resolv
 fn embed_of(facts_dir: &Path) -> Result<Json, String> {
     let identity =
         "/usr/local/cuda/bin/nvcc || Cuda compilation tools, release 12.6, V12.6.77 || 0";
-    let stated = osprey_lowering::facts::stated_from_json("{}").unwrap();
-    let probe = osprey_lowering::facts::probe();
-    let answer = osprey_replay::answer_named(facts_dir, "cuda", identity, &probe, &stated)
-        .map_err(String::from)?;
+    let stated = osprey_replay::device_stated("{}").unwrap();
+    let answer =
+        osprey_replay::answer_device(facts_dir, identity, &stated).map_err(String::from)?;
     let machine = aether_writers::contract::Contract::parse(&answer)
         .unwrap()
         .0;

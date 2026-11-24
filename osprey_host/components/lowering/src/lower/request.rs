@@ -4,7 +4,7 @@
 //! records its kernels.
 use super::derived::DerivedKernel;
 use super::unit_meta::{
-    Contraction, DispatchCosts, ImageFormat, LibraryMeta, PeerRecord, StepsPair, UnitMeta, Wire,
+    Contraction, DispatchCosts, LibraryMeta, PeerRecord, StepsPair, UnitMeta, Wire,
 };
 use crate::facts;
 use aether_writers::contract::types::{
@@ -163,10 +163,6 @@ pub enum Steps {
     },
 }
 
-/// The image formats a caller can compile a device text to.
-pub const IMAGE_FORMATS: [ImageFormat; 3] =
-    [ImageFormat::Ptx, ImageFormat::Cubin, ImageFormat::Fatbin];
-
 /// One request: a kernel and what the lowering needs to know about it beyond the IR.
 #[derive(Debug, Clone, PartialEq)]
 pub struct KernelRequest {
@@ -191,7 +187,7 @@ pub struct KernelRequest {
     /// The build's settings.
     pub settings: Settings,
     /// The format the caller compiles a device text to; a request with a device target states it.
-    pub image_format: Option<ImageFormat>,
+    pub image_format: Option<String>,
     /// The steps of one launch, when the kernel finishes samples and the caller declares them.
     pub steps: Option<Steps>,
     /// The kernel's lane axes.
@@ -253,7 +249,7 @@ fn peer_read(json: &Json) -> Result<(Target, PeerRecord), Refusal> {
     let [(leader, record)] = members.as_slice() else {
         return Err(wrong("peer", "names not exactly one library"));
     };
-    let target = member_of(&TARGETS, &Json::Str(leader.clone()), "peer")?;
+    let target = target_of(leader, "peer")?;
     Ok((target, PeerRecord::get(Some(record), "peer")?))
 }
 
@@ -406,7 +402,7 @@ pub struct UnitAnswer {
     pub meta: UnitMeta,
     /// The defines the unit's compile for a target needs, as `(target, define)` pairs: a text that gates code behind a macro the
     /// request's settings turn on. The caller hands them to that target's build.
-    pub defines: Vec<(Target, String)>,
+    pub defines: Vec<(String, String)>,
     /// The dense contraction the unit is, with the route the card chose; none for a unit that is not one.
     pub contraction: Option<Contraction>,
 }
@@ -465,6 +461,27 @@ impl UnitSet {
     }
 }
 
+/// The word a request uses for a kind of target: the one spelling [`target_of`] reads back.
+pub fn target_word(target: Target) -> &'static str {
+    match target {
+        Target::Host => "Host",
+        Target::Device => "Device",
+    }
+}
+
+/// The kind of target a request names (`Host` or `Device`), refused by name when it is neither.
+fn target_of(name: &str, what: &str) -> Result<Target, Refusal> {
+    [Target::Host, Target::Device]
+        .into_iter()
+        .find(|kind| target_word(*kind) == name)
+        .ok_or_else(|| unknown(format!("member {name} of {what}")))
+}
+
+/// The kind of target the member `key` of a request names.
+fn target_member(json: &Json, key: &str) -> Result<Target, Refusal> {
+    target_of(json.str().ok_or_else(|| wrong(key, "not a name"))?, key)
+}
+
 /// The members of a closed set, read by their names.
 fn pick<T: Debug + Copy>(all: &[T], name: &str, what: &str) -> Result<T, Refusal> {
     all.iter()
@@ -475,8 +492,6 @@ fn pick<T: Debug + Copy>(all: &[T], name: &str, what: &str) -> Result<T, Refusal
 
 /// The members of each closed set a request names, in declaration order.
 pub const SCALARS: [Scalar; 3] = [Scalar::Float64, Scalar::Float32, Scalar::Banded];
-/// The targets.
-pub const TARGETS: [Target; 2] = [Target::Host, Target::Device];
 /// The element types.
 pub const DTYPES: [Dtype; 7] = [
     Dtype::F64,
@@ -513,7 +528,7 @@ pub const LINALG_FORMS: [LinalgForm; 3] = [LinalgForm::Auto, LinalgForm::Team, L
 pub const WIDE_FORMS: [WideForm; 3] = [WideForm::Auto, WideForm::Thread, WideForm::Team];
 
 /// The keys of one object, handed out by name; `done` refuses a key nobody asked for.
-pub(super) struct Keys<'a> {
+pub struct Keys<'a> {
     /// The members, in the order written.
     items: &'a [(String, Json)],
     /// The keys asked for so far.
@@ -524,7 +539,7 @@ pub(super) struct Keys<'a> {
 
 impl<'a> Keys<'a> {
     /// Starts reading an object; a value that is not an object is refused by name.
-    pub(super) fn of(json: &'a Json, scope: &'static str) -> Result<Keys<'a>, Refusal> {
+    pub fn of(json: &'a Json, scope: &'static str) -> Result<Keys<'a>, Refusal> {
         match json {
             Json::Obj(items) => Ok(Keys {
                 items,
@@ -535,19 +550,19 @@ impl<'a> Keys<'a> {
         }
     }
     /// The value under an optional key; null counts as absent.
-    pub(super) fn opt(&mut self, key: &'static str) -> Option<&'a Json> {
+    pub fn opt(&mut self, key: &'static str) -> Option<&'a Json> {
         self.asked.push(key);
         let found = self.items.iter().find(|(k, _)| k == key).map(|(_, v)| v);
         found.filter(|value| **value != Json::Null)
     }
     /// The value under a required key.
-    pub(super) fn req(&mut self, key: &'static str) -> Result<&'a Json, Refusal> {
+    pub fn req(&mut self, key: &'static str) -> Result<&'a Json, Refusal> {
         let scope = self.scope;
         self.opt(key)
             .ok_or_else(|| unknown(format!("request key {key} missing in {scope}")))
     }
     /// Refuses a key that was not asked for.
-    pub(super) fn done(self) -> Result<(), Refusal> {
+    pub fn done(self) -> Result<(), Refusal> {
         match self
             .items
             .iter()
@@ -604,7 +619,7 @@ fn facts_read(json: &Json) -> Result<Vec<(Target, String)>, Refusal> {
     };
     items
         .iter()
-        .map(|(name, answer)| Ok((pick(&TARGETS, name, "facts")?, text_of(answer, "facts")?)))
+        .map(|(name, answer)| Ok((target_of(name, "facts")?, text_of(answer, "facts")?)))
         .collect()
 }
 /// A list of values, each read by `one`.
@@ -1173,7 +1188,7 @@ impl KernelRequest {
             name: text_of(keys.req("name")?, "name")?,
             scalar: member_of(&SCALARS, keys.req("scalar")?, "scalar")?,
             targets: list_of(keys.req("targets")?, "targets", |t| {
-                member_of(&TARGETS, t, "targets").map_err(|_| {
+                target_member(t, "targets").map_err(|_| {
                     bad(format!(
                         "a target this library does not serve: {}",
                         t.str().unwrap_or("not a name")
@@ -1189,7 +1204,7 @@ impl KernelRequest {
             settings: Settings::read(&Json::Obj(vec![]))?,
             image_format: keys
                 .opt("image_format")
-                .map(|f| member_of(&IMAGE_FORMATS, f, "image_format"))
+                .map(|f| text_of(f, "image_format"))
                 .transpose()?,
             steps: None,
             lane_space: vec![],
@@ -1207,9 +1222,7 @@ impl KernelRequest {
                 None => true,
             },
             companions: match keys.opt("companions") {
-                Some(list) => {
-                    list_of(list, "companions", |t| member_of(&TARGETS, t, "companions"))?
-                }
+                Some(list) => list_of(list, "companions", |t| target_member(t, "companions"))?,
                 None => vec![],
             },
             peer: keys.opt("peer").map(peer_read).transpose()?,
@@ -1225,9 +1238,6 @@ impl KernelRequest {
         keys.done()?;
         for target in &request.targets {
             request.facts_for(*target)?;
-        }
-        if request.targets.contains(&Target::Device) && request.image_format.is_none() {
-            return Err(bad("request key image_format: a device target needs one"));
         }
         Ok(request)
     }
@@ -1307,8 +1317,8 @@ impl KernelRequest {
                 Json::Arr(self.derived.iter().map(DerivedKernel::write).collect()),
             ))
         }
-        if let Some(format) = self.image_format {
-            o.push(("image_format".into(), name_of(&format)))
+        if let Some(form) = &self.image_format {
+            o.push(("image_format".into(), Json::Str(form.clone())))
         }
         o.extend(self.part_members());
         if !self.cards.is_empty() {
@@ -1381,12 +1391,11 @@ impl KernelAnswer {
             ];
             if !u.defines.is_empty() {
                 let mut by_target: Vec<(String, Json)> = vec![];
-                for (target, define) in &u.defines {
-                    let name = crate::backend::target_name(*target);
+                for (name, define) in &u.defines {
                     match by_target.iter_mut().find(|(n, _)| n == name) {
                         Some((_, Json::Arr(list))) => list.push(Json::Str(define.clone())),
                         _ => by_target
-                            .push((name.into(), Json::Arr(vec![Json::Str(define.clone())]))),
+                            .push((name.clone(), Json::Arr(vec![Json::Str(define.clone())]))),
                     }
                 }
                 o.push(("defines".into(), Json::Obj(by_target)));
@@ -1445,7 +1454,7 @@ impl KernelAnswer {
             };
             let symbol = text_of(k.req("symbol")?, "symbol")?;
             let text = TargetText {
-                target: member_of(&TARGETS, k.req("target")?, "target")?,
+                target: target_member(k.req("target")?, "target")?,
                 text: text_of(k.req("text")?, "text")?,
                 body: text_of(k.req("body")?, "body")?,
                 entry: text_of(k.req("entry")?, "entry")?,
@@ -1462,15 +1471,9 @@ impl KernelAnswer {
             let mut defines = vec![];
             if let Some(Json::Obj(by_target)) = k.opt("defines") {
                 for (name, list) in by_target {
-                    // the writer names a target as the libraries do (`host`, `cuda`)
-                    let target = TARGETS
-                        .into_iter()
-                        .find(|t| crate::backend::target_name(*t) == name)
-                        .ok_or_else(|| {
-                            wrong("defines", &format!("{name:?} is no target of this build"))
-                        })?;
+                    // the writer names a target as the library that serves it does: the name is carried as stated
                     for define in list_of(list, "defines", |d| text_of(d, "defines"))? {
-                        defines.push((target, define));
+                        defines.push((name.clone(), define));
                     }
                 }
             }
@@ -1592,9 +1595,9 @@ mod tests {
     #[test]
     fn the_cards_member_round_trips_and_an_unknown_document_is_refused_by_name() {
         let mut stated = request();
-        stated.cards = vec![("build.json".into(), "{}".into())];
+        stated.cards = vec![("numbers.json".into(), "{}".into())];
         assert_eq!(KernelRequest::from_json(&stated.to_json()).unwrap(), stated);
-        stated.cards = vec![("build.jsn".into(), "{}".into())];
+        stated.cards = vec![("numbers.jsn".into(), "{}".into())];
         let named = KernelRequest::from_json(&stated.to_json()).unwrap();
         let docs = crate::facts::CardSet::new(
             &crate::testing::shipped(),
@@ -1602,12 +1605,12 @@ mod tests {
             crate::testing::ALL_CARDS,
         );
         let why = docs.check_stated().unwrap_err().refusal();
-        assert!(why.reason.contains("build.jsn"), "{}", why.reason);
+        assert!(why.reason.contains("numbers.jsn"), "{}", why.reason);
         assert_eq!(why.kind, aether_writers::refuse::RefusalKind::BadRequest);
-        stated.cards = vec![("build.json".into(), "{}".into())];
+        stated.cards = vec![("numbers.json".into(), "{}".into())];
         let numbered = stated.to_json().replace("\"{}\"", "{}");
         let why = KernelRequest::from_json(&numbered).unwrap_err();
-        assert!(why.reason.contains("build.json"), "{}", why.reason);
+        assert!(why.reason.contains("numbers.json"), "{}", why.reason);
     }
 
     #[test]
@@ -1627,7 +1630,7 @@ mod tests {
     fn the_declared_members_round_trip_and_are_range_checked_by_name() {
         let mut full = request();
         full.steps = Some(Steps::Auto { max: 64 });
-        full.image_format = Some(ImageFormat::Ptx);
+        full.image_format = Some("Blob".into());
         full.lane_space = vec![LaneAxis {
             label: Some("a".into()),
             extent: Some(3),
@@ -1655,8 +1658,10 @@ mod tests {
         }
         let device = text
             .replace("\"Host\"", "\"Device\"")
-            .replace("\"image_format\":\"Ptx\",", "");
-        assert!(KernelRequest::from_json(&device).is_err());
+            .replace("\"image_format\":\"Blob\",", "");
+        // a device request that names no image form is read: the backend that builds the artifact refuses it (the replay test
+        // the_device_library_names_the_form_of_its_artifact_and_refuses_the_others)
+        assert!(KernelRequest::from_json(&device).is_ok());
     }
 
     #[test]
@@ -1989,20 +1994,6 @@ mod tests {
         assert!(
             why.contains("no facts answer for the target Device"),
             "{why}"
-        );
-    }
-
-    #[test]
-    fn the_device_card_loads_and_the_two_targets_read_their_own_numbers() {
-        let device =
-            super::super::card::device_build(crate::testing::text("cuda_build.json")).unwrap();
-        assert_eq!((device.fold.k_max, device.slice_min), (8, 128));
-        assert!(device.build().fold_limits.is_some() && !device.build().blend);
-        assert!(
-            super::super::card::host_build(crate::testing::text("build.json"))
-                .unwrap()
-                .build()
-                .blend
         );
     }
 

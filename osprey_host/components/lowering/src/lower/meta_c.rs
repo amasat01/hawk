@@ -727,10 +727,7 @@ fn unit(out: &mut Out, unit: &UnitMeta) -> Result<String, Refusal> {
         ("device_image", lit_or_null(&unit.device_image)),
         ("device_function", lit_or_null(&unit.device_function)),
         ("device_image_bytes", unit.device_image_bytes.to_string()),
-        (
-            "device_image_format",
-            unit.device_image_format.c_name().into(),
-        ),
+        ("device_image_format", unit.device_image_format.c_name()),
         ("n_stages", unit.stages.len().to_string()),
         ("stages", stage_list),
         ("body", format!("&{body}")),

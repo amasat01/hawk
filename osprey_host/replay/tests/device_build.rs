@@ -7,7 +7,6 @@
 //! A line the old code refused (an unknown optimisation level) must be refused by the facts question too; for such a line what is
 //! compared is that both refuse, not their words, which are each side's own.
 use aether_writers::contract::{Contract, Json};
-use osprey_lowering::facts;
 
 /// The recorded old behaviour, one JSON line for each combination.
 const RECORDED: &str = include_str!("data/device_argv_old.jsonl");
@@ -34,11 +33,10 @@ fn asked(row: &Json) -> Result<Json, String> {
             members.push(format!("\"{stated}\":\"{}\"", text(key)));
         }
     }
-    let state =
-        facts::stated_from_json(&format!("{{{}}}", members.join(","))).map_err(String::from)?;
-    let identity = "/usr/local/cuda/bin/nvcc || Cuda compilation tools || 0";
-    let answer = osprey_replay::answer_named(&dir, "cuda", identity, &facts::probe(), &state)
+    let state = osprey_replay::device_stated(&format!("{{{}}}", members.join(",")))
         .map_err(String::from)?;
+    let identity = "/usr/local/cuda/bin/nvcc || Cuda compilation tools || 0";
+    let answer = osprey_replay::answer_device(&dir, identity, &state).map_err(String::from)?;
     let machine = Contract::parse(&answer).unwrap().0;
     Ok(machine.get("device_build").expect("a device_build").clone())
 }
@@ -108,9 +106,9 @@ fn the_image_form_and_the_compile_of_every_recorded_combination_are_the_old_ones
 fn a_driver_release_that_is_not_major_minor_is_refused_by_name() {
     let dir = osprey_replay::merged_facts();
     let state =
-        facts::stated_from_json(r#"{"device_release":"12.6","driver_release":"12"}"#).unwrap();
+        osprey_replay::device_stated(r#"{"device_release":"12.6","driver_release":"12"}"#).unwrap();
     let identity = "/usr/local/cuda/bin/nvcc || Cuda compilation tools || 0";
-    let why = osprey_replay::answer_named(&dir, "cuda", identity, &facts::probe(), &state)
+    let why = osprey_replay::answer_device(&dir, identity, &state)
         .map_err(String::from)
         .unwrap_err();
     assert_eq!(

@@ -83,7 +83,7 @@ impl Toolkit {
         let mut terms = vec![
             "toolkit.witness/1".to_string(),
             source.to_string(),
-            crate::host::facts_identity(),
+            self.processor_identity(),
         ];
         terms.extend(machine.tools.iter().map(|(_, t)| t.identity.clone()));
         for key in ["compile", "link"] {

@@ -169,32 +169,32 @@ fn a_tool_that_cannot_be_started_is_absent_with_the_operating_systems_error() {
 /// A device-shaped table: the device compiler with two probes, its host compiler from a flag in the environment (a folder resolves
 /// to the `g++` inside it) else the device compiler's own table entry, and the environment adjustments.
 const DEVICE_TABLE: &str = r#"{"tools":{
-  "compiler":{"rules":[{"env":"FAKE_NVCC","required":true}],"probes":[
+  "compiler":{"rules":[{"env":"FAKE_TOOL","required":true}],"probes":[
      {"name":"release","args":["--version"],"after":"release ","as":"version"},
      {"name":"archs","args":["--list-gpu-arch"],"after":"compute_","as":"int_list"}]},
-  "host_compiler":{"rules":[{"env_flag":{"var":"NVCC_PREPEND_FLAGS","flags":["-ccbin"]},"dir_child":"g++"}]}},
- "process_env":{"strip_flags":{"vars":["NVCC_PREPEND_FLAGS"],"flags":["-ccbin"]},"remove":["NVCC_CCBIN"],
-   "path_prepend":["compiler"],"root_of":{"CUDA_PATH":"compiler"}}}"#;
+  "host_compiler":{"rules":[{"env_flag":{"var":"TOOL_PREPEND_FLAGS","flags":["-hostbin"]},"dir_child":"g++"}]}},
+ "process_env":{"strip_flags":{"vars":["TOOL_PREPEND_FLAGS"],"flags":["-hostbin"]},"remove":["TOOL_HOSTBIN"],
+   "path_prepend":["compiler"],"root_of":{"KIT_PATH":"compiler"}}}"#;
 
 #[test]
 fn a_device_table_finds_the_host_compiler_in_a_flag_and_runs_tools_in_the_adjusted_environment() {
     let dir = scratch("device");
-    let nvcc = dir.join("cuda/bin/nvcc");
+    let devtool = dir.join("kit/bin/devtool");
     script(
-        &nvcc,
+        &devtool,
         &format!(
-            "#!/bin/sh\ncase \"$1\" in --version) echo 'Cuda compilation tools, release 12.6, V12.6.20'; exit 0;; \
+            "#!/bin/sh\ncase \"$1\" in --version) echo 'Kit compilation tools, release 12.6, V12.6.20'; exit 0;; \
              --list-gpu-arch) printf 'compute_75\\ncompute_61\\ncompute_75\\n'; exit 0;; esac\n\
-             echo \"$NVCC_PREPEND_FLAGS|$NVCC_CCBIN|$CUDA_PATH|$PATH\" > \"{}/env.txt\"\ntouch \"$2\"\n",
+             echo \"$TOOL_PREPEND_FLAGS|$TOOL_HOSTBIN|$KIT_PATH|$PATH\" > \"{}/env.txt\"\ntouch \"$2\"\n",
             dir.display()
         ),
     );
-    fake_compiler(&dir.join("gcc"), "g++");
-    let flags = format!("-O2 -ccbin {}", dir.join("gcc").display());
+    fake_compiler(&dir.join("hostcc"), "g++");
+    let flags = format!("-O2 -hostbin {}", dir.join("hostcc").display());
     let env = Env::from_pairs(&[
-        ("FAKE_NVCC", nvcc.to_str().unwrap()),
-        ("NVCC_PREPEND_FLAGS", &flags),
-        ("NVCC_CCBIN", "/elsewhere"),
+        ("FAKE_TOOL", devtool.to_str().unwrap()),
+        ("TOOL_PREPEND_FLAGS", &flags),
+        ("TOOL_HOSTBIN", "/elsewhere"),
         ("PATH", "/bin:/usr/bin"),
     ]);
     let tk = Toolkit::new(DEVICE_TABLE, &[], env).unwrap();
@@ -209,16 +209,16 @@ fn a_device_table_finds_the_host_compiler_in_a_flag_and_runs_tools_in_the_adjust
             .unwrap()
             .get("path")
             .and_then(J::str),
-        Some(dir.join("gcc/g++").to_str().unwrap())
+        Some(dir.join("hostcc/g++").to_str().unwrap())
     );
-    // the nvcc run sees no -ccbin and no NVCC_CCBIN, the toolkit's bin first on PATH and CUDA_PATH at its root
-    let request = r#"{"name":"k","text":"","source_suffix":".cu","output_suffix":".ptx","template":["{compiler}","-ptx","{output}"]}"#;
+    // the devtool run sees no -hostbin and no TOOL_HOSTBIN, the toolkit's bin first on PATH and KIT_PATH at its root
+    let request = r#"{"name":"k","text":"","source_suffix":".cu","output_suffix":".img","template":["{compiler}","-image","{output}"]}"#;
     tk.build(request, &dir.join("store")).unwrap();
     let seen = fs::read_to_string(dir.join("env.txt")).unwrap();
     let parts: Vec<&str> = seen.trim().splitn(4, '|').collect();
-    assert_eq!(parts[..3], ["-O2", "", dir.join("cuda").to_str().unwrap()]);
+    assert_eq!(parts[..3], ["-O2", "", dir.join("kit").to_str().unwrap()]);
     assert!(
-        parts[3].starts_with(&format!("{}:", dir.join("cuda/bin").display())),
+        parts[3].starts_with(&format!("{}:", dir.join("kit/bin").display())),
         "{}",
         parts[3]
     );
@@ -227,7 +227,7 @@ fn a_device_table_finds_the_host_compiler_in_a_flag_and_runs_tools_in_the_adjust
 #[test]
 fn the_absence_of_a_host_compiler_names_every_compiler_tried_in_order() {
     let dir = scratch("tried");
-    let table = r#"{"tools":{"compiler":{"rules":[{"env":"HAWK_CXX","required":true},{"env":"CXX","first_word":true},{"path":"g++"},{"path":"clang++"}],
+    let table = r#"{"tools":{"compiler":{"rules":[{"env":"HAWK_CXX","required":true},{"env":"CXX","first_word":true},{"path":"g++"},{"path":"otherc++"}],
         "fix":"install g++ or set HAWK_CXX=/path/to/c++"}}}"#;
     let env = Env::from_pairs(&[("PATH", dir.to_str().unwrap()), ("CXX", "no-such-cxx -m64")]);
     let answer = ask(&Toolkit::new(table, &[], env).unwrap());
@@ -235,7 +235,7 @@ fn the_absence_of_a_host_compiler_names_every_compiler_tried_in_order() {
         answer.get("tools_absent").and_then(J::str),
         Some(
             "no compiler found. Tried, in order: $HAWK_CXX (unset), $CXX (\"no-such-cxx\", did not resolve), g++ on PATH (absent), \
-             clang++ on PATH (absent); install g++ or set HAWK_CXX=/path/to/c++"
+             otherc++ on PATH (absent); install g++ or set HAWK_CXX=/path/to/c++"
         )
     );
 }
@@ -243,13 +243,13 @@ fn the_absence_of_a_host_compiler_names_every_compiler_tried_in_order() {
 #[test]
 fn a_host_compiler_in_a_quoted_flag_value_with_a_space_in_its_path_is_found() {
     let dir = scratch("quoted");
-    let nvcc = dir.join("nvcc");
-    script(&nvcc, "#!/bin/sh\necho 'fake nvcc'\n");
-    fake_compiler(&dir.join("my gcc"), "g++");
-    let flags = format!("-O2 -ccbin '{}' -g", dir.join("my gcc").display());
+    let devtool = dir.join("devtool");
+    script(&devtool, "#!/bin/sh\necho 'fake devtool'\n");
+    fake_compiler(&dir.join("my hostcc"), "g++");
+    let flags = format!("-O2 -hostbin '{}' -g", dir.join("my hostcc").display());
     let env = Env::from_pairs(&[
-        ("FAKE_NVCC", nvcc.to_str().unwrap()),
-        ("NVCC_PREPEND_FLAGS", &flags),
+        ("FAKE_TOOL", devtool.to_str().unwrap()),
+        ("TOOL_PREPEND_FLAGS", &flags),
         ("PATH", "/bin:/usr/bin"),
     ]);
     let answer = ask(&Toolkit::new(DEVICE_TABLE, &[], env).unwrap());
@@ -262,53 +262,6 @@ fn a_host_compiler_in_a_quoted_flag_value_with_a_space_in_its_path_is_found() {
         .unwrap();
     assert_eq!(
         host.get("path").and_then(J::str),
-        Some(dir.join("my gcc/g++").to_str().unwrap())
-    );
-}
-
-/// The host compiler the shipped device table finds, with `vars` set beside a device compiler and a `g++` on `PATH`.
-fn shipped_host_compiler(dir: &std::path::Path, vars: &[(&str, String)]) -> String {
-    let table = fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../osprey_cuda/facts/tools.json"),
-    )
-    .unwrap();
-    let nvcc = dir.join("cuda/nvcc");
-    script(
-        &nvcc,
-        "#!/bin/sh\necho 'Cuda compilation tools, release 12.6, V12.6.20'\n",
-    );
-    let bin = dir.to_str().unwrap().to_string();
-    let nvcc_path = nvcc.display().to_string();
-    let mut pairs = vec![("HAWK_NVCC", nvcc_path.as_str()), ("PATH", bin.as_str())];
-    pairs.extend(vars.iter().map(|(k, v)| (*k, v.as_str())));
-    let answer = ask(&Toolkit::new(&table, &[], Env::from_pairs(&pairs)).unwrap());
-    let tools = answer.get("stated").unwrap().get("tools").unwrap();
-    tools
-        .get("host_compiler")
-        .unwrap()
-        .get("path")
-        .and_then(J::str)
-        .unwrap()
-        .to_string()
-}
-
-#[test]
-fn the_device_host_compiler_is_read_from_the_standard_variables_before_path() {
-    let dir = scratch("device_host");
-    for name in ["from_cxx", "from_cudahostcxx"] {
-        fake_compiler(&dir.join(name), "g++");
-    }
-    fake_compiler(&dir, "g++");
-    let at = |name: &str| dir.join(name).join("g++").display().to_string();
-    // CUDAHOSTCXX first, then CXX (a command line: its first word), then the compiler on PATH
-    let both = [
-        ("CUDAHOSTCXX", at("from_cudahostcxx")),
-        ("CXX", format!("{} -m64", at("from_cxx"))),
-    ];
-    assert_eq!(shipped_host_compiler(&dir, &both), at("from_cudahostcxx"));
-    assert_eq!(shipped_host_compiler(&dir, &both[1..]), at("from_cxx"));
-    assert_eq!(
-        shipped_host_compiler(&dir, &[]),
-        dir.join("g++").display().to_string()
+        Some(dir.join("my hostcc/g++").to_str().unwrap())
     );
 }

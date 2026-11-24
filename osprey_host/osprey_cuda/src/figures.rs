@@ -1,26 +1,20 @@
-//! Figures read from a tool's own output or from the image it made, by the name a request gives the grammar: `ptxas_info`, the
+//! Figures read from a tool's own output or from the image it made, by the name a request gives the grammar (registered with the toolkit by [`crate::register`]): `ptxas_info`, the
 //! per-kernel register and frame lines of an `-Xptxas -v` report, and `image_resources`, the same figures read off the image
 //! itself (the register-count and frame-size records of an ELF image's `.nv.info` section; no tool and no device needed).
-use crate::refusal::{Done, Refusal};
-use crate::wire;
 use rcore::json::J;
+use toolkit::wire;
 
 /// The figures a kernel's lines state, in the order they are reported.
 const FIELDS: [&str; 4] = ["regs", "stack_B", "spill_store_B", "spill_load_B"];
 
-/// The figures a tool run states under the grammar `name`, read from its `stderr` or from the `image` it wrote; no name states none.
-///
-/// # Errors
-/// Refuses a grammar name that is not `ptxas_info` or `image_resources`.
-pub fn parse(name: Option<&str>, stderr: &str, image: &[u8]) -> Done<J> {
-    match name {
-        None => Ok(wire::obj(vec![])),
-        Some("ptxas_info") => Ok(ptxas_info(stderr)),
-        Some("image_resources") => Ok(image_resources(image)),
-        Some(other) => Err(Refusal::bad(format!(
-            "figures grammar {other:?} is not one of: ptxas_info, image_resources"
-        ))),
-    }
+/// The grammar `ptxas_info` as the toolkit registers it: read from the tool's report; the image is not read.
+pub(crate) fn ptxas_info_grammar(report: &str, _image: &[u8]) -> J {
+    ptxas_info(report)
+}
+
+/// The grammar `image_resources` as the toolkit registers it: read from the image; the tool's text is not read.
+pub(crate) fn image_resources_grammar(_text: &str, image: &[u8]) -> J {
+    image_resources(image)
 }
 
 /// The record type of a `.nv.info` entry that states a kernel's register count.
@@ -90,7 +84,7 @@ fn sections(image: &[u8]) -> Option<Vec<Section>> {
 /// of its `.nv.info` section, each keyed by the symbol index of the kernel. The spill figures are not in the image (null). An
 /// image that is not ELF, or malformed, states nothing.
 #[must_use]
-pub fn image_resources(image: &[u8]) -> J {
+fn image_resources(image: &[u8]) -> J {
     resources(image).map_or_else(|| wire::obj(vec![]), J::Obj)
 }
 
@@ -240,6 +234,5 @@ mod tests {
     #[test]
     fn a_report_without_kernels_states_nothing_and_an_unknown_grammar_is_refused() {
         assert_eq!(wire::render(&ptxas_info("nothing here")), "{}");
-        assert!(parse(Some("nope"), "", &[]).is_err());
     }
 }

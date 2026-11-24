@@ -2,7 +2,6 @@
 //! from the image. Part of [`crate::compile`]; it reads a [`Job`]'s members directly.
 use super::{Job, COMPLAINT_CHARS};
 use crate::discover::Machine;
-use crate::figures;
 use crate::refusal::{Done, Kind, Refusal};
 use crate::runtime::Runtime;
 use crate::store::{self, Built, Entry, Store};
@@ -135,7 +134,7 @@ impl Toolkit {
                 ("argv", wire::strs(&argv)),
                 ("seconds", J::Num(start.elapsed().as_secs_f64())),
                 ("elf", J::Bool(image.starts_with(b"\x7fELF"))),
-                ("figures", figures::parse(job.figures.as_deref(), &done.log, &image)?),
+                ("figures", self.figures(job.figures.as_deref(), &done.log, &image)?),
             ]);
             let mut files = vec![output];
             if job.keep_source {
@@ -149,7 +148,7 @@ impl Toolkit {
     }
 }
 
-/// `image` without its trailing NUL bytes (a text image such as PTX is NUL-terminated by the library).
+/// `image` without its trailing NUL bytes (a text image is NUL-terminated by the library).
 fn trim_nul(mut image: Vec<u8>) -> Vec<u8> {
     while image.last() == Some(&0) {
         image.pop();

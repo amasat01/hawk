@@ -4,7 +4,7 @@
 mod common;
 use common::{member, output_of, scratch};
 use std::ffi::{c_char, c_int, c_void, CString};
-use toolkit::{wire, Env, HeaderTree, Toolkit};
+use toolkit::{wire, Env, HeaderTree};
 
 const ANSWER: HeaderTree = HeaderTree {
     name: "answer",
@@ -62,7 +62,7 @@ fn call(path: &str, name: &str) -> i32 {
 #[test]
 fn a_unit_and_a_set_text_built_and_linked_with_the_real_compiler_load_and_run() {
     let dir = scratch("e2e");
-    let tk = Toolkit::new(TABLE, &[ANSWER], Env::process()).unwrap();
+    let tk = common::new_toolkit(TABLE, &[ANSWER], Env::process()).unwrap();
     let store = dir.join("store");
     let unit = tk
         .build(

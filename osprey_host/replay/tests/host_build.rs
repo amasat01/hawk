@@ -12,7 +12,6 @@
 //! A line the old code refused (an unknown profile or level, a vector profile its compiler cannot build) must be refused by the
 //! facts question too. Nothing is adjusted: a difference is printed and fails the test.
 use aether_writers::contract::{Contract, Json};
-use osprey_lowering::facts;
 
 /// The recorded old argv, one JSON line for each combination.
 const RECORDED: &str = include_str!("data/host_argv_old.jsonl");
@@ -57,9 +56,14 @@ fn stated(row: &Json) -> String {
 /// The commands a facts answer states for a recorded line, or why it refused.
 fn asked(row: &Json) -> Result<Json, String> {
     let dir = osprey_replay::merged_facts();
-    let state = facts::stated_from_json(&stated(row)).map_err(String::from)?;
-    let answer = osprey_replay::answer_named(&dir, "host", &identity(row), &facts::probe(), &state)
-        .map_err(String::from)?;
+    let state = osprey_replay::host_stated(&stated(row)).map_err(String::from)?;
+    let answer = osprey_replay::answer_host(
+        &dir,
+        &identity(row),
+        &osprey_cpu_lib::host_state::probe(),
+        &state,
+    )
+    .map_err(String::from)?;
     let machine = Contract::parse(&answer).unwrap().0;
     Ok(machine
         .get("host_build")
@@ -144,12 +148,16 @@ fn a_gcc_release_is_read_from_the_identity_when_none_is_stated() {
     let dir = osprey_replay::merged_facts();
     let state = |witness: &str| {
         let text = format!("{{\"headers\":\"roots\",\"isa\":\"x86_64\",\"vector_isa\":\"avx2\",\"host_profile\":\"native-vector-math\",\"masked_call_witness\":\"{witness}\"}}");
-        facts::stated_from_json(&text).unwrap()
+        osprey_replay::host_stated(&text).unwrap()
     };
     let flag = |identity: &str, witness: &str| {
-        let answer =
-            osprey_replay::answer_named(&dir, "host", identity, &facts::probe(), &state(witness))
-                .unwrap();
+        let answer = osprey_replay::answer_host(
+            &dir,
+            identity,
+            &osprey_cpu_lib::host_state::probe(),
+            &state(witness),
+        )
+        .unwrap();
         answer.contains("-DAETHER_HVM_MASKED=1")
     };
     assert!(flag(
@@ -169,12 +177,11 @@ fn a_gcc_release_is_read_from_the_identity_when_none_is_stated() {
 fn headers_are_required_and_closed() {
     let dir = osprey_replay::merged_facts();
     let refusal = |record: &str| -> String {
-        let state = facts::stated_from_json(record).unwrap();
-        osprey_replay::answer_named(
+        let state = osprey_replay::host_stated(record).unwrap();
+        osprey_replay::answer_host(
             &dir,
-            "host",
             "c++ || clang version 17.0.1 || 0",
-            &facts::probe(),
+            &osprey_cpu_lib::host_state::probe(),
             &state,
         )
         .map_err(String::from)
@@ -186,13 +193,12 @@ fn headers_are_required_and_closed() {
 
 #[test]
 fn the_unit_and_the_set_compile_each_have_one_place_for_defines() {
-    let state = facts::stated_from_json(r#"{"headers":"served"}"#).unwrap();
+    let state = osprey_replay::host_stated(r#"{"headers":"served"}"#).unwrap();
     let dir = osprey_replay::merged_facts();
-    let answer = osprey_replay::answer_named(
+    let answer = osprey_replay::answer_host(
         &dir,
-        "host",
         "c++ || clang version 17.0.1 || 0",
-        &facts::probe(),
+        &osprey_cpu_lib::host_state::probe(),
         &state,
     )
     .unwrap();

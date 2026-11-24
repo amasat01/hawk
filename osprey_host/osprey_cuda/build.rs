@@ -21,7 +21,7 @@ fn toolkit_root(here: &Path) -> Option<PathBuf> {
     let table = std::fs::read_to_string(here.join("facts/tools.json")).expect("facts/tools.json");
     let spec = wire::parse("the tool table", &table).unwrap_or_else(|why| panic!("{why}"));
     let env = Env::process();
-    let machine = discover::find(&spec, &env, None).unwrap_or_else(|why| panic!("{why}"));
+    let machine = discover::find(&spec, &env, None, &[]).unwrap_or_else(|why| panic!("{why}"));
     machine.tool("compiler")?;
     let vars = discover::child_env(&spec, &env, &machine).unwrap_or_else(|why| panic!("{why}"));
     vars.get("CUDA_PATH").map(PathBuf::from)

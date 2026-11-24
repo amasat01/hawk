@@ -5,9 +5,8 @@
 mod fakes;
 use aether_writers::contract::types::Target;
 use fakes::{script, store};
-use osprey_lowering::facts::{probe, Stated};
+use osprey_lowering::backend::Backend;
 use osprey_lowering::lower::request::{KernelAnswer, KernelRequest, LaneAxis};
-use osprey_lowering::lower::unit_meta::ImageFormat;
 use osprey_lowering::tool;
 use raptor_ir::door::{rx_ctx_free, rx_ctx_new, RX_OK};
 use raptor_ir::dump::rx_load;
@@ -82,20 +81,20 @@ fn request_for(target: Target, sink: u32) -> KernelRequest {
     let mut request = KernelRequest::from_json(&base).unwrap();
     let dir = osprey_replay::merged_facts();
     let (name, compiler, stated) = match target {
-        Target::Host => (
-            "host",
-            HOST_COMPILER,
-            Stated {
-                headers: Some("roots".into()),
-                ..Stated::default()
-            },
-        ),
-        Target::Device => ("cuda", DEVICE_COMPILER, Stated::default()),
+        Target::Host => ("host", HOST_COMPILER, r#"{"headers":"roots"}"#),
+        Target::Device => ("cuda", DEVICE_COMPILER, "{}"),
     };
-    let facts = osprey_replay::answer_named(&dir, name, compiler, &probe(), &stated).unwrap();
+    let facts = osprey_replay::answer_named(
+        &dir,
+        name,
+        compiler,
+        &osprey_cpu_lib::host_state::probe(),
+        stated,
+    )
+    .unwrap();
     request.targets = vec![target];
     request.facts = vec![(target, facts)];
-    request.image_format = (target == Target::Device).then_some(ImageFormat::Cubin);
+    request.image_format = (target == Target::Device).then(|| "Cubin".to_string());
     request
 }
 
@@ -319,7 +318,7 @@ fn with_device_define(lead: &str) -> String {
     let mut answer = KernelAnswer::from_json(lead).unwrap();
     answer.units[0]
         .defines
-        .push((Target::Device, "HAWK_FAST_ENTRIES=1".into()));
+        .push(("cuda".into(), "HAWK_FAST_ENTRIES=1".into()));
     answer.to_json()
 }
 
@@ -342,7 +341,7 @@ fn a_two_library_merge_keeps_the_defines_of_the_device_and_states_none_for_the_h
     let merged = osprey_lowering::lower::merge(&format!("[{stating},{beside}]")).unwrap();
     assert_eq!(
         defines(&merged),
-        [(Target::Device, "HAWK_FAST_ENTRIES=1".to_string())]
+        [("cuda".to_string(), "HAWK_FAST_ENTRIES=1".to_string())]
     );
     let plain = osprey_lowering::lower::merge(&format!("[{lead},{beside}]")).unwrap();
     assert!(
@@ -428,7 +427,7 @@ fn the_device_build_request_filled_from_the_merged_answer_carries_the_define_in_
     let defines: Vec<String> = answer.units[0]
         .defines
         .iter()
-        .filter(|(target, _)| *target == Target::Device)
+        .filter(|(target, _)| target == "cuda")
         .map(|(_, define)| format!("{define:?}"))
         .collect();
     assert_eq!(defines, ["\"HAWK_FAST_ENTRIES=1\""]);
@@ -600,4 +599,32 @@ fn a_table_of_scalars_with_a_stated_pattern_and_payload_is_a_gathered_lookup_and
         assert_eq!(held.flags & SLOT_GATHER, 0, "{}", held.name);
         assert_eq!(held.flags & SLOT_SHARED != 0, shared, "{}", held.name);
     }
+}
+
+/// Oracle: the forms the device library names for its artifact (the words the old shared set held); a request for the device that
+/// names none or another is refused by name, and a host request has no artifact form.
+#[test]
+fn the_device_library_names_the_form_of_its_artifact_and_refuses_the_others() {
+    let mut request = request_for(Target::Device, 0);
+    for form in ["Ptx", "Cubin", "Fatbin"] {
+        request.image_format = Some(form.into());
+        let found = osprey_cuda_lib::Cuda.artifact_form(&request).unwrap();
+        assert_eq!(found.as_deref(), Some(form));
+    }
+    request.image_format = Some("Elf".into());
+    let why = osprey_cuda_lib::Cuda.artifact_form(&request).unwrap_err();
+    assert!(
+        why.reason.contains("member Elf of image_format"),
+        "{}",
+        why.reason
+    );
+    request.image_format = None;
+    let why = osprey_cuda_lib::Cuda.artifact_form(&request).unwrap_err();
+    assert!(
+        why.reason.contains("a device target needs one"),
+        "{}",
+        why.reason
+    );
+    let host = request_for(Target::Host, 0);
+    assert_eq!(osprey_cpu_lib::Cpu.artifact_form(&host).unwrap(), None);
 }

@@ -1,7 +1,7 @@
 //! The typed meta of the units, from what the lowering already knows: each unit's walk, request and texts, and what the split into
 //! stages decided for the kernel. A member nothing here knows is left absent (see `NOT_COMPUTED`), never given a value.
 use super::active::{COUNT_PLANE, MAP_PLANE};
-use super::card::{BuildCard, ContractionRoute};
+use super::card::{BuildNumbers, ContractionRoute};
 use super::request::{Body, KernelRequest, LaneAxis, Steps, TargetText, UnitAnswer};
 use super::segment::FUSED_STEPS_PLANE;
 use super::stage_block::{KeyedRecord, PlaneRecord, StageBlock, TeamRecord};
@@ -24,9 +24,11 @@ pub(super) struct Parts<'a> {
     /// The request.
     pub request: &'a KernelRequest,
     /// The numbers the lowering decided on.
-    pub card: &'a BuildCard,
+    pub card: &'a BuildNumbers,
     /// The command that makes the device image, when the request names the device.
-    pub image: Option<&'a super::image::DeviceImage>,
+    pub image: Option<&'a super::image::ImageCommand>,
+    /// The form of the artifact the backend builds, when the request names a device.
+    pub artifact: Option<&'a str>,
     /// The unit.
     pub pending: &'a Pending,
     /// The unit's canonical walk and its digest.
@@ -677,8 +679,10 @@ pub(super) fn unit(parts: &Parts) -> Result<(m::UnitMeta, Option<m::Contraction>
     let image = parts.image.filter(|_| device.is_some());
     let device_format = device
         .as_ref()
-        .and(parts.request.image_format)
-        .unwrap_or(m::ImageFormat::None);
+        .and(parts.artifact)
+        .map_or_else(m::ArtifactForm::default, |form| {
+            m::ArtifactForm(form.to_string())
+        });
     let host = entry(Target::Host);
     let device_text = entry(Target::Device);
     // the symbol that folds a companion plane, as the target's text states it
@@ -768,7 +772,7 @@ pub(super) fn unit(parts: &Parts) -> Result<(m::UnitMeta, Option<m::Contraction>
         device_image_format: device_format,
         device_compiler: image.map(|i| i.compiler.clone()),
         device_flags: image.map(|i| i.flags.clone()),
-        device_ptx_isa: image.map_or(0, |i| i.ptx_isa),
+        device_ptx_isa: image.map_or(0, |i| i.isa_version),
         gemm,
         group: super::group::record(parts)?,
         device_function: device,

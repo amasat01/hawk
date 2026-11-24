@@ -2,11 +2,14 @@
 //! changed number moves the decision it governs. The answers come from the replay tool over the recorded calls.
 #![cfg(feature = "old-contract")]
 mod common;
+use aether_writers::contract::Json;
 use aether_writers::refuse::{Refusal, RefusalKind};
-use osprey_lowering::facts::{
-    device_fusion, host_fusion, stated_from_json, CardSet, Failed, Probe, Stated,
-};
-use osprey_lowering::lower::card::{device_build_of, host_build_of};
+use osprey_cpu_lib::card::host_build_of;
+use osprey_cpu_lib::host_facts::host_fusion;
+use osprey_cpu_lib::host_state::Probe;
+use osprey_cuda_lib::card::device_build_of;
+use osprey_cuda_lib::device_facts::device_fusion;
+use osprey_lowering::facts::{CardSet, Failed};
 use osprey_replay::answer_named as answer;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -403,11 +406,7 @@ fn a_mistake_in_a_document_the_facts_call_states_is_a_bad_request_that_names_the
     ];
     for (name, target, texts) in calls {
         for text in texts {
-            let stated = Stated {
-                headers: Some("roots".into()),
-                cards: vec![(name.to_string(), text)],
-                ..Stated::default()
-            };
+            let stated = record(target == "host", &[(name, text)]);
             let dir = osprey_replay::merged_facts();
             let failed = answer(&dir, target, compiler, &probe, &stated).expect_err(name);
             let why = failed.refusal();
@@ -419,7 +418,7 @@ fn a_mistake_in_a_document_the_facts_call_states_is_a_bad_request_that_names_the
 
 #[test]
 fn a_document_name_the_library_does_not_have_is_a_bad_request_that_names_it() {
-    let stated = stated_from_json(r#"{"cards": {"nonsense.json": "{}"}}"#).expect("a facts record");
+    let stated = r#"{"cards": {"nonsense.json": "{}"}}"#;
     let probe = Probe {
         isa: "arm64".into(),
         vector_isa: "neon".into(),
@@ -427,7 +426,7 @@ fn a_document_name_the_library_does_not_have_is_a_bad_request_that_names_it() {
     };
     let compiler = "c++ || Apple clang version 21.0.0 || 0";
     let dir = osprey_replay::merged_facts();
-    let why = answer(&dir, "host", compiler, &probe, &stated)
+    let why = answer(&dir, "host", compiler, &probe, stated)
         .expect_err("an unknown document")
         .refusal();
     assert_eq!(why.kind, RefusalKind::BadRequest);
@@ -516,6 +515,20 @@ fn the_same_lookup_failing_on_the_shipped_device_document_is_a_fault() {
     }
 }
 
+/// The stated machine record that states `headers` in roots when `headers` is set and the documents `cards` (name and whole text).
+fn record(headers: bool, cards: &[(&str, String)]) -> String {
+    let mut members = vec![];
+    if headers {
+        members.push(("headers".to_string(), Json::Str("roots".into())));
+    }
+    let docs = cards
+        .iter()
+        .map(|(name, text)| (name.to_string(), Json::Str(text.clone())))
+        .collect();
+    members.push(("cards".to_string(), Json::Obj(docs)));
+    Json::Obj(members).to_text()
+}
+
 /// The host facts call for an Arm64 machine stating `arm.json` as `text`, or the shipped directory's copies but for `arm.json`
 /// being `text` in a directory of its own when `shipped` is set.
 fn host_answer(text: String, shipped: bool) -> Result<String, Failed> {
@@ -525,10 +538,7 @@ fn host_answer(text: String, shipped: bool) -> Result<String, Failed> {
         vector_isa: "neon".into(),
         caches: None,
     };
-    let mut stated = Stated {
-        headers: Some("roots".into()),
-        ..Stated::default()
-    };
+    let mut cards = vec![];
     let dir = if shipped {
         let dir = folder("shipped_flags");
         for entry in std::fs::read_dir(&facts).expect("the facts directory") {
@@ -538,7 +548,7 @@ fn host_answer(text: String, shipped: bool) -> Result<String, Failed> {
         std::fs::write(dir.join("arm.json"), text).expect("a broken document");
         dir
     } else {
-        stated.cards = vec![("arm.json".to_string(), text)];
+        cards.push(("arm.json", text));
         facts
     };
     osprey_replay::answer_named(
@@ -546,7 +556,7 @@ fn host_answer(text: String, shipped: bool) -> Result<String, Failed> {
         "host",
         "/usr/bin/c++ || Apple clang version 21.0.0 || 0",
         &probe,
-        &stated,
+        &record(true, &cards),
     )
 }
 

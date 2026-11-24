@@ -1,8 +1,10 @@
 //! The facts answer: the profile and instruction-set rules, the refusals by name, and the schema check of the data files.
 use aether_writers::contract::types::Caches;
-use osprey_lowering::facts::{device_fusion, stated_from_json, CardSet, Probe, Stated};
-use osprey_lowering::lower::card::{device_build_of, DeviceCard};
-use osprey_replay::answer_named as ask_facts;
+use osprey_cpu_lib::host_state::{Probe, Stated};
+use osprey_cuda_lib::card::{device_build_of, DeviceCard};
+use osprey_cuda_lib::device_facts::device_fusion;
+use osprey_lowering::facts::CardSet;
+use osprey_replay::{answer_host, answer_named};
 use std::path::{Path, PathBuf};
 
 /// The data files that ship with the library.
@@ -42,14 +44,29 @@ fn answer(
     target: &str,
     compiler: &str,
     probe: &Probe,
+    stated: &str,
+) -> Result<String, String> {
+    let text = answer_named(dir, target, compiler, probe, stated).map_err(String::from)?;
+    Ok(without_commands(text))
+}
+
+/// The facts answer of the host library for a stated machine, a failure as its reason.
+fn host_answer(
+    dir: &Path,
+    compiler: &str,
+    probe: &Probe,
     stated: &Stated,
 ) -> Result<String, String> {
-    let text = ask_facts(dir, target, compiler, probe, stated).map_err(String::from)?;
-    // the build commands are tested in host_build.rs; the machine record is what these tests read
-    Ok(match text.find(r#","host_build":"#) {
+    let text = answer_host(dir, compiler, probe, stated).map_err(String::from)?;
+    Ok(without_commands(text))
+}
+
+/// The answer without its build commands, which are tested in host_build.rs: the machine record is what these tests read.
+fn without_commands(text: String) -> String {
+    match text.find(r#","host_build":"#) {
         Some(at) => format!("{}}}", &text[..at]),
         None => text,
-    })
+    }
 }
 
 /// A stated machine whose headers are in roots, which a host question must state.
@@ -62,7 +79,7 @@ fn roots() -> Stated {
 
 /// The answer for the host target, or the refusal.
 fn host(isa: &str, line: &str) -> Result<String, String> {
-    answer(&shipped(), "host", &identity(line), &machine(isa), &roots())
+    host_answer(&shipped(), &identity(line), &machine(isa), &roots())
 }
 
 #[test]
@@ -95,14 +112,7 @@ fn x86_answers_follow_the_compiler() {
 
 /// The vector instruction set the host answer states when `stated` names the instruction set and the probe is `probe`.
 fn vector_set(probe: &Probe, stated: Stated) -> String {
-    let text = answer(
-        &shipped(),
-        "host",
-        &identity("clang version 1"),
-        probe,
-        &stated,
-    )
-    .unwrap();
+    let text = host_answer(&shipped(), &identity("clang version 1"), probe, &stated).unwrap();
     let after = text.split(r#""vector_isa":""#).nth(1).unwrap();
     after.split('"').next().unwrap().to_string()
 }
@@ -142,28 +152,14 @@ fn caches_are_the_probes() {
         vector_isa: "neon".into(),
         caches: Some(caches),
     };
-    let text = answer(
-        &shipped(),
-        "host",
-        &identity("clang version 1"),
-        &probe,
-        &roots(),
-    )
-    .unwrap();
+    let text = host_answer(&shipped(), &identity("clang version 1"), &probe, &roots()).unwrap();
     let want = r#""caches":{"l1d_bytes":65536,"l2_bytes":4194304,"source":"probe"}"#;
     assert!(text.contains(want), "{text}");
 }
 
 #[test]
 fn a_device_has_no_instruction_set() {
-    let text = answer(
-        &shipped(),
-        "cuda",
-        &nvcc("12.6"),
-        &machine("arm64"),
-        &Stated::default(),
-    )
-    .unwrap();
+    let text = answer(&shipped(), "cuda", &nvcc("12.6"), &machine("arm64"), "{}").unwrap();
     assert!(
         text.starts_with(r#"{"exact_libm":true,"routed_pow":false,"select_weight""#),
         "{text}"
@@ -182,12 +178,11 @@ fn refusals_name_their_cause() {
         "fast",
         &identity("gcc"),
         &machine("arm64"),
-        &Stated::default(),
+        "{}",
     );
     assert_eq!(refused(other), "no facts for the target fast");
-    let bad = refused(answer(
+    let bad = refused(host_answer(
         &shipped(),
-        "host",
         "gcc",
         &machine("arm64"),
         &Stated::default(),
@@ -217,9 +212,8 @@ fn edited(file: &str, from: &str, to: &str) -> String {
 #[test]
 fn a_card_that_breaks_its_schema_is_refused_by_name() {
     let probe = machine("arm64");
-    let ask = |dir: &Path| {
-        answer(dir, "host", &identity("clang"), &probe, &Stated::default()).unwrap_err()
-    };
+    let ask =
+        |dir: &Path| host_answer(dir, &identity("clang"), &probe, &Stated::default()).unwrap_err();
     let extra = changed(
         "extra",
         "cpu.json",
@@ -253,13 +247,12 @@ fn a_card_that_breaks_its_schema_is_refused_by_name() {
 
 /// The answer for the stated machine `record`, probed as an Arm machine, for the target.
 fn stated(target: &str, line: &str, record: &str) -> Result<String, String> {
-    let stated = stated_from_json(record)?;
     answer(
         &shipped(),
         target,
         &identity(line),
         &machine("arm64"),
-        &stated,
+        record,
     )
 }
 
@@ -332,13 +325,10 @@ fn a_stated_machine_is_refused_by_name() {
     );
     assert_eq!(
         why("gcc", r#"{"device_arch":"sm_61"}"#),
-        "stated machine: device_arch, device_release and driver_release are for the cuda target"
+        "stated machine: unknown key device_arch"
     );
     let device = stated("cuda", &line("12.6"), r#"{"isa":"arm64"}"#).unwrap_err();
-    assert_eq!(
-        device,
-        "stated machine: only device_arch, device_release, driver_release and opt_level are for the cuda target"
-    );
+    assert_eq!(device, "stated machine: unknown key isa");
 }
 
 #[test]
@@ -352,13 +342,12 @@ fn the_device_card_states_a_fusion_row() {
 
 #[test]
 fn a_device_answer_states_the_compile_command_as_data() {
-    let stated = stated_from_json(r#"{"device_arch":"sm_80"}"#).unwrap();
     let text = answer(
         &shipped(),
         "cuda",
         &nvcc("12.9"),
         &machine("arm64"),
-        &stated,
+        r#"{"device_arch":"sm_80"}"#,
     )
     .unwrap();
     // no driver is stated, so the image is a cubin, and its compile asks for the resource figures
@@ -409,7 +398,7 @@ fn a_device_compiler_line_without_a_release_takes_the_stated_one() {
     }
     assert_eq!(
         stated("host", "clang", r#"{"device_release":"12.6"}"#).unwrap_err(),
-        "stated machine: device_arch, device_release and driver_release are for the cuda target"
+        "stated machine: unknown key device_release"
     );
 }
 
@@ -420,7 +409,7 @@ fn profile_refusal(dir: &Path, line: &str, profile: &str) -> String {
         ..roots()
     };
     let probe = machine("arm64");
-    answer(dir, "host", &identity(line), &probe, &stated).unwrap_err()
+    host_answer(dir, &identity(line), &probe, &stated).unwrap_err()
 }
 
 #[test]
@@ -451,9 +440,8 @@ fn a_profile_the_other_compiler_family_builds_says_which_family() {
         host_profile: Some("native-vector-math-nofma".into()),
         ..roots()
     };
-    let got = answer(
+    let got = host_answer(
         &dir,
-        "host",
         &identity("Apple clang version 21.0.0"),
         &machine("x86_64"),
         &stated,
@@ -582,7 +570,7 @@ fn contraction_flags(isa: &str, line: &str, profile: Option<&str>) -> Vec<String
         ..roots()
     };
     // the whole answer, build commands included: `answer` above cuts them off
-    let text = ask_facts(&shipped(), "host", &identity(line), &machine(isa), &stated).unwrap();
+    let text = answer_host(&shipped(), &identity(line), &machine(isa), &stated).unwrap();
     // the unit and the set commands state it once each: one value is what they agree on
     let mut flags: Vec<String> = text
         .split('"')
@@ -620,7 +608,7 @@ fn the_exact_profiles_compile_with_contraction_off_and_the_default_with_it_fast(
 /// Oracle: the machine the library runs on states a level 1 data cache, a level 2 cache at least as large, and where it read them.
 #[test]
 fn the_probe_of_this_machine_states_its_caches() {
-    let caches = osprey_lowering::facts::probe()
+    let caches = osprey_cpu_lib::host_state::probe()
         .caches
         .expect("this machine states its cache sizes");
     assert!(caches.l1d_bytes > 0 && caches.l2_bytes >= caches.l1d_bytes);

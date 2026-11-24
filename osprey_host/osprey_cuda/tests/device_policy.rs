@@ -4,7 +4,7 @@
 mod common;
 use common::{build_shared, scratch, script};
 use rcore::json::J;
-use toolkit::{wire, Env, Toolkit};
+use toolkit::{wire, Env};
 
 const DRIVER: &str = r#"
 extern "C" {
@@ -47,7 +47,7 @@ fn device(
     if let Some(pin) = env_pin {
         pairs.push(("TEST_ARCH", pin));
     }
-    let tk = Toolkit::new(&table(library), &[], Env::from_pairs(&pairs)).unwrap();
+    let tk = common::new_toolkit(&table(library), &[], Env::from_pairs(&pairs)).unwrap();
     let ask = ask_pin.map_or("{}".to_string(), |p| format!("{{\"device_arch\":\"{p}\"}}"));
     let answer = tk.machine(&ask).map_err(|r| r.message)?;
     Ok(wire::parse("a", &answer)
@@ -156,7 +156,7 @@ fn runs_here(dir: &std::path::Path, library: &str) -> (bool, String) {
         ("FAKE_NVCC", nvcc.to_str().unwrap()),
         ("PATH", "/bin:/usr/bin"),
     ]);
-    let answer = Toolkit::new(&table(library), &[], env)
+    let answer = common::new_toolkit(&table(library), &[], env)
         .unwrap()
         .machine("{}")
         .unwrap();
@@ -203,7 +203,7 @@ fn a_toolkit_without_the_runtime_never_runs_here_and_says_so_first() {
         ])
     };
     let why_of = |library: &str| {
-        let toolkit = Toolkit::new(&table(library), &[], env())
+        let toolkit = common::new_toolkit(&table(library), &[], env())
             .unwrap()
             .without_runtime("built without the device runtime");
         let answer = wire::parse("a", &toolkit.machine("{}").unwrap()).unwrap();

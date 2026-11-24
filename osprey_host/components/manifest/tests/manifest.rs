@@ -52,8 +52,8 @@ fn folders(list: &[&Path]) -> String {
 
 #[test]
 fn a_target_id_is_one_spelling_and_a_bad_one_is_refused_naming_it() {
-    assert_eq!(target::canonical(" Cu-Da ").unwrap(), "cuda");
-    assert_eq!(target::canonical("c u_d a").unwrap(), "cuda");
+    assert_eq!(target::canonical(" Ab-Cd ").unwrap(), "abcd");
+    assert_eq!(target::canonical("a b_c d").unwrap(), "abcd");
     for bad in ["Toy-X!", "", "9lives", "9x", "_-_", "x.y", "é"] {
         let why = target::canonical(bad).unwrap_err();
         assert!(
@@ -99,24 +99,24 @@ fn a_target_row_missing_a_member_or_with_a_bad_or_repeated_id_is_refused() {
     assert!(refusal(&lacking).contains("target 'host' lacks about"));
     assert!(refusal(&manifest_of("m", &[&row("9x")]))
         .contains("the target request: the target id '9x' is not a target id"));
-    let twice = refusal(&manifest_of("m", &[&row("cuda"), &row("Cu-Da")]));
+    let twice = refusal(&manifest_of("m", &[&row("abcd"), &row("Ab-Cd")]));
     assert!(
         twice
-            .contains("osprey.json: the manifest states the target id 'cuda' in more than one row"),
+            .contains("osprey.json: the manifest states the target id 'abcd' in more than one row"),
         "{twice}"
     );
 }
 
 #[test]
 fn a_checked_manifest_keeps_its_rows_with_the_request_in_its_canonical_spelling() {
-    let dir = folder_with(&manifest_of("m", &[&row("Cu-Da")]));
+    let dir = folder_with(&manifest_of("m", &[&row("Ab-Cd")]));
     let checked = manifest::read(&dir).unwrap();
     assert_eq!(checked.get("name").and_then(J::str), Some("m"));
     assert_eq!(
         checked.get("targets").unwrap().arr()[0]
             .get("request")
             .and_then(J::str),
-        Some("cuda")
+        Some("abcd")
     );
     assert_eq!(checked.get("door").unwrap().int(), 11);
 }
@@ -159,12 +159,12 @@ fn a_roster_isolates_a_refused_folder_and_refuses_two_ospreys_serving_one_id() {
 
 #[test]
 fn a_target_in_any_spelling_resolves_and_an_unserved_one_lists_the_served_and_the_refused() {
-    let good = folder_with(&manifest_of("cpu", &[&row("host")]));
+    let good = folder_with(&manifest_of("first", &[&row("host")]));
     let broken = folder_with("{not json");
     let made = roster::of_folders(&folders(&[&good, &broken])).unwrap();
     assert_eq!(
         roster::serving(&made, " Ho-st ").unwrap(),
-        r#"{"id":"host","osprey":"cpu"}"#
+        r#"{"id":"host","osprey":"first"}"#
     );
     let why = roster::serving(&made, "tpu").unwrap_err();
     let searched = format!("(searched: {}, {})", good.display(), broken.display());
@@ -182,7 +182,7 @@ fn a_target_in_any_spelling_resolves_and_an_unserved_one_lists_the_served_and_th
 
 #[test]
 fn the_c_face_writes_the_answer_or_the_refusal_and_asks_for_more_room_when_it_is_short() {
-    let name = CString::new("Cu-Da").unwrap();
+    let name = CString::new("Ab-Cd").unwrap();
     let mut buf = [0 as c_char; 16];
     let mut len = 0usize;
     unsafe {

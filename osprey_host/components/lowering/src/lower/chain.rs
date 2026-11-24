@@ -9,7 +9,7 @@ use super::unit_meta::UnitMeta;
 use super::{carries_no_forced_access, held_exempt, merge_slot, real_bytes, wing, Pending};
 use crate::facts;
 use crate::facts::CardSet;
-use aether_writers::contract::types::{Scalar, Target};
+use aether_writers::contract::types::Scalar;
 use aether_writers::refuse::{bad, nib, Refusal};
 use raptor_ir::record::Ctx;
 use raptor_wings::chain::{bind, cuts, pieces, Member as ChainMember, Piece};
@@ -68,35 +68,11 @@ fn declared_by_members(members: &[Member]) -> Result<Vec<DeclaredSlot>, Refusal>
     Ok(declared)
 }
 
-/// The fusion row of a device build for the architecture and the scalar type: the stated row of that type whose architecture is
-/// nearest by hardware, else the device document's default row.
-pub(super) fn device_row(
-    arch: &str,
-    scalar: Scalar,
-    docs: &CardSet,
-) -> Result<facts::FusionRow, Refusal> {
-    let rows = facts::device_fusion(docs).map_err(facts::Failed::refusal)?;
-    let device = super::card::device_build_of(docs)?;
-    let of_type: Vec<(String, facts::FusionRow)> = rows
-        .rows
-        .into_iter()
-        .filter(|(_, dtype, _)| match scalar {
-            Scalar::Float32 => dtype == "float32",
-            Scalar::Float64 => dtype == "float64",
-            Scalar::Banded => false,
-        })
-        .map(|(cc, _, row)| (cc, row))
-        .collect();
-    Ok(device
-        .nearest_row(arch, &of_type)?
-        .cloned()
-        .unwrap_or(rows.defaults))
-}
-
 /// The build's one fusion row: the leader's when this library lowers beside one, else the device's when the target is a device,
 /// else this host's.
 pub(super) fn fusion_row(
     request: &KernelRequest,
+    cards: &dyn super::card::TargetCards,
     docs: &CardSet,
 ) -> Result<facts::FusionRow, Refusal> {
     if let Some((leader, peer)) = &request.peer {
@@ -111,11 +87,7 @@ pub(super) fn fusion_row(
                 ))
             });
     }
-    if request.targets.contains(&Target::Device) {
-        device_row(&super::device_arch(request)?, request.scalar, docs)
-    } else {
-        facts::host_fusion(docs, request.facts_for(Target::Host)?).map_err(facts::Failed::refusal)
-    }
+    cards.fusion_row(request, docs)
 }
 
 /// The unit that lists the pieces of a cut chain: the whole chain composed as one kernel, so its slots are every plane the caller
@@ -147,9 +119,9 @@ pub(super) fn expand(
     ctx: *mut Ctx,
     request: &KernelRequest,
     members: &[Member],
-    docs: &CardSet,
+    (cards, docs): (&dyn super::card::TargetCards, &CardSet),
 ) -> Result<Vec<Pending>, Refusal> {
-    let row = fusion_row(request, docs)?;
+    let row = fusion_row(request, cards, docs)?;
     let named: Vec<ChainMember> = members
         .iter()
         .map(|m| ChainMember {
@@ -217,73 +189,6 @@ mod tests {
     use super::*;
     use crate::lower::request::Body as RequestBody;
     use raptor_ir::door::{rx_ctx_free, rx_ctx_new, RX_OK};
-
-    /// The shipped document with the rows `rows` (JSON) stated in place of its empty list.
-    fn docs_with_rows(rows: &str) -> CardSet {
-        let dir = crate::testing::shipped();
-        let text = std::fs::read_to_string(dir.join("cuda.json")).unwrap();
-        let stated = text.replacen(
-            "\"fusion_rows\": []",
-            &format!("\"fusion_rows\": {rows}"),
-            1,
-        );
-        CardSet::new(
-            &dir,
-            &[("cuda.json".to_string(), stated)],
-            crate::testing::ALL_CARDS,
-        )
-    }
-
-    /// Oracle: the shipped default row holds 255 registers. A row stated for `sm_61` and `float32` holds 64 and leaves the other
-    /// numbers to the defaults; it serves that type on every architecture (it is the only row, so the nearest), and no other type.
-    #[test]
-    fn a_stated_row_serves_its_scalar_type_by_the_nearest_architecture_and_the_others_take_the_defaults(
-    ) {
-        let none = docs_with_rows("[]");
-        let one = docs_with_rows(
-            r#"[{"cc": "sm_61", "dtype": "float32", "regs_file": 64, "local_over_plane": null}]"#,
-        );
-        let regs = |docs: &CardSet, arch, scalar| device_row(arch, scalar, docs).unwrap();
-        assert_eq!(regs(&none, "sm_61", Scalar::Float32).regs_file, 255);
-        let row = regs(&one, "sm_80", Scalar::Float32);
-        assert_eq!(
-            (row.regs_file, row.local_over_plane, row.launch_us),
-            (64, None, Some(2.7))
-        );
-        assert_eq!(regs(&one, "sm_61", Scalar::Float64).regs_file, 255);
-        assert_eq!(regs(&one, "sm_61", Scalar::Banded).regs_file, 255);
-    }
-
-    /// Oracle: of two rows of one type the one of the architecture with hardware nearest the build's wins (sm_61 and sm_75 have an
-    /// FP64 rate of 1/32 where sm_80 has 1/2 and sm_90 has 1/2).
-    #[test]
-    fn the_row_of_the_architecture_with_the_nearest_hardware_wins() {
-        let docs = docs_with_rows(
-            r#"[{"cc": "sm_61", "dtype": "float64", "regs_file": 64}, {"cc": "sm_90", "dtype": "float64", "regs_file": 128}]"#,
-        );
-        assert_eq!(
-            device_row("sm_80", Scalar::Float64, &docs)
-                .unwrap()
-                .regs_file,
-            128
-        );
-        assert_eq!(
-            device_row("sm_75", Scalar::Float64, &docs)
-                .unwrap()
-                .regs_file,
-            64
-        );
-    }
-
-    #[test]
-    fn a_stated_row_that_names_another_type_or_an_unknown_number_is_refused_by_name() {
-        let other = docs_with_rows(r#"[{"cc": "sm_61", "dtype": "half"}]"#);
-        let why = device_row("sm_61", Scalar::Float32, &other).unwrap_err();
-        assert!(why.reason.contains("half"), "{}", why.reason);
-        let unknown = docs_with_rows(r#"[{"cc": "sm_61", "dtype": "float32", "regs": 1}]"#);
-        let why = device_row("sm_61", Scalar::Float32, &unknown).unwrap_err();
-        assert!(why.reason.contains("regs"), "{}", why.reason);
-    }
 
     /// A node of `class` over `ops`, with the fields text `fields`.
     fn node(ctx: *mut Ctx, class: &str, (ops, fields): (&[u32], &str)) -> u32 {

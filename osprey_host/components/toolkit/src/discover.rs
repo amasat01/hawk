@@ -3,6 +3,7 @@
 //! tool: the table does. A rule that cannot be satisfied falls through to the next, except an environment variable marked
 //! `required`, which is an explicit override and refuses when it does not resolve.
 use crate::refusal::{Done, Kind, Refusal};
+use crate::registry::{names, Grammar};
 use crate::run;
 use crate::shellwords;
 use crate::store::{Built, Store};
@@ -162,7 +163,12 @@ fn swap_of(spec: &J, env: &Env, name: &str) -> Done<Option<Swap>> {
 ///
 /// # Errors
 /// Refuses a table that is malformed.
-pub fn find(spec: &J, env: &Env, root: Option<&Path>) -> Done<Machine> {
+pub fn find(
+    spec: &J,
+    env: &Env,
+    root: Option<&Path>,
+    grammars: &[(&str, Grammar)],
+) -> Done<Machine> {
     let mut machine = Machine::default();
     let mut missing: Vec<String> = vec![];
     for (name, tool_spec) in wire::need(spec, "tools", "tool table")?.obj() {
@@ -175,7 +181,7 @@ pub fn find(spec: &J, env: &Env, root: Option<&Path>) -> Done<Machine> {
             continue;
         }
         let found = match locate(name, tool_spec, env, &machine)? {
-            Ok(path) => describe(&path, tool_spec, env, root)?,
+            Ok(path) => describe(&path, tool_spec, env, root, grammars)?,
             Err(reason) => Err(reason),
         };
         match (found, swap) {
@@ -252,7 +258,7 @@ fn apply(rule: &J, env: &Env, machine: &Machine) -> Done<Step> {
     ))
 }
 
-/// The rule that reads a flag's value out of an environment variable holding flags (`-ccbin <x>` in `NVCC_PREPEND_FLAGS`).
+/// The rule that reads a flag's value out of an environment variable holding flags (`-hostbin <x>` in `TOOL_PREPEND_FLAGS`).
 fn env_flag(rule: &J, child: Option<&str>, env: &Env) -> Done<Step> {
     let var = wire::text(rule, "var", "env_flag rule")?;
     let flags = wire::texts(rule, "flags", "env_flag rule")?;
@@ -418,7 +424,13 @@ fn kept(
 }
 
 /// The identity of the tool at `path` and the facts of its probes, or the reason it cannot be asked.
-fn describe(path: &Path, spec: &J, env: &Env, root: Option<&Path>) -> Done<Result<Tool, String>> {
+fn describe(
+    path: &Path,
+    spec: &J,
+    env: &Env,
+    root: Option<&Path>,
+    grammars: &[(&str, Grammar)],
+) -> Done<Result<Tool, String>> {
     let args = match spec.get("identity_args") {
         Some(_) => wire::texts(spec, "identity_args", "tool")?,
         None => vec!["--version".to_string()],
@@ -440,7 +452,10 @@ fn describe(path: &Path, spec: &J, env: &Env, root: Option<&Path>) -> Done<Resul
     for p in spec.get("probes").map_or(&[][..], J::arr) {
         let name = wire::text(p, "name", "probe")?;
         let answer = probe(path, &wire::texts(p, "args", "probe")?, env, root).ok();
-        facts.push((name.to_string(), read_probe(p, answer.as_deref())?));
+        facts.push((
+            name.to_string(),
+            read_probe(p, answer.as_deref(), grammars)?,
+        ));
     }
     Ok(Ok(Tool {
         path: path.to_path_buf(),
@@ -450,8 +465,8 @@ fn describe(path: &Path, spec: &J, env: &Env, root: Option<&Path>) -> Done<Resul
 }
 
 /// What a probe's output states, by its `as`: `version` (the `N.M` after a marker), `int_list` (the numbers after each occurrence
-/// of a marker) or `gcc_family` (read from predefined macros). No output states `null`.
-fn read_probe(probe: &J, output: Option<&str>) -> Done<J> {
+/// of a marker) or the name of a grammar the backend registered, which reads the whole output. No output states `null`.
+fn read_probe(probe: &J, output: Option<&str>, grammars: &[(&str, Grammar)]) -> Done<J> {
     let Some(out) = output else {
         return Ok(J::Null);
     };
@@ -464,11 +479,14 @@ fn read_probe(probe: &J, output: Option<&str>) -> Done<J> {
             all.dedup();
             J::Arr(all.into_iter().map(wire::n).collect())
         }
-        "gcc_family" => gcc_family(out),
         other => {
-            return Err(Refusal::bad(format!(
-                "probe: `as` {other:?} is not version, int_list or gcc_family"
-            )))
+            let Some((_, grammar)) = grammars.iter().find(|(name, _)| *name == other) else {
+                return Err(Refusal::bad(format!(
+                    "probe: `as` {other:?} is not version, int_list or a registered grammar ({})",
+                    names(grammars)
+                )));
+            };
+            grammar(out, &[])
         }
     })
 }
@@ -495,29 +513,6 @@ fn numbers_after(text: &str, marker: &str) -> Vec<u64> {
             rest[..end].parse().ok()
         })
         .collect()
-}
-
-/// `{"gcc": bool, "gcc_release": "major.minor" | null}` from the output of `-dM -E`: GCC proper defines `__GNUC__` and not
-/// `__clang__`.
-fn gcc_family(macros: &str) -> J {
-    let value = |name: &str| {
-        macros.lines().find_map(|l| {
-            let mut w = l.split_whitespace();
-            (w.next() == Some("#define") && w.next() == Some(name))
-                .then(|| w.next().unwrap_or("").to_string())
-        })
-    };
-    let gcc = value("__GNUC__").is_some() && value("__clang__").is_none();
-    let release = value("__GNUC__").filter(|_| gcc).map(|major| {
-        format!(
-            "{major}.{}",
-            value("__GNUC_MINOR__").unwrap_or_else(|| "0".into())
-        )
-    });
-    wire::obj(vec![
-        ("gcc", J::Bool(gcc)),
-        ("gcc_release", release.map_or(J::Null, |r| wire::s(&r))),
-    ])
 }
 
 /// The environment a tool of `machine` runs under: `env` as the table's `process_env` adjusts it: `strip_flags` takes a flag and
@@ -588,9 +583,9 @@ mod tests {
 
     #[test]
     fn flags_are_read_and_removed_in_both_forms() {
-        let flags = ["-ccbin".to_string(), "--compiler-bindir".to_string()];
+        let flags = ["-hostbin".to_string(), "--compiler-bindir".to_string()];
         assert_eq!(
-            flag_value("-O2 -ccbin /x/g++ -g", &flags).as_deref(),
+            flag_value("-O2 -hostbin /x/g++ -g", &flags).as_deref(),
             Some("/x/g++")
         );
         assert_eq!(
@@ -598,28 +593,16 @@ mod tests {
             Some("/y")
         );
         assert_eq!(
-            without_flags("-O2 -ccbin /x/g++ --compiler-bindir=/y -g", &flags),
+            without_flags("-O2 -hostbin /x/g++ --compiler-bindir=/y -g", &flags),
             "-O2 -g"
         );
     }
 
     #[test]
     fn a_version_and_a_number_list_are_read_after_their_markers() {
-        let text =
-            "Cuda compilation tools, release 12.6, V12.6.20\n compute_61\n compute_75\n compute_61";
+        let text = "Kit compilation tools, release 12.6, V12.6.20\n unit_61\n unit_75\n unit_61";
         assert_eq!(version_after(text, "release ").as_deref(), Some("12.6"));
-        assert_eq!(numbers_after(text, "compute_"), vec![61, 75, 61]);
+        assert_eq!(numbers_after(text, "unit_"), vec![61, 75, 61]);
         assert_eq!(version_after("no marker", "release "), None);
-    }
-
-    #[test]
-    fn gcc_is_told_from_clang_by_the_predefined_macros() {
-        let gcc = gcc_family("#define __GNUC__ 13\n#define __GNUC_MINOR__ 2\n");
-        assert_eq!(
-            wire::render(&gcc),
-            "{\"gcc\":true,\"gcc_release\":\"13.2\"}"
-        );
-        let clang = gcc_family("#define __GNUC__ 4\n#define __clang__ 1\n");
-        assert_eq!(wire::render(&clang), "{\"gcc\":false,\"gcc_release\":null}");
     }
 }

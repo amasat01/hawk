@@ -250,7 +250,7 @@ fn full_tree() -> (LibraryMeta, UnitMeta) {
         device_image: Some("u__image".into()),
         device_function: Some("u".into()),
         device_image_bytes: 0,
-        device_image_format: ImageFormat::Cubin,
+        device_image_format: ArtifactForm("Cubin".into()),
         stages: vec![Stage {
             unit: reference,
             cells_in: vec!["c".into()],
@@ -396,7 +396,6 @@ fn every_closed_set_and_name_is_the_headers() {
     sets!(
         Pattern,
         ScalarType,
-        ImageFormat,
         SlotRole,
         WireDtype,
         Access,
@@ -412,6 +411,14 @@ fn every_closed_set_and_name_is_the_headers() {
         LinkWhat,
         LinkForm
     );
+    // the forms of an artifact: the base's word for none and the device library's three, numbered as the header numbers them
+    for (value, form) in ["None", "Ptx", "Cubin", "Fatbin"].iter().enumerate() {
+        assert_eq!(
+            defines(&ArtifactForm(form.to_string()).c_name()),
+            value.to_string(),
+            "{form}"
+        );
+    }
     for (bit, name) in SLOT_FLAGS.iter().chain(&FINISH_FLAGS).chain(&BRANCH_FLAGS) {
         assert_eq!(
             defines(name),

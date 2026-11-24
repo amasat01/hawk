@@ -1,23 +1,35 @@
-//! The facts of the machine the tools run on, read from the system: architecture, the vector instruction set, the sizes of the
-//! first two data caches and a digest naming the CPU. A native build is the same flag text on every CPU, so the digest keeps a
-//! shared store from serving one CPU's binary to another.
-use crate::wire;
+//! The facts of the processor the tools run on, read from the system: architecture, the vector instruction set, the sizes of the
+//! first two data caches and the digest naming the CPU. [`probe`] is what the library registers under the ask's `host` member.
+use crate::identity::{cpuinfo, machine_identity, sysctl};
 use rcore::json::J;
-use rcore::sha256;
 use std::fs;
-use std::process::Command;
+use toolkit::refusal::Done;
+use toolkit::{wire, ProbeAnswer, ProbeInput};
+
+/// The name the host probe is registered under: the ask's member that calls for it and the member of the machine answer it states.
+pub(crate) const SECTION: &str = "host";
 
 /// The sysfs folder of CPU 0's caches (Linux).
 const SYSFS_CACHES: &str = "/sys/devices/system/cpu/cpu0/cache";
 
+/// The host record of the machine answer; it blocks nothing.
+///
+/// # Errors
+/// Never refuses; the type is the probe's.
+pub(crate) fn probe(_input: &ProbeInput<'_>) -> Done<ProbeAnswer> {
+    Ok(ProbeAnswer {
+        facts: facts(),
+        blocked: None,
+    })
+}
+
 /// The stated host record: `os`, `arch`, `target_identity`, `vector_isa` and, when the system tells them,
 /// `l1d_cache_bytes`, `l2_cache_bytes` and `cache_source`.
-#[must_use]
-pub fn facts() -> J {
+fn facts() -> J {
     let mut pairs = vec![
         ("os", wire::s(std::env::consts::OS)),
         ("arch", wire::s(std::env::consts::ARCH)),
-        ("target_identity", wire::s(&target_identity())),
+        ("target_identity", wire::s(&machine_identity())),
         ("vector_isa", wire::s(vector_isa())),
     ];
     if let Some((l1d, l2, source)) = caches() {
@@ -28,18 +40,6 @@ pub fn facts() -> J {
         ]);
     }
     wire::obj(pairs)
-}
-
-/// The digest that names the CPU, the term a key needs when a result depends on the instruction set.
-#[must_use]
-pub fn facts_identity() -> String {
-    target_identity()
-}
-
-/// The first processor block of `/proc/cpuinfo` (Linux), `None` elsewhere.
-fn cpuinfo() -> Option<String> {
-    let text = fs::read_to_string("/proc/cpuinfo").ok()?;
-    Some(text.split("\n\n").next().unwrap_or("").to_string())
 }
 
 /// The vector instruction set of the host, the key a card of host flags is read by.
@@ -63,46 +63,6 @@ fn vector_isa() -> &'static str {
     } else {
         "sse2"
     }
-}
-
-/// A digest naming the CPU: the architecture, and the model and feature lines of `/proc/cpuinfo` or the brand string of `sysctl`.
-fn target_identity() -> String {
-    const KEYS: [&str; 10] = [
-        "vendor_id",
-        "model name",
-        "cpu family",
-        "model",
-        "flags",
-        "features",
-        "cpu implementer",
-        "cpu part",
-        "isa",
-        "cpu",
-    ];
-    let mut parts = vec![std::env::consts::ARCH.to_string()];
-    if let Some(block) = cpuinfo() {
-        let mut seen: Vec<&str> = vec![];
-        for line in block.lines() {
-            let key = line.split(':').next().unwrap_or("").trim().to_lowercase();
-            if let Some(k) = KEYS.iter().find(|k| **k == key) {
-                if !seen.contains(k) {
-                    seen.push(k);
-                    parts.push(line.trim().to_string());
-                }
-            }
-        }
-    } else {
-        parts.push(sysctl("machdep.cpu.brand_string").unwrap_or_default());
-    }
-    sha256::hex(parts.join("\n").as_bytes())[..16].to_string()
-}
-
-/// The text `sysctl -n name` prints.
-fn sysctl(name: &str) -> Option<String> {
-    let out = Command::new("sysctl").args(["-n", name]).output().ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 /// CPU 0's `(l1 data, l2, source)` in bytes: the performance cores' keys of `sysctl` where the machine has them, else the plain

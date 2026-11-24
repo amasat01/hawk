@@ -10,13 +10,13 @@ use toolkit::{wire, Env, Kind, Toolkit};
 
 /// The shipped table of the host library.
 fn shipped() -> String {
-    let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../osprey_cpu/facts/tools.json");
+    let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("facts/tools.json");
     fs::read_to_string(file).unwrap()
 }
 
 /// The machine answer of the shipped table under exactly the variables `vars`.
 fn machine(vars: &[(&str, &str)]) -> J {
-    let tk = Toolkit::new(&shipped(), &[], Env::from_pairs(vars)).unwrap();
+    let tk = common::new_toolkit(&shipped(), &[], Env::from_pairs(vars)).unwrap();
     wire::parse("answer", &tk.machine("{\"key_terms\":[\"t\"]}").unwrap()).unwrap()
 }
 
@@ -100,7 +100,7 @@ fn limited(dir: &Path, vars: &[(&str, &str)]) -> Toolkit {
     let fake = dir.join("fakecc").display().to_string();
     let mut pairs = vec![("HAWK_CXX", fake.as_str()), ("PATH", "/bin:/usr/bin")];
     pairs.extend_from_slice(vars);
-    Toolkit::new(&shipped(), &[], Env::from_pairs(&pairs)).unwrap()
+    common::new_toolkit(&shipped(), &[], Env::from_pairs(&pairs)).unwrap()
 }
 
 /// Oracle: the variables and the refusal texts the table and the toolkit state.

@@ -1,7 +1,7 @@
 //! The one spelling of a target id.
 
-/// The canonical spelling of the target name `name`: lowercase, with whitespace, dashes and underscores removed (`" Cu-Da "` is
-/// `cuda`). That form must be a letter followed by letters and digits (ASCII, lowercase).
+/// The canonical spelling of the target name `name`: lowercase, with whitespace, dashes and underscores removed (`" Ab-Cd "` is
+/// `abcd`). That form must be a letter followed by letters and digits (ASCII, lowercase).
 ///
 /// # Errors
 /// The sentence that names `name` and the rule, when the canonical form is not a lowercase letter followed by lowercase

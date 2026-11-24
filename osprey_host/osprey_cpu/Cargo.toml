@@ -16,6 +16,7 @@ toolkit = { path = "../components/toolkit" }
 raptor_ir = { path = "../../raptor/rs/ir" }
 raptor_wings = { path = "../../raptor/rs/wings" }
 aether_writers = { path = "../../aether/rs/writers" }
+rcore = { path = "../../raptor/rs/core" }
 
 [build-dependencies]
 toolkit = { path = "../components/toolkit" }

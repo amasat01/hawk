@@ -9,7 +9,6 @@
 //! the extra flags, the request's own `key_terms`, the identity of every tool the template names and the digest of every tree it
 //! includes: the same request on the same machine is the same slot.
 use crate::discover::Machine;
-use crate::figures;
 use crate::refusal::{Done, Kind, Refusal};
 use crate::store::{Built, Entry, Store};
 use crate::toolkit::Toolkit;
@@ -436,7 +435,7 @@ impl Toolkit {
             ("elf", J::Bool(head.starts_with(b"\x7fELF"))),
             (
                 "figures",
-                figures::parse(job.figures.as_deref(), &done.stderr, &head)?,
+                self.figures(job.figures.as_deref(), &done.stderr, &head)?,
             ),
         ]);
         let mut files = vec![output];

@@ -43,7 +43,7 @@ fn drain<R: Read + Send + 'static>(mut pipe: R) -> thread::JoinHandle<String> {
 
 /// Runs `argv` with exactly the variables of `env`, under `cap_bytes` of address space (0: none) and `timeout_seconds` (0: none).
 /// A program that cannot be started answers exit code 127, as a shell would. A timeout kills the tool's whole process group
-/// (`nvcc` starts `cicc` and `ptxas`) and refuses by name.
+/// (a driver program starts its own stage programs) and refuses by name.
 ///
 /// # Errors
 /// Refuses with a [`Refusal`](crate::refusal::Refusal) that names what is wrong with the request or the tool.
