@@ -62,6 +62,7 @@ BASELINE = {
     "options.py": ("LEGACY",),
     "trace/astpass.py": ("_BANNED_EXPR", "_STORE_OPS"),
     "trace/decl.py": ("_FORM_ROLE",),
+    "trace/function.py": ("_ACTIVE",),
     "trace/helpers.py": ("_ACTIVE", "_NEEDS_REWRITE", "_REWRITTEN"),
     "trace/kernel.py": ("_LEAF_KIND", "_TRANSFORM_MEMO"),
     "trace/lane_axes.py": ("_trace",),

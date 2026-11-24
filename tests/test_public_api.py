@@ -60,7 +60,7 @@ _EXPECTED_MANIFEST = {
         "ActiveSet", "DeviceKernel", "DeviceProps", "Event", "Graph", "GraphPipeline", "Grid", "HawkError", "HostSerial", "HostTeam", "Index", "Int32", "Kernel", "Matrix", "Meta", "Mutable",
         "Param", "Partition", "Quantity", "Quat", "RawBlock", "Record", "Rows", "Scalar", "SkipGuard", "Sorted",
         "Staged", "Stream", "Table", "Tensor", "Terminated", "ToolchainAbsent", "UInt32", "Value", "Vector", "Wide",
-        "WideOut", "__version__", "append", "asarray", "banded_pack", "banded_unpack", "build", "chain", "compact", "copy", "deploy", "device_props", "fft", "geometry", "group",
+        "WideOut", "__version__", "append", "asarray", "banded_pack", "banded_unpack", "build", "chain", "compact", "copy", "deploy", "device_props", "fft", "function", "geometry", "group",
         "host_step", "host_threads", "kernel", "load", "matmul", "max", "mean", "min", "plan", "primitive", "raw_device", "reduce", "repeat_while", "resolve_dispatch", "reverse", "run",
         "sample_position", "samples_first", "samples_last", "scan", "scatter", "set_host_threads", "simulate", "skippable", "steps", "sum", "synchronize",
         "to_numpy", "until_done",

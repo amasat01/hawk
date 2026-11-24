@@ -1,16 +1,14 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests hawk's own refusals: two cases where a plausible wrong answer would
-be worse than raising, so each is a loud, named error a caller can pin on.
+"""Tests hawk's own refusals: cases where a plausible wrong answer would be
+worse than raising, so each is a loud, named error a caller can pin on.
 
-Reverse-differentiating a ``max`` fold has an ambiguous subgradient at a
-tie, so silently differentiating it would let a consumer's gradient be
-wrong only on the ties; softmax's max pass stays FORWARD-ONLY and the
-gradient rides the sum pass instead. A ``banded`` build that reached an op
-with no certified banded row would report a precision the artifact does not
-carry, which is the one failure a banded consumer cannot detect from the
-answer, so those ops are refused by name.
+A ``banded`` build that reached an op with no certified banded row would
+report a precision the artifact does not carry, which is the one failure a
+banded consumer cannot detect from the answer, so those ops are refused by
+name. A ``max`` over samples is NOT refused: it reverses through its winning
+lane (the lowest lane at a tie), and its row here pins that it does.
 """
 
 from __future__ import annotations
@@ -44,29 +42,19 @@ def plain(x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
 
 
 # --------------------------------------------------------------------------- #
-# (a) a max over samples has no reverse rule, and the refusal says which rule.
+# (a) a max over samples reverses through its winner, as a sum reverses to a broadcast.
 # --------------------------------------------------------------------------- #
-def test_the_reverse_of_a_max_reduction_is_refused_naming_the_rule():
-    """Needs the ``sink.op != "sum"`` guard in ``hawk/diff/transform._seed``,
-    or a ``max`` is seeded with a broadcast adjoint exactly like a ``sum``::
 
-        Failed: DID NOT RAISE <class 'hawk.HawkError'>
-
-    and ``vjp(row_max)`` returned a gradient — a number, for a max whose
-    subgradient is ambiguous at every tie."""
-    with pytest.raises(HawkError) as excinfo:
-        vjp(row_max)
-    message = str(excinfo.value)
-    for needle in ("max over samples", "subgradient", "reduce with a sum"):
-        assert needle in message, (
-            f"the refusal must name the rule that is missing and why; {needle!r} "
-            f"is absent from: {message}")
+def test_the_reverse_of_a_max_reduction_derives_through_its_winner():
+    """The adjoint of a ``max`` over samples goes to the winning lane alone, so
+    the reverse kernel exists and writes the adjoint of the table it read (the
+    values are pinned against NumPy in test_reduce_index.py)."""
+    reverse = hawk.Kernel("row_max_reverse", vjp(row_max))
+    assert [s.field_text("name") for s in reverse.sinks] == ["bar_scores"]
 
 
 def test_the_sum_pass_beside_it_still_derives():
-    """Non-vacuity: the refusal is about the ``max``, not about reductions
-    over samples. A row that refused both would be an implementation gap wearing a
-    principle's clothes."""
+    """The control beside the max: a rank-0 ``sum`` reverses to a broadcast."""
     assert vjp(row_sum), "a rank-0 'sum' reverses to a broadcast"
 
 

@@ -499,6 +499,11 @@ _SLOT_PRIOR, _SLOT_PARAM_PLANE, _SLOT_GATHER, _SLOT_ZEROED = 1, 2, 4, 16
 _FINISH_ENTRY_COUNTS = 1
 
 
+def _cell_op(cell: dict) -> str:
+    """The reduction of a cell record: its fold, prefixed ``arg`` when the cell takes the position of the winner, not its value."""
+    return ("arg" if cell.get("position") else "") + _snake(cell["op"])
+
+
 def _snake(word: str) -> str:
     return re.sub(r"(?<!^)([A-Z])", r"_\1", word).lower()
 
@@ -537,7 +542,7 @@ def _unit_walk(unit: dict, planes: dict, kernel, family: list) -> SimpleNamespac
         mirrors={s["name"]: s["mirror"] for s in slots},
         planes_written=tuple(sorted(s["name"] for s in slots if s["written"])),
         access=SimpleNamespace(cls=_snake(body["access"]), op=None),
-        cells={c["name"]: {"op": _snake(c["op"]), "columns": c["columns"]} for c in body["cells"]},
+        cells={c["name"]: {"op": _cell_op(c), "columns": c["columns"]} for c in body["cells"]},
         companions={names[c["slot"]]: names[c["target_slot"]] for c in body["companions"]},
         counts={names[c["slot"]]: names[c["of_slot"]] for c in body["counts"]},
         winners={names[c["slot"]]: names[c["of_slot"]] for c in body["winners"]},
@@ -605,7 +610,7 @@ def _split_block(source: dict, family: list) -> dict:
     entry-less unit that lists the stages records them, and that unit itself: its name, digest and slot names (``source``),
     which is the unit a run loads and binds."""
     body = source["meta"]["body"]
-    cells = {c["name"]: {"op": _snake(c["op"]), "columns": c["columns"], **({"internal": True} if c["internal"] else {})} for c in body["cells"]}
+    cells = {c["name"]: {"op": _cell_op(c), "columns": c["columns"], **({"internal": True} if c["internal"] else {})} for c in body["cells"]}
     stages = []
     for st in source["meta"]["stages"]:
         record = {"kernel": st["unit"]["name"], "cells_in": list(st["cells_in"]), "cells_out": list(st["cells_out"])}

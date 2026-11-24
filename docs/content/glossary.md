@@ -37,6 +37,10 @@ cell
   One value for the whole run, made by storing a reduction over lanes
   (`total = hawk.sum(x)`) to a `Mutable` output. A vector or
   matrix cell comes back as one array per entry (`total_0`, `total_1`, ...).
+  `low, at = hawk.min(x, with_index=True)` (also `hawk.max`) stores the minimum and the lane that won it: the lowest lane
+  among equals, a NaN never wins, and `at` is the lane count when no lane did. `at` is a real holding a whole number, exact up
+  to 2**24 lanes in float32 and 2**53 in float64. A minimum or maximum over lanes has a derivative: `jvp` gives the tangent
+  of the winning lane and `vjp` gives the adjoint to that lane alone.
 
 Sorted
   `Sorted[Index]`: an index plane whose values never decrease along the

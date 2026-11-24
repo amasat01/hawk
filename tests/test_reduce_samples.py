@@ -14,7 +14,7 @@ Rows (the ``cuda`` arm is marked ``gpu``):
 * **identity** — a hand-written ``hawk.sum(bar_y * x)`` is the
   parameter gradient ``vjp`` derives: the same sidecar entry, the same rows;
 * **derivative** — the sum over samples differentiates (a broadcast of its
-  adjoint); a max or a min refuses, naming the tie;
+  adjoint); a max or a min differentiates through its winning lane;
 * **refusals** — one test each, with the text that migrates the author.
 """
 
@@ -208,11 +208,10 @@ def test_a_sum_over_samples_has_a_broadcast_adjoint():
 
 
 @pytest.mark.parametrize("op", ("max", "min"))
-def test_max_and_min_over_samples_refuse_to_differentiate(op):
-    with pytest.raises(HawkError, match="subgradient is ambiguous at a tie"):
-        vjp(_cell(op), wrt=("x",))
-    with pytest.raises(HawkError, match="subgradient is ambiguous at a tie"):
-        jvp(_cell(op), wrt=("x",))
+def test_max_and_min_over_samples_differentiate_through_their_winner(op):
+    """Both directions exist (their values are pinned in test_reduce_index.py): the adjoint plane and the tangent cell."""
+    assert [s.field_text("name") for s in Kernel("d", vjp(_cell(op), wrt=("x",))).sinks] == ["bar_x"]
+    assert [s.field_text("name") for s in Kernel("d", jvp(_cell(op), wrt=("x",))).sinks] == ["dot_t"]
 
 
 def test_axis_samples_on_a_value_names_hawk_sum():

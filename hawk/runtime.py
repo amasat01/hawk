@@ -942,11 +942,14 @@ def _door_made_names(sidecar: dict) -> set:
         if entry["strategy"] == "segmented":
             names |= {entry["class"], entry["stale"], entry["offsets"]}   # the group's sorted-sample planes
     names |= set(sidecar.get("companions") or ()) | set(sidecar.get("team_planes") or ()) | set(sidecar.get("keyed") or ())
-    for cell, spec in (sidecar.get("cells") or {}).items():
+    cells = sidecar.get("cells") or {}
+    positions = any(spec["op"].startswith("arg") for spec in cells.values())
+    for cell, spec in cells.items():
         planes = _ir.planes(cell, spec["columns"])
         if sidecar.get("stages"):
             names |= set(planes)
-        if spec["op"] in ("sum", "mean"):
+        # a sum keeps a compensation; where a position is asked for, every minimum, maximum and position keeps the lanes that won
+        if spec["op"] in ("sum", "mean") or (positions and spec["op"] in ("min", "max", "argmin", "argmax")):
             names |= {_cells.comp_name(plane) for plane in planes}
     return names
 

@@ -22,6 +22,20 @@ A plain `def` called from a kernel is inlined when it is given traced values, so
 
 A helper defined in the kernel's own module and traced as a kernel has no parameter declarations, and the error says so: move the helper to another module, or call it with traced values so it is inlined.
 
+A helper used many times can be written once in the generated text instead of at every use: decorate it with `@hawk.function` and annotate its parameters (and, optionally, its result) with payload types. The function has one definition in the unit's source and one call per use; a plain helper stays inlined. A scalar is passed by value, a vector or a matrix by constant reference.
+
+```python
+@hawk.function
+def drag(v: hawk.Vector[3], rho: hawk.Scalar) -> hawk.Vector[3]:
+    return v * (rho * m.sqrt(m.dot(v, v)))
+
+@hawk.kernel
+def push(v: hawk.Vector[3], rho: hawk.Scalar, out: hawk.Mutable[hawk.Vector[3]]):
+    out = drag(v, rho) + drag(v, 2.0)
+```
+
+A function body may read only its parameters; it may call another function, but not itself. A wrong number or type of arguments is refused by the function's name. A compiler that keeps the call may fuse multiply-adds differently from the inlined text, so under the default host profile the two agree to rounding, and under the `native` profile (no fusing) they agree bit for bit. The device text does not write functions yet and refuses a kernel that calls one.
+
 A sum that skips some terms (a masked sum) writes each term as `m.dispatch(live, [0.0, term], strategy="predicated")`, with `live` an integer 0 or 1 per element: both branches are evaluated and one kept, with no divergent branch. See [Choosing a dispatch strategy](tutorials/08_choosing_a_dispatch_strategy).
 
 ## Kernels in sequence: `hawk.chain`

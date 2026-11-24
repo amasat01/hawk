@@ -235,6 +235,29 @@ def _product(items: list) -> Any:
     return out
 
 
+def _mask(where_mask: Any, call: str) -> Value:
+    """``where_mask`` as this lane's bool mask, or a refusal."""
+    mask = where_mask if isinstance(where_mask, Value) else Value(node_of(where_mask))
+    if mask.ttype.dtype != "bool" or mask.ttype.shape:
+        raise HawkError(f"{call}: where= is this lane's bool mask, got {mask.ttype!r}")
+    return mask
+
+
+def _winner(op: str, x: Any, where_mask: Any, contract: Any) -> tuple:
+    """``(value, where)`` of the ``op`` over every lane: the value :func:`min` or :func:`max` returns and the lane that won it.
+
+    The two are one fold of pairs (value, lane) in the library, over ONE value per lane: the lowest lane wins a tie, a NaN
+    never wins, and with no winner (every term NaN, or every lane masked out) the value is NaN and the position is ``n``, the
+    number of lanes. The position is a real holding a whole number, exact up to 2**24 lanes in float32 and 2**53 in float64.
+    A masked lane counts as a NaN."""
+    call = f"hawk.{op}(x, with_index=True)"
+    term = _term(x, call)
+    if where_mask is not None:
+        term = select(_mask(where_mask, call), term, real(float("nan")))
+    value = Value(_ir.reduce_samples(op, node_of(term), contract=contract))
+    return value, Value(_ir.reduce_samples("arg" + op, node_of(term), contract=contract))
+
+
 def _reduce(op: str, x: Any, over: Any, where_mask: Any, contract: Any) -> Any:
     from .lane_axes import LaneAxes, _trace
 
@@ -251,14 +274,11 @@ def _reduce(op: str, x: Any, over: Any, where_mask: Any, contract: Any) -> Any:
             f"hawk.{op}(x) (one value for the run) and hawk.sum/mean(x, over=...) "
             "work now")
     if where_mask is not None:
-        mask = where_mask if isinstance(where_mask, Value) else Value(node_of(where_mask))
-        if mask.ttype.dtype != "bool" or mask.ttype.shape:
-            raise HawkError(f"{call}: where= is this lane's bool mask, got {mask.ttype!r}")
         if op == "mean":
             raise HawkError(
                 f"{call}: the mean of the masked lanes needs their count, a second "
                 "reduction: hawk.sum(x, where=mask) / hawk.sum(mask)")
-        value = select(mask, value, _identity(base))
+        value = select(_mask(where_mask, call), value, _identity(base))
     if not kept:
         term = value / real(n_samples()) if op == "mean" else value
         if base == "sum" and _ir.block_shaped(node_of(term), "auto"):       # one key, every lane
@@ -297,14 +317,35 @@ def sum(x: Any, over: Any = None, where: Any = None, contract: str = "auto") -> 
     return _reduce("sum", x, over, where, contract)
 
 
-def max(x: Any, over: Any = None, where: Any = None, contract: str = "auto") -> Any:  # noqa: A001
-    """The maximum of ``x`` over every lane (NaN-ignoring, exact)."""
+def max(  # noqa: A001
+    x: Any, over: Any = None, where: Any = None, contract: str = "auto", with_index: bool = False
+) -> Any:
+    """The maximum of ``x`` over every lane (NaN-ignoring, exact). ``with_index=True`` returns ``(value, where)``: the lane
+    that won it as well (the lowest lane among equals; a NaN never wins; ``n`` when no lane did), over every lane only."""
+    if with_index:
+        _alone(over, "max")
+        return _winner("max", x, where, contract)
     return _reduce("max", x, over, where, contract)
 
 
-def min(x: Any, over: Any = None, where: Any = None, contract: str = "auto") -> Any:  # noqa: A001
-    """The minimum of ``x`` over every lane (NaN-ignoring, exact)."""
+def min(  # noqa: A001
+    x: Any, over: Any = None, where: Any = None, contract: str = "auto", with_index: bool = False
+) -> Any:
+    """The minimum of ``x`` over every lane (NaN-ignoring, exact). ``with_index=True`` returns ``(value, where)``: the lane
+    that won it as well (the lowest lane among equals; a NaN never wins; ``n`` when no lane did), over every lane only."""
+    if with_index:
+        _alone(over, "min")
+        return _winner("min", x, where, contract)
     return _reduce("min", x, over, where, contract)
+
+
+def _alone(over: Any, op: str) -> None:
+    """Refuse ``over=`` beside ``with_index=True``: a position is one lane of the whole run."""
+    if over is not None:
+        raise HawkError(
+            f"hawk.{op}(x, over=..., with_index=True): a position is a lane of the whole run, so it takes no over=; "
+            f"hawk.{op}(x, with_index=True) over every lane"
+        )
 
 
 def mean(x: Any, over: Any = None, where: Any = None, contract: str = "auto") -> Any:

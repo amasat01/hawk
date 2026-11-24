@@ -1405,12 +1405,13 @@ class _Namer:
         return derived
 
 
-_TIE_TEXT = (
-    "no derivative for the {op} over samples stored to {name!r}: its subgradient "
-    "is ambiguous at a tie, so differentiating it would return one of several "
-    "answers with nothing recording which. Differentiate the per-sample value "
-    "and take the {op} on the host, or reduce with a sum"
-)
+def _winner_mask_of_fold(sink: Any) -> Any:
+    """For the ``min`` or ``max`` over samples ``sink``: the test that this lane is the winner of the fold. The derivative kernel
+    folds the position of the winner from the primal term (the lowest lane among equals; no lane when every term is NaN) and
+    reads it back one stage later, so the test is on lane numbers, never on a term evaluated twice."""
+    context = sink.ctx
+    lane = _ir.make("cast", (_ir.make_node("SampleIndex", _ir.TensorType((), "i32"), context=context),), "f64")
+    return _ir.make("eq", (lane, _ir.reduce_samples("arg" + sink.field_text("op"), sink.operands[0])))
 
 
 def _seed(sink: Any, name: _Namer) -> Any:
@@ -1418,12 +1419,12 @@ def _seed(sink: Any, name: _Namer) -> Any:
     derived, t = name(sink.field_text("name")), _ir.type_of(sink)
     context = sink.ctx
     if _ir.is_a(sink, "sample_sum"):
-        if sink.field_text("op") != "sum":
-            raise HawkError(
-                _TIE_TEXT.format(name=sink.field_text("name"), op=sink.field_text("op"))
-            )
         # the reverse of a sum over samples is a broadcast of its adjoint
-        return _ir.leaf(context, "uniform", "uniform", derived, t)
+        seed = _ir.leaf(context, "uniform", "uniform", derived, t)
+        if sink.field_text("op") == "sum":
+            return seed
+        # a minimum or maximum gives its adjoint to the winning lane and nothing to the others
+        return _ir.make_node("Select", t, [_winner_mask_of_fold(sink), seed, _ir.zero_like(context, t)])
     indices = _indices_of(sink)
     if _ir.is_a(sink, "update") and indices:
         # the transpose of a scatter-add is a gather of the adjoint plane, at the same indices under the same edge rule
@@ -1462,9 +1463,8 @@ def _tangent_sink(sink: Any, tangent: Any, name: _Namer, indices: Any = None) ->
         )
     if _ir.is_a(sink, "sample_sum"):
         if sink.field_text("op") != "sum":
-            raise HawkError(
-                _TIE_TEXT.format(name=sink.field_text("name"), op=sink.field_text("op"))
-            )
+            # the tangent of a minimum or maximum is the tangent of its winning lane
+            value = _ir.make_node("Select", ttype, [_winner_mask_of_fold(sink), value, _ir.zero_like(sink.ctx, ttype)])
         return _ir.make_node(
             "SampleSum", ttype, [value], name=derived, op="sum", cell=derived, columns=1
         )
