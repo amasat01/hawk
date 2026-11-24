@@ -15,7 +15,7 @@ use super::unit_meta::UnitMeta;
 use super::unit_meta::{Body, Launch};
 use super::{canonical, finished_slot, typed_walk, Cards, Pending, FINISHED_PLANE};
 use aether_writers::contract::types::{
-    Active, Form, Grid, Scalar, Step, StepOp, Target, TeamShape, TeamStage,
+    Active, Form, Grid, KeyAxis, Scalar, Step, StepOp, Target, TeamShape, TeamStage,
 };
 use aether_writers::refuse::{bad, fault, nib, Refusal};
 use raptor_ir::record::{Ctx, Fault};
@@ -558,6 +558,15 @@ pub(super) fn team_form(
             m: step.m,
             max_chunks: step.max_chunks,
             planes: step.planes.clone(),
+            key_axes: step.key_axes.as_ref().map(|axes| {
+                axes.iter()
+                    .map(|axis| KeyAxis {
+                        extent: axis.extent,
+                        stride: axis.stride,
+                        kept: axis.kept,
+                    })
+                    .collect()
+            }),
         });
     }
     let planes = spec

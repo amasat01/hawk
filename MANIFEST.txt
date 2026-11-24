@@ -61,7 +61,7 @@ Every file with its line count (this file excluded):
    2039  osprey_host/components/lowering/src/lower/request.rs
     377  osprey_host/components/lowering/src/lower/segment.rs
     116  osprey_host/components/lowering/src/lower/stage_block.rs
-    686  osprey_host/components/lowering/src/lower/stages.rs
+    695  osprey_host/components/lowering/src/lower/stages.rs
    1012  osprey_host/components/lowering/src/lower/unit_meta.rs
     247  osprey_host/components/lowering/src/lower/warp.rs
     153  osprey_host/components/lowering/src/testing.rs
