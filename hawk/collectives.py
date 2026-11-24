@@ -21,7 +21,7 @@ from . import _place, graph_builder, streams
 from .errors import HawkError
 from .runtime import through_door
 
-__all__ = ["copy", "fft", "matmul", "reduce"]
+__all__ = ["compact", "copy", "fft", "matmul", "reduce", "scan"]
 
 _OPS = MappingProxyType(
     {
@@ -29,6 +29,14 @@ _OPS = MappingProxyType(
         "min": _osprey.EG_REDUCE_MIN,
         "max": _osprey.EG_REDUCE_MAX,
         "all": _osprey.EG_REDUCE_ALL,
+        "any": _osprey.EG_REDUCE_ANY,
+    }
+)
+_SCAN_OPS = MappingProxyType(
+    {
+        "sum": _osprey.EG_SCAN_SUM,
+        "min": _osprey.EG_SCAN_MIN,
+        "max": _osprey.EG_SCAN_MAX,
     }
 )
 _CONTRACTS = MappingProxyType(
@@ -125,13 +133,24 @@ def _result(out: Any, like: Any, shape: tuple, dtype: tuple, label: str) -> Any:
     return out if out is not None else _made(like, shape, dtype, label)
 
 
-def reduce(p: Any, op: str, contract: str = "compensated", out: Any = None) -> Any:
-    """Reduce the plane ``p`` over its samples (its last axis) with ``op``: ``"sum"``, ``"min"``, ``"max"`` or ``"all"``.
+def reduce(
+    p: Any,
+    op: str,
+    contract: str = "compensated",
+    out: Any = None,
+    with_index: bool = False,
+) -> Any:
+    """Reduce the plane ``p`` over its samples (its last axis) with ``op``: ``"sum"``, ``"min"``, ``"max"``, ``"all"`` or ``"any"``.
 
     ``p`` of shape ``(columns, n)`` gives one value per column, a plane of shape ``(columns,)``; a plane of shape ``(n,)`` has
-    one column and gives a plane of shape ``(1,)``. The result has the dtype of ``p``; ``"all"`` takes a bool plane.
+    one column and gives a plane of shape ``(1,)``. The result has the dtype of ``p``; ``"all"`` and ``"any"`` take a bool
+    plane and give a bool plane, or a uint32 plane when ``out=`` is one (a cell that a branch of a graph can test).
     ``contract`` is how a sum is added: ``"compensated"`` (the default) or ``"fixed"``. Returns the result plane, which
-    ``out=`` replaces by the caller's. Typing is the runtime's, and its reason for a refusal is shown as given."""
+    ``out=`` replaces by the caller's.
+
+    ``with_index=True`` (``"min"`` and ``"max"`` only) returns ``(value, where)``: ``where`` is an int32 plane with the lane of
+    each column's winner. A tie goes to the lowest lane, a NaN never wins, and a column of nothing but NaN has the value NaN and
+    the lane ``n`` (no lane). Typing is the runtime's, and its reason for a refusal is shown as given."""
     if op not in _OPS:
         raise HawkError(f"hawk.reduce: op={op!r} is not one of {tuple(_OPS)}")
     if contract not in _CONTRACTS:
@@ -139,19 +158,58 @@ def reduce(p: Any, op: str, contract: str = "compensated", out: Any = None) -> A
             f"hawk.reduce: contract={contract!r} is not one of {tuple(_CONTRACTS)}"
         )
     layout = _layout(p, "reduce")
-    result = _result(
-        out,
-        p,
-        (layout["shape"][0] if len(layout["shape"]) > 1 else 1,),
-        layout["dtype"],
-        "reduce",
-    )
+    columns = (layout["shape"][0] if len(layout["shape"]) > 1 else 1,)
+    result = _result(out, p, columns, layout["dtype"], "reduce")
+    where = _made(p, columns, (0, 32, 1), "reduce") if with_index else None
 
     def run(door: Any, planes: list) -> None:
-        door.reduce(planes[0], planes[1], _OPS[op], _CONTRACTS[contract])
+        index = planes[2] if with_index else None
+        door.reduce(planes[0], planes[1], _OPS[op], _CONTRACTS[contract], index=index)
 
-    _call(Collective(f"reduce {op}", (p, result), run))
+    arrays = (p, result, where) if with_index else (p, result)
+    _call(Collective(f"reduce {op}", arrays, run))
+    return (result, where) if with_index else result
+
+
+def scan(p: Any, op: str, exclusive: bool = False, out: Any = None) -> Any:
+    """The running fold of the one-axis plane ``p`` with ``op`` (``"sum"``, ``"min"`` or ``"max"``): ``out[i]`` folds
+    ``p[0..i]``, or with ``exclusive=True`` ``p[0..i-1]`` with the identity of ``op`` (0, the largest value, the smallest) first.
+
+    The result has the shape and dtype of ``p``; ``out=`` passes the caller's plane instead. An integer sum is exact (it wraps),
+    a minimum and a maximum are exact, and a real sum has the same bits on every run but is not the bits of a left-to-right loop.
+    Typing (one axis, a scalar value, the six numeric types) is the runtime's, and its reason for a refusal is shown as given."""
+    if op not in _SCAN_OPS:
+        raise HawkError(f"hawk.scan: op={op!r} is not one of {tuple(_SCAN_OPS)}")
+    layout = _layout(p, "scan")
+    result = _result(out, p, tuple(layout["shape"]), layout["dtype"], "scan")
+    flags = _osprey.EG_SCAN_EXCLUSIVE if exclusive else 0
+
+    def run(door: Any, planes: list) -> None:
+        door.scan(planes[0], planes[1], _SCAN_OPS[op], flags)
+
+    _call(Collective(f"scan {op}", (p, result), run))
     return result
+
+
+def compact(keep: Any, out: tuple | None = None) -> tuple:
+    """The lanes of the bool plane ``keep`` that are set: returns ``(kept, count)``, where ``kept[:count]`` holds their indices in
+    lane order and ``count`` is a one-element uint32 plane with their number.
+
+    ``kept`` has the shape of ``keep`` (int32) and its entries from ``count`` on are not written; ``count`` can be the condition
+    of an ``if`` in a graph builder, or a loop limit. ``out=(kept, count)`` passes the caller's planes instead. The same result on
+    every run. Typing (one axis, a bool ``keep``) is the runtime's, and its reason for a refusal is shown as given."""
+    layout = _layout(keep, "compact")
+    if out is None:
+        kept = _made(keep, tuple(layout["shape"]), (0, 32, 1), "compact")
+        count = _made(keep, (1,), (1, 32, 1), "compact")
+    else:
+        kept, count = out
+
+    def run(door: Any, planes: list) -> None:
+        door.compact(*planes)
+
+    _call(Collective("compact", (keep, kept, count), run))
+    return kept, count
 
 
 def copy(src: Any, dst: Any) -> Any:

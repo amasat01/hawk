@@ -107,9 +107,9 @@ def test_reduce_into_the_callers_plane_writes_there():
 def test_an_op_or_a_contract_that_is_not_written_is_refused_by_name():
     with pytest.raises(
         HawkError,
-        match=r"hawk.reduce: op='any' is not one of \('sum', 'min', 'max', 'all'\)",
+        match=r"hawk.reduce: op='prod' is not one of \('sum', 'min', 'max', 'all', 'any'\)",
     ):
-        hawk.reduce(planes(5), "any")
+        hawk.reduce(planes(5), "prod")
     with pytest.raises(
         HawkError,
         match=r"hawk.reduce: contract='fast' is not one of \('compensated', 'fixed'\)",

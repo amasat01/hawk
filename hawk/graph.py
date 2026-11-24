@@ -95,7 +95,7 @@ class _Wait:
 
 #: The words of the library's node and edge kinds, by their codes.
 _NODE_WORDS = MappingProxyType({
-    _osprey.EG_GNODE_LAUNCH: "launch", _osprey.EG_GNODE_RUN: "run", _osprey.EG_GNODE_REDUCE: "reduce",
+    _osprey.EG_GNODE_LAUNCH: "launch", _osprey.EG_GNODE_RUN: "run", _osprey.EG_GNODE_REDUCE: "reduce", _osprey.EG_GNODE_SCAN: "scan", _osprey.EG_GNODE_COMPACT: "compact",
     _osprey.EG_GNODE_COPY: "copy", _osprey.EG_GNODE_FFT: "fft", _osprey.EG_GNODE_GEMM: "gemm", _osprey.EG_GNODE_COND: "cond",
     _osprey.EG_GNODE_FORK: "fork", _osprey.EG_GNODE_BRANCH: "branch", _osprey.EG_GNODE_JOIN: "join",
     _osprey.EG_GNODE_WAIT: "wait"})

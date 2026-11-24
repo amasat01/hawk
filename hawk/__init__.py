@@ -117,6 +117,8 @@ _TOP_LEVEL_DOORS = {"build": ("artifact", "build_bundle"),
                     "copy": ("collectives", "copy"),
                     "matmul": ("collectives", "matmul"),
                     "fft": ("collectives", "fft"),
+                    "scan": ("collectives", "scan"),
+                    "compact": ("collectives", "compact"),
                     "Stream": ("streams", "Stream"),
                     "Event": ("events", "Event")}
 

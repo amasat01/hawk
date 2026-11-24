@@ -1,4 +1,4 @@
-# Whole-plane operations: reduce, copy, matmul and fft
+# Whole-plane operations: reduce, scan, copy, matmul and fft
 
 Some steps of a computation are not a body run for every sample: a sum over all samples, a copy, a matrix product, a Fourier
 transform. They are called like a kernel. Outside a graph they run once; inside a `@hawk.Graph.builder` they record one node
@@ -9,8 +9,10 @@ import numpy as np
 import hawk
 
 x = np.random.default_rng(0).normal(size=(3, 50))      # three columns of fifty samples (samples last)
-hawk.reduce(x, "sum")                                  # shape (3,): the sum of each column; "min", "max", "all" too
+hawk.reduce(x, "sum")                                  # shape (3,): the sum of each column; "min", "max", "all", "any" too
 hawk.matmul(a, b, transpose_b=True, accumulate=False)  # op(a) @ op(b)
+hawk.scan(x[0], "sum")                                 # running sum of one axis; "min", "max"; exclusive=True shifts it
+hawk.compact(keep)                                     # (kept, count): the lanes a bool plane keeps, in lane order
 hawk.copy(src, dst)
 hawk.fft.r2c(y, axes=None, norm="backward")            # also hawk.fft.c2c and hawk.fft.c2r
 ```
@@ -21,6 +23,25 @@ order; the default is `"compensated"`. The runtime checks every shape and dtype,
 gave it. The reverse of a recording that holds a copy, a matrix product, a transform or a reduce over one flat plane with
 `op="sum"` is built by the library; a minimum, a maximum or a sum over several columns is refused by name when the recording
 is made with `record=True`.
+
+A scan runs along one axis, `hawk.scan(p, "sum" | "min" | "max", exclusive=False, out=None)`: `out[i]` folds `p[0..i]`, or with
+`exclusive=True` folds `p[0..i-1]` and starts with the identity (0 for a sum, the largest value for a minimum, the smallest for a
+maximum). It takes int32, int64, uint32, uint64, float32 and float64 planes of one axis and scalar values; a plane of several
+axes is refused by name. An integer sum wraps and a minimum or maximum is exact; a real sum has the same bits on every run and at
+any thread count but is not the bits of a left-to-right loop, and stays within `i * u * sum(|p[0..i]|)` of the exact value
+(`u` the unit roundoff). The reverse of a recording that holds a scan is refused by name for now.
+
+`kept, count = hawk.compact(keep, out=None)` lists the lanes a bool plane `keep` leaves set: `kept[:count]` holds their indices in
+lane order (an int32 plane the shape of `keep`) and `count` is a one-element uint32 plane. Entries of `kept` from `count` on are not
+written, and the result is the same on every run and at any thread count. Inside a graph builder `count` is a condition cell
+(`if count:`) and a loop limit, read at every replay. A `keep` of several axes is refused by name; the reverse of a recording that
+holds a compaction is refused by name for now.
+
+`value, where = hawk.reduce(p, "min" | "max", with_index=True)` also returns an int32 plane with the lane of each column's winner:
+a tie goes to the lowest lane and a NaN never wins; a column of nothing but NaN has the value NaN and the lane `n`. `"any"` and
+`"all"` take a bool plane and give a bool plane; pass a one-element uint32 plane as `out=` to get a cell that `if cell:` tests in a
+graph builder, read at every replay. A position with another op is refused by name; the reverse of a recording that holds a
+minimum or a maximum is refused by name for now.
 
 ## Streams
 
