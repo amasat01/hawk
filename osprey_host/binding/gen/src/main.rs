@@ -828,7 +828,10 @@ static inline PyObject* osprey_node_tuple(Ctx* s, const rx_node* v, size_t n) {
 
 static inline int osprey_handle(Ctx* s, PyObject* o, rx_node* h) {
   if (!PyObject_TypeCheck(o, osprey_node_type)) { PyErr_SetString(PyExc_TypeError, "expected a Node"); return -1; }
-  if (((Node*)o)->ctx != s) { PyErr_SetString(PyExc_TypeError, "a Node of another Ctx"); return -1; }
+  if (((Node*)o)->ctx != s) {
+    osprey_raise_coded("a Node of another Ctx: a node built in one document cannot be an operand in another", "foreign_node");
+    return -1;
+  }
   *h = ((Node*)o)->h;
   return 0;
 }

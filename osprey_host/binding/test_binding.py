@@ -116,7 +116,8 @@ raises(TypeError, lambda: o.Node(), "Node()")
 if sys.version_info >= (3, 10):
     raises(TypeError, lambda: setattr(o.Ctx, "new_method", 1), "Ctx.new_method = ...")
     raises(TypeError, lambda: setattr(o.Node, "new_method", 1), "Node.new_method = ...")
-raises(TypeError, lambda: c2.canonical([y], "[]", None, "[]"), "Node of another Ctx")
+foreign = raises(o.NotWritten, lambda: c2.canonical([y], "[]", None, "[]"), "Node of another Ctx")
+assert foreign.code == "foreign_node", foreign.code
 pub = sorted(
     n
     for n in dir(o)
@@ -694,7 +695,7 @@ assert not any(n.cls == "SamplePosition" for n in c.walk_order(unread))
 done.append("walk_order holds a sample_position read inside a loop body, as the old order did")
 
 # a refusal may carry a code, a promise callers can match on; the text is not one. Substituting
-# into a loop that commits once per iteration is the one refusal with a code now; every other
+# into a loop that commits once per iteration and a node of another document are the refusals with a code; every other
 # refusal has code None
 one_i = c.make("Const", "i32", [], None, [], "(('literal', 1),)")
 refused = raises(

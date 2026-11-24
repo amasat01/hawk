@@ -12,12 +12,12 @@ Every file with its line count (this file excluded):
      95  osprey_host/binding/fixture/auto_set_meta.c
       8  osprey_host/binding/fixture/contract0.c
      11  osprey_host/binding/gen/Cargo.toml
-   1425  osprey_host/binding/gen/src/main.rs
-   2689  osprey_host/binding/template/door.c
+   1428  osprey_host/binding/gen/src/main.rs
+   2702  osprey_host/binding/template/door.c
      45  osprey_host/binding/template/module.h
     116  osprey_host/binding/template/types.c
-   1090  osprey_host/binding/test_binding.py
-   2381  osprey_host/binding/test_door.py
+   1091  osprey_host/binding/test_binding.py
+   2405  osprey_host/binding/test_door.py
     314  osprey_host/binding/test_end_to_end.py
     311  osprey_host/binding/test_plane_axes.py
      96  osprey_host/binding/test_sideways.py

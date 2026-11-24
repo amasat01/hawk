@@ -1061,20 +1061,30 @@ static PyObject* m_reduce(PyObject* self, PyObject* args, PyObject* kw)
     Py_RETURN_NONE;
 }
 
-/* scan(source, out, op, flags=0): the running sum, minimum or maximum of source into out. */
-static PyObject* m_scan(PyObject* self, PyObject* args)
+/* scan(source, out, op, flags=0, index=None): the running sum, minimum or maximum of source into out;
+ * index receives the running winner's lane of a min or max. */
+static PyObject* m_scan(PyObject* self, PyObject* args, PyObject* kw)
 {
-    Door* d = (Door*)self;
-    PyObject *osource, *oout;
+    static char* names[] = { "source", "out", "op", "flags", "index", NULL };
+    Door* d              = (Door*)self;
+    PyObject *osource, *oout, *oindex = Py_None;
     int op;
     unsigned int flags = 0;
-    if (!PyArg_ParseTuple(args, "OOi|I", &osource, &oout, &op, &flags) || !door_ready(d))
+    if (!PyArg_ParseTupleAndKeywords(
+            args, kw, "OOi|IO", names, &osource, &oout, &op, &flags, &oindex)
+        || !door_ready(d))
         return NULL;
-    void *source, *out;
-    if (handle_ptr(d, osource, KIND_PLANE, &source) < 0 || handle_ptr(d, oout, KIND_PLANE, &out) < 0)
+    void *source, *out, *index;
+    if (handle_ptr(d, osource, KIND_PLANE, &source) < 0
+        || handle_ptr(d, oout, KIND_PLANE, &out) < 0
+        || handle_ptr_or_none(d, oindex, KIND_PLANE, &index) < 0)
         return NULL;
-    struct eg_scan_desc desc
-        = { .struct_size = sizeof desc, .flags = flags, .in = source, .out = out, .op = op };
+    struct eg_scan_desc desc = { .struct_size = sizeof desc,
+        .flags                                = flags,
+        .in                                   = source,
+        .out                                  = out,
+        .op                                   = op,
+        .index                                = index };
     if (door_check(d, d->fn.eg_scan(d->ctx, &desc)) < 0)
         return NULL;
     Py_RETURN_NONE;
@@ -1746,17 +1756,18 @@ static PyObject* m_event_elapsed(PyObject* self, PyObject* args)
 
 /* ---- planes the door makes, banded cells, figures and reset -------------------------------- */
 
-/* plane_new(shape, dtype_code, dtype_bits, kind=EG_MEM_HOST, flags=0): a plane the door owns;
- * the dtype is the DLPack code (kDLInt 0, kDLUInt 1, kDLFloat 2, kDLBool 6) and bit width. */
+/* plane_new(shape, dtype_code, dtype_bits, kind=EG_MEM_HOST, flags=0, device=EG_DEVICE_DEFAULT): a plane
+ * the door owns on the member `device` names; the dtype is the DLPack code (kDLInt 0, kDLUInt 1,
+ * kDLFloat 2, kDLBool 6) and bit width. */
 static PyObject* m_plane_new(PyObject* self, PyObject* args, PyObject* kw)
 {
-    static char* names[] = { "shape", "dtype_code", "dtype_bits", "kind", "flags", NULL };
+    static char* names[] = { "shape", "dtype_code", "dtype_bits", "kind", "flags", "device", NULL };
     Door* d              = (Door*)self;
     PyObject* oshape;
     unsigned int code, bits, flags = 0;
-    int kind = EG_MEM_HOST;
+    int kind = EG_MEM_HOST, device = EG_DEVICE_DEFAULT;
     if (!PyArg_ParseTupleAndKeywords(
-            args, kw, "OII|iI", names, &oshape, &code, &bits, &kind, &flags)
+            args, kw, "OII|iIi", names, &oshape, &code, &bits, &kind, &flags, &device)
         || !door_ready(d))
         return NULL;
     void* shape;
@@ -1769,7 +1780,8 @@ static PyObject* m_plane_new(PyObject* self, PyObject* args, PyObject* kw)
         .ndim                                  = (int32_t)ndim,
         .dtype_code                            = code,
         .dtype_bits                            = bits,
-        .shape                                 = shape };
+        .shape                                 = shape,
+        .device                                = device };
     eg_plane* plane           = NULL;
     PyObject* res             = NULL;
     if (door_check(d, d->fn.eg_plane_new(d->ctx, &desc, &plane)) == 0)
@@ -2448,7 +2460,7 @@ static PyMethodDef door_methods[] = {
     { "run_events", m_run_events, METH_VARARGS, NULL },
     { "reverse", m_reverse, METH_VARARGS, NULL },
     { "reduce", KEYWORD_CALL(m_reduce), METH_VARARGS | METH_KEYWORDS, NULL },
-    { "scan", m_scan, METH_VARARGS, NULL },
+    { "scan", KEYWORD_CALL(m_scan), METH_VARARGS | METH_KEYWORDS, NULL },
     { "compact", m_compact, METH_VARARGS, NULL },
     { "order_by_key", m_order_by_key, METH_VARARGS, NULL },
     { "reorder", m_reorder, METH_VARARGS, NULL },
@@ -2637,6 +2649,7 @@ static PyType_Spec handle_spec    = { "_osprey.Handle", sizeof(Handle), 0,
     X(EG_MEM_PINNED)                                                                               \
     X(EG_MEM_DEVICE)                                                                               \
     X(EG_PLANE_ZERO)                                                                               \
+    X(EG_DEVICE_DEFAULT)                                                                           \
     X(EG_UNIT_CHECKED)                                                                             \
     X(EG_ENTRY_CHECKED)                                                                            \
     X(EG_ENTRY_DEVICE)                                                                             \

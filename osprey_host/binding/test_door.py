@@ -2052,9 +2052,23 @@ def run(done, raises, not_run, backends):
     door.scan(source, scanned, o.EG_SCAN_MAX, o.EG_SCAN_EXCLUSIVE)
     e = raises(o.BadRequest, lambda: door.scan(source, source, o.EG_SCAN_SUM), "scan: out is in")
     assert "overlaps" in refusal_text(door, e)
+    winners = np.zeros(values.shape, dtype=np.int32)
+    won = door.plane_wrap(winners)
+    door.scan(source, scanned, o.EG_SCAN_MIN, index=won)
+    best, expected = 0, []
+    for lane in range(len(values)):
+        best = lane if values[lane] < values[best] else best
+        expected.append(best)
+    assert (winners == expected).all() and (result == np.minimum.accumulate(values)).all()
+    e = raises(
+        o.BadRequest, lambda: door.scan(source, scanned, o.EG_SCAN_SUM, index=won), "scan: sum with index"
+    )
+    assert "takes op MIN or MAX only" in refusal_text(door, e)
+    door.plane_free(won)
     door.plane_free(source)
     door.plane_free(scanned)
     done.append("scan: an inclusive sum equals numpy cumsum, an exclusive maximum runs, out = in is refused by name")
+    done.append("scan: the running minimum with index equals a loop over lanes, a sum with index is refused by name")
 
     # ---- compact: the ascending lanes a bool plane keeps, numpy as the oracle ----
     wanted_mask = np.arange(3000) % 7 == 0
@@ -2217,6 +2231,16 @@ def run(done, raises, not_run, backends):
     e = raises(o.BadRequest, lambda: door.plane_new([-1], 2, 64), "plane_new: a negative extent")
     refusal_text(door, e)
     done.append("plane_new: a dtype and an extent refused by reason")
+    if device is None:
+        for member in (o.EG_DEVICE_DEFAULT, 0):
+            door.plane_free(door.plane_new([2], 2, 64, device=member))
+        e = raises(
+            o.BadRequest, lambda: door.plane_new([2], 2, 64, device=1), "plane_new: member 1"
+        )
+        assert "host-only context: it has one member" in refusal_text(door, e)
+        done.append("plane_new: the default member and member 0 made, member 1 refused by name")
+    else:
+        not_run.append("plane_new on member 1 of a host-only context: this door has a device group")
     del mine_view, view
     door.plan_free(plan)
     door.plane_free(mine)
