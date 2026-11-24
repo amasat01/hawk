@@ -122,6 +122,7 @@ _TOP_LEVEL_DOORS = {"build": ("artifact", "build_bundle"),
                     "scan": ("collectives", "scan"),
                     "compact": ("collectives", "compact"),
                     "sort": ("collectives", "sort"),
+                    "reorder": ("collectives", "reorder"),
                     "Stream": ("streams", "Stream"),
                     "Event": ("events", "Event")}
 

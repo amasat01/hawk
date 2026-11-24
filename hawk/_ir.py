@@ -463,17 +463,34 @@ def update(
 
 @_as_hawk_error
 def function(
-    context: Any, name: str, params: Sequence[Any], body: Any, natives: Sequence[tuple[str, str]], result: TensorType
+    context: Any,
+    name: str,
+    params: Sequence[Any],
+    body: Any,
+    natives: Sequence[tuple[str, str]],
+    result: TensorType,
+    jvp: Any = None,
+    vjp: Sequence[Any] = (),
 ) -> Any:
     """Declare the function ``name`` in the function table of ``context``: its ``params``, and either a traced ``body`` or the
-    ``natives`` texts as ``(target name, text)`` pairs. A name that is already declared with another body is refused."""
+    ``natives`` texts as ``(target name, text)`` pairs. A name that is already declared with another body is refused.
+
+    ``jvp`` is the function holding the forward rule and ``vjp`` the functions holding the reverse rules, one per read in
+    parameter order; the library checks their signatures against this function's."""
     leaves = "".join(f"#{i}, " for i in range(len(params)))
+    operands = [*params, *([] if body is None else [body])]
     held = "None" if body is None else f"#{len(params)}"
+    forward = "None"
+    if jvp is not None:
+        forward = f"#{len(operands)}"
+        operands.append(jvp)
+    reverse = "".join(f"#{len(operands) + k}, " for k in range(len(vjp)))
+    operands.extend(vjp)
     fields = (
         f"(('name', {name!r}), ('scope', 'lane'), ('params', ({leaves})), ('body', {held}), "
-        f"('natives', {_text(tuple(natives))}), ('jvp', None), ('vjp', ()), ('returns', {_text(result)}))"
+        f"('natives', {_text(tuple(natives))}), ('jvp', {forward}), ('vjp', ({reverse})), ('returns', {_text(result)}))"
     )
-    return context.new("Function", fields, [*params, *([] if body is None else [body])])
+    return context.new("Function", fields, operands)
 
 
 @_as_hawk_error

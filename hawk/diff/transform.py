@@ -29,7 +29,9 @@ from ..ext.primitive import jvp_tangent, vjp_contributions
 from ..trace.value import DISPATCH_STRATEGIES, dispatch_node, dispatch_strategy
 from . import rules
 from .altpath import AltPath
+from .functions import FLOATS, call_adjoints, call_tangent
 from .jump import JumpPlan, drop_width, jump_of
+from .program import is_builder, jvp_builder, vjp_builder
 from .loops import (
     _reduce_to,
     _taken_indices,
@@ -276,7 +278,7 @@ def _scatter(
 
 
 #: dtypes a derivative flows through; everything else is a structural constant.
-_DIFFERENTIABLE = ("f64", "f32")
+_DIFFERENTIABLE = FLOATS
 
 
 def _rederivable(derive):
@@ -326,6 +328,8 @@ def vjp(
     reverse takes its own structure. Any of
     the dispatch strategies of the library is accepted; an unknown group
     or strategy refuses by name."""
+    if is_builder(primal):
+        return vjp_builder(primal, wrt)
     if getattr(primal, "members", None):
         from .chain import vjp_chain
 
@@ -638,6 +642,8 @@ def jvp(
     ``hawk.steps(step_jvp(k), K)`` (``primal_unit`` does not apply to it)."""
     from ..trace.steps import _fused_steps_of
 
+    if is_builder(primal):
+        return jvp_builder(primal, wrt)
     fused = _fused_steps_of(primal)
     if fused is not None:
         from ..trace.steps import steps
@@ -778,6 +784,11 @@ def _jvp(
                 got = jvp_tangent(node, supplied)
                 if got is not None:
                     tangent[key(node)] = got
+            continue
+        if _ir.is_a(node, "call"):
+            supplied = [tangent.get(key(c)) for c in node.operands]
+            if any(t is not None for t in supplied):
+                tangent[key(node)] = call_tangent(node, supplied, name.derived)
             continue
         if _ir.is_a(node, "at"):
             plane, *indices = node.operands
@@ -950,6 +961,10 @@ def _reverse_pass(
             # Operand 0 (the forward subgraph) is deliberately skipped: the
             # supplied rule already is this primitive's derivative.
             for child, contribution in vjp_contributions(node, g):
+                _accumulate(adjoint, key, child, _reduce_to(contribution, child))
+            continue
+        if _ir.is_a(node, "call"):
+            for child, contribution in call_adjoints(node, g, name.derived):
                 _accumulate(adjoint, key, child, _reduce_to(contribution, child))
             continue
         if _ir.is_a(node, "dispatch"):
@@ -1304,13 +1319,6 @@ def _rule(node: Any):
 
 def _wrt(seq: Iterable[Any], wrt: Sequence[str] | None) -> tuple[Any, ...]:
     """The leaves a derivative is taken with respect to, in traversal order."""
-    for node in seq:
-        if node.cls == "Call" and node.field_flag("native"):
-            name = node.field_names("function")[0]
-            raise HawkError(
-                f"native function {name!r} cannot be differentiated yet: its text is opaque "
-                "to the IR and it carries no derivative rule"
-            )
     leaves = [
         n
         for n in seq
@@ -1380,6 +1388,9 @@ class _Namer:
         self.counts: dict = {}
         #: ``{plane: the plane of its winner lanes}`` of the ordered minimums and maximums the derivative reads
         self.winners: dict = {}
+        #: The derivative functions of the called functions this run has derived, so each is written once however many calls
+        #: there are (:mod:`hawk.diff.functions`).
+        self.derived: dict = {}
         self.source: dict[str, str] = {}
         flat = [n.replace(_ir.NAMESPACE_SEP, "_") for n in names]
         self.level = 1

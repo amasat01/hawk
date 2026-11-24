@@ -8,6 +8,21 @@ A kernel that updates its planes in place is one step of a rollout. `hawk.diff.s
 
 `step_vjp(hawk.steps(k, K), steps_reverse="fused")` reverses all `K` steps of a launch in one launch. It re-runs the `K` steps from the state before the launch, so it needs no tape; state gradients match `K` calls of the per-step form bit for bit, parameter gradients to a few ULP. `"per_step"` is the default, and `jvp` of a `hawk.steps(k, K)` kernel is `hawk.steps(step_jvp(k), K)`.
 
+## A recorded program: jvp and vjp of a builder
+
+`hawk.diff.jvp` and `hawk.diff.vjp` also take a graph builder (a function decorated with `@hawk.Graph.builder`); a kernel behaves as before, and anything else that is callable is refused by name.
+
+```python
+tangent_step = hawk.diff.jvp(program)                        # a builder; call it as program, plus tangents={"x": dx}
+graph = tangent_step(x, y, s, t, tangents={"x": dx})         # built; graph() replays the program with its tangents
+graph.tangent_of(t)                                          # the tangent of any array of the program
+gradients = hawk.diff.vjp(program)(x, y, s, t, cotangents={"t": seed}, wrt="x")   # replays once, then reverses it
+```
+
+The forward derivative re-records the program: a kernel launch becomes the launch that computes its outputs and tangents together (planes `dot_<plane>`), and a whole-plane node gains its tangent node. A scan or reduce sum, a reorder (the same order), a copy and a transform apply to the tangent planes; a product is `dA B` then `A dB` added; a one-axis minimum or maximum takes the tangent at the winning lane. A sort, a compaction, `all` and `any` have no tangent, and conditionals, loops and forks keep their structure and their tests. A tangent array is the caller's, given by the parameter's name in `tangents=`; every other float array of the program gets zeros. A running minimum or maximum, a minimum over a plane of two axes and a host step are refused by name.
+
+The reverse derivative is the one mechanism `hawk.reverse` uses, so the two give the same bytes. Use `hawk.reverse(record, ...)` when you hold a graph you have already replayed; use `hawk.diff.vjp(builder)` to run the builder and get the gradients in one call, with `cotangents` and `wrt` naming the builder's array parameters. The builder must make `hawk.Graph(record=True)`.
+
 ## with_derivative
 
 `hawk.diff.with_derivative(k, wrt=("x",))` is one kernel that computes `k`'s outputs and their forward derivatives along `wrt`, in one launch. Pass `dot_x` (the direction) beside `k`'s own inputs; it writes `k`'s outputs and `dot_<output>`. It is a plain kernel, so it is a step of an `eagle.Graph` builder like any other. A `hawk.steps(k, K)` kernel is refused: take `jvp` of it instead.

@@ -704,16 +704,18 @@ class BoundPlan:
 
     def __init__(self, kernel: LoadedKernel, arguments: _Arguments, structure: int, ranges: dict, *, place: Maker,
                  n_samples: int | None = None, layout: str | None = None, broadcast: tuple | None = None,
-                 store: PlaneStore | None = None) -> None:
+                 settings: dict | None = None, store: PlaneStore | None = None) -> None:
         """Make the library's plan, through the door of ``place`` (where the planes live), over ``arguments.n_samples`` samples
         under ``structure`` (a door structure code) and partitioned by ``ranges`` (the door's ``part_base`` / ``part_count`` or
         ``split_evenly``, else none: the whole range), then bind the planes. ``n_samples`` and ``layout`` are what the caller
         stated, kept for :meth:`rebind`.
         ``broadcast`` is ``(traced kernel, patterns)`` of a plan deployed from a kernel: the patterns the planes were bound in
         (none for the exact shapes), which a rebind keeps; ``None`` for a plan over a loaded artifact. ``store`` is the graph's
-        :class:`PlaneStore` when the plan is bound for a graph being written: its planes are the store's."""
+        :class:`PlaneStore` when the plan is bound for a graph being written: its planes are the store's. ``settings`` are the
+        arguments :func:`hawk.deploy` was given for a plan deployed from a kernel, kept as they were; ``None`` otherwise."""
         self._kernel = kernel
         self._broadcast = broadcast
+        self._settings = settings
         self._place = place
         self._door = place.door
         self._store = store
@@ -825,6 +827,17 @@ class BoundPlan:
     def kernel(self) -> LoadedKernel:
         """The loaded kernel this plan launches."""
         return self._kernel
+
+    @property
+    def traced(self):
+        """The kernel (:class:`hawk.trace.kernel.Kernel`) this plan was deployed from, or ``None`` for a plan over a loaded artifact."""
+        return None if self._broadcast is None else self._broadcast[0]
+
+    @property
+    def settings(self) -> dict | None:
+        """The arguments the plan was deployed with (``targets``, ``scalar_type``, ``cache_dir``, ``contraction``, ``record``,
+        ``window``, ``reverse``), or ``None`` for a plan over a loaded artifact."""
+        return self._settings
 
     @property
     def views(self) -> MappingProxyType:

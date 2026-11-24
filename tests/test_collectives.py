@@ -462,26 +462,33 @@ def test_the_reverse_of_a_flat_sum_is_the_cotangent_on_every_sample():
     np.testing.assert_allclose(gradients["x"], np.full(N, 20.0 * seed[0]), rtol=1e-14)
 
 
-@pytest.mark.parametrize(
-    ("op", "stem"),
-    [
-        (
-            "min",
-            r"eg_record_end: eg_reduce \(leaf 0\) has no gradient eagle can pull back \(a tie has no single answer\); only op='sum' reverses",
-        ),
-        (
-            "max",
-            r"eg_record_end: eg_reduce \(leaf 0\) has no gradient eagle can pull back \(a tie has no single answer\); only op='sum' reverses",
-        ),
-    ],
-)
-def test_the_reverse_of_a_minimum_or_maximum_is_refused_by_the_library(op, stem):
+@pytest.mark.parametrize("op", ["min", "max"])
+def test_the_reverse_of_a_minimum_or_maximum_is_the_one_hot_at_the_first_winner(op):
+    """Oracle: ``r = op(2 x)``, ``w = 10 r``: ``20 * seed`` at ``np.argmin`` / ``np.argmax`` of ``x`` and zero elsewhere."""
+
+    def build(x) -> hawk.Graph:
+        g = hawk.Graph(record=True)
+        g.result = tenfold(hawk.reduce(double(x), op))
+        return g
+
+    x, seed = RNG.integers(0, 4, size=N).astype(np.float64), planes(1)  # ties
+    gradients = reverse_of(build, x, {"w": seed})
+    want = np.zeros(N)
+    want[np.argmin(x) if op == "min" else np.argmax(x)] = 20.0 * seed[0]
+    np.testing.assert_allclose(gradients["x"], want, rtol=1e-14)
+
+
+@pytest.mark.parametrize("op", ["min", "max"])
+def test_the_reverse_of_a_minimum_or_maximum_over_columns_is_refused_by_the_library(op):
     def build(x) -> hawk.Graph:
         g = hawk.Graph(record=True)
         g.result = tenfold(hawk.reduce(double_v(x), op))
         return g
 
-    with pytest.raises(HawkError, match=stem):
+    with pytest.raises(
+        HawkError,
+        match=r"eg_reduce \(leaf 0\): a 2-D or companion reduce: eagle does not pull back yet; only a 1-D reduce reverses",
+    ):
         hawk.Graph.builder(build)(planes((3, N)))
 
 

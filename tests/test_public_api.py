@@ -61,7 +61,7 @@ _EXPECTED_MANIFEST = {
         "Param", "Partition", "Quantity", "Quat", "Record", "Rows", "Scalar", "SkipGuard", "Sorted",
         "Staged", "Stream", "Table", "Tensor", "Terminated", "ToolchainAbsent", "UInt32", "Value", "Vector", "Wide",
         "WideOut", "__version__", "append", "asarray", "banded_pack", "banded_unpack", "build", "chain", "compact", "copy", "deploy", "device_props", "fft", "function", "geometry", "group",
-        "host_step", "host_threads", "kernel", "load", "matmul", "max", "mean", "min", "native", "plan", "primitive", "reduce", "repeat_while", "resolve_dispatch", "reverse", "run",
+        "host_step", "host_threads", "kernel", "load", "matmul", "max", "mean", "min", "native", "plan", "primitive", "reduce", "reorder", "repeat_while", "resolve_dispatch", "reverse", "run",
         "sample_position", "samples_first", "samples_last", "scan", "scatter", "set_host_threads", "simulate", "skippable", "sort", "steps", "sum", "synchronize",
         "to_numpy", "until_done",
     ],

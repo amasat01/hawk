@@ -186,6 +186,7 @@ class Plan:
         route = None if deployed is None else (deployed.kernel, patterns)
         return BoundPlan(plan.kernel, arguments, plan._structure_code(place.device), plan._ranges(n, span), place=place,
                          n_samples=n_samples, layout=layout, broadcast=route,
+                         settings=None if deployed is None else deployed.settings,
                          store=None if recorder is None else recorder.store(place.door))
 
     def _place(self, planes: dict) -> _place.Maker:

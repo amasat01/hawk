@@ -165,16 +165,54 @@ def test_a_recorded_scan_between_two_kernels_equals_the_eager_one_and_numpy_and_
     graph.close()
 
 
-def test_the_reverse_of_a_recording_that_holds_a_scan_is_refused_by_name_until_it_is_written():
+def reverse_of(build, *arrays, seed):
+    """The gradients of ``seed`` on the result ``w`` of the graph ``build`` writes with ``record=True``, replayed once."""
+    graph = hawk.Graph.builder(build)(*arrays)
+    graph.launch()
+    return hawk.reverse(graph.record, {"w": seed})
+
+
+@pytest.mark.parametrize("exclusive", [False, True])
+def test_the_reverse_of_a_sum_scan_is_the_suffix_scan_of_the_cotangent(exclusive):
+    """Oracle: ``r = scan(2 x)``, ``w = 10 r``: ``dJ/dx = 20 * cumsum(seed[::-1])[::-1]``, shifted by one lane when exclusive."""
+
     def build(x) -> hawk.Graph:
         g = hawk.Graph(record=True)
-        g.result = tenfold(hawk.scan(double(x), "sum"))
+        g.result = tenfold(hawk.scan(double(x), "sum", exclusive=exclusive))
         return g
 
-    with pytest.raises(
-        HawkError, match=r"eg_scan \(leaf 0\): eagle does not pull back a scan yet"
-    ):
-        hawk.Graph.builder(build)(RNG.normal(size=100))
+    x, seed = RNG.normal(size=100), RNG.normal(size=100)
+    suffix = np.cumsum(seed[::-1])[::-1]
+    if exclusive:
+        suffix = np.append(suffix[1:], 0.0)
+    gradients = reverse_of(build, x, seed=seed)
+    np.testing.assert_allclose(gradients["x"], 20.0 * suffix, rtol=1e-12, atol=1e-12)
+
+
+@pytest.mark.parametrize("op", ["min", "max"])
+@pytest.mark.parametrize("exclusive", [False, True])
+def test_the_reverse_of_a_minimum_or_maximum_scan_goes_to_the_running_winner(
+    op, exclusive
+):
+    """Oracle: a loop over the lanes giving the cotangent of ``out[k]`` to the first lane of the running extreme."""
+
+    def build(x) -> hawk.Graph:
+        g = hawk.Graph(record=True)
+        g.result = tenfold(hawk.scan(double(x), op, exclusive=exclusive))
+        return g
+
+    x = RNG.integers(0, 6, size=100).astype(np.float64)  # ties
+    seed = RNG.normal(size=100)
+    want, winner = np.zeros(100), -1
+    for k in range(100):
+        if exclusive and winner >= 0:
+            want[winner] += 20.0 * seed[k]
+        if winner < 0 or (x[k] < x[winner] if op == "min" else x[k] > x[winner]):
+            winner = k
+        if not exclusive:
+            want[winner] += 20.0 * seed[k]
+    gradients = reverse_of(build, x, seed=seed)
+    np.testing.assert_allclose(gradients["x"], want, rtol=1e-12, atol=1e-12)
 
 
 # ---- refusals ----

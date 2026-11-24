@@ -305,15 +305,18 @@ def test_a_malformed_declaration_is_refused_by_the_function_name(declare, match)
         declare()
 
 
-@pytest.mark.parametrize("derivative", [hawk.diff.vjp, hawk.diff.jvp])
-def test_a_native_function_cannot_be_differentiated_yet_and_the_refusal_names_it(
-    derivative,
+@pytest.mark.parametrize(
+    "derivative, direction", [(hawk.diff.vjp, "vjp"), (hawk.diff.jvp, "jvp")]
+)
+def test_a_native_function_without_the_rule_of_a_direction_is_refused_by_name(
+    derivative, direction
 ):
     @hawk.kernel
     def kern(x: hawk.Scalar, y: hawk.Scalar, out: hawk.Mutable[hawk.Scalar]):
         out = fma_sq(x, y)
 
     with pytest.raises(
-        HawkError, match="native function 'fma_sq' cannot be differentiated yet"
+        HawkError,
+        match=f"native function 'fma_sq' has no {direction} rule; pass {direction}=",
     ):
         derivative(kern)

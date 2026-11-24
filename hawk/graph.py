@@ -95,7 +95,7 @@ class _Wait:
 
 #: The words of the library's node and edge kinds, by their codes.
 _NODE_WORDS = MappingProxyType({
-    _osprey.EG_GNODE_LAUNCH: "launch", _osprey.EG_GNODE_RUN: "run", _osprey.EG_GNODE_REDUCE: "reduce", _osprey.EG_GNODE_SCAN: "scan", _osprey.EG_GNODE_COMPACT: "compact", _osprey.EG_GNODE_ORDER: "sort",
+    _osprey.EG_GNODE_LAUNCH: "launch", _osprey.EG_GNODE_RUN: "run", _osprey.EG_GNODE_REDUCE: "reduce", _osprey.EG_GNODE_SCAN: "scan", _osprey.EG_GNODE_COMPACT: "compact", _osprey.EG_GNODE_ORDER: "sort", _osprey.EG_GNODE_REORDER: "reorder",
     _osprey.EG_GNODE_COPY: "copy", _osprey.EG_GNODE_FFT: "fft", _osprey.EG_GNODE_GEMM: "gemm", _osprey.EG_GNODE_COND: "cond",
     _osprey.EG_GNODE_FORK: "fork", _osprey.EG_GNODE_BRANCH: "branch", _osprey.EG_GNODE_JOIN: "join",
     _osprey.EG_GNODE_WAIT: "wait"})
@@ -990,8 +990,12 @@ def _gradient_keys(inputs: dict, planes: list) -> dict:
     return {key: plane.name if count[plane.name] == 1 else f"{plane.label}.{plane.name}" for key, plane in inputs.items()}
 
 
-def _reverse_graph(graph: Graph, cotangents: dict, wrt, strict: bool) -> Gradients:
-    """The gradients of the last replay of ``graph`` for ``cotangents``, by plane name (see :func:`reverse`)."""
+def _reverse_graph(graph: Graph, cotangents: dict, wrt, strict: bool, loose: tuple = (), loose_inputs: tuple = ()) -> Gradients:
+    """The gradients of the last replay of ``graph`` for ``cotangents``, by plane name (see :func:`reverse`).
+
+    ``loose`` are ``(array, cotangent)`` pairs for arrays no launch binds, a whole-plane node's result for one, seeded as they
+    are: the gradient of a program is asked of the arrays its builder takes (:func:`hawk.diff.vjp`). ``loose_inputs`` are
+    ``(name, array)`` pairs of such arrays whose gradient is asked, returned under ``name``."""
     import numpy as np
 
     if graph._finalizer is None or not graph._finalizer.alive:
@@ -1012,6 +1016,10 @@ def _reverse_graph(graph: Graph, cotangents: dict, wrt, strict: bool) -> Gradien
                 raise HawkError(f"hawk.reverse: wrt {key!r} is written by the graph before anything reads it, so it is no "
                                 f"input; the inputs are {sorted(names.values())}")
             wanted[memory] = inputs[memory]
+    for name, array in loose_inputs:
+        memory = PlaneStore.region(array)
+        inputs[memory] = wanted[memory] = _Plane(-1, "", name, array, array)
+        names[memory] = name
     door, store, temporary = graph._door, graph._store, []
     try:
         seeds = []
@@ -1020,6 +1028,10 @@ def _reverse_graph(graph: Graph, cotangents: dict, wrt, strict: bool) -> Gradien
             seed = door.plane_wrap(_in_shape(array, plane, key))
             temporary.append(seed)
             seeds.append((store.plane(plane.view), seed))
+        for array, cotangent in loose:
+            seed = door.plane_wrap(np.ascontiguousarray(cotangent, dtype=array.dtype).reshape(array.shape))
+            temporary.append(seed)
+            seeds.append((store.plane(array), seed))
         gradients, pairs = {}, []
         for memory, plane in wanted.items():
             grad = np.zeros(plane.view.shape, dtype=plane.view.dtype)

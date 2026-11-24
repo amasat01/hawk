@@ -8,7 +8,7 @@ files across two repositories. Cross-linked from
 
 No public seam skips this today: [`hawk.ext.primitive`](../vocabulary/03_your_own_derivative)
 only *composes* existing ops, and [`hawk.native`](../vocabulary/when_hawk_cant_spell_it)
-cannot be differentiated. A genuinely new native op is this six-step edit.
+differentiates only through rules you write. A genuinely new native op is this six-step edit.
 
 ## 1. aether: the host/device dispatch
 

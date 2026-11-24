@@ -40,6 +40,7 @@ from typing import Any
 from .. import _ir
 from ..errors import HawkError
 from ..ext.primitive import jvp_tangent, vjp_contributions
+from .functions import call_adjoints, call_tangent
 from ..trace.value import dispatch_node, dispatch_strategy
 from . import rules
 from .tape import _carry
@@ -285,6 +286,10 @@ def _pullback(
             )
         if _ir.is_a(node, "primitive"):
             for child, contribution in vjp_contributions(node, g):
+                _accumulate(store, child, _reduce_to(contribution, child))
+            continue
+        if _ir.is_a(node, "call"):
+            for child, contribution in call_adjoints(node, g, name.derived):
                 _accumulate(store, child, _reduce_to(contribution, child))
             continue
         if jump is not None and jump.apply_vjp(
@@ -834,6 +839,7 @@ def forward_loop(loop: Any, tangent_of, name, augmented_of=None, jump=None, alt=
         return tangent.get(c)
 
     nested: dict = {}
+    derived: dict = {}  # the functions this body's calls were derived into, one each
 
     def twin(lp):
         """The augmented twin of a loop this body reads the tape of: a loop NESTED in
@@ -897,6 +903,11 @@ def forward_loop(loop: Any, tangent_of, name, augmented_of=None, jump=None, alt=
                 got = jvp_tangent(node, supplied)
                 if got is not None:
                     tangent[node] = got
+            continue
+        if _ir.is_a(node, "call"):
+            supplied = [tangent.get(c) for c in node.operands]
+            if any(s is not None for s in supplied):
+                tangent[node] = call_tangent(node, supplied, derived)
             continue
         if _ir.is_a(node, "dispatch"):
             # the straight-line rule (hawk.diff.transform.jvp): the same

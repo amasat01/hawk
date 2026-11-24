@@ -664,6 +664,8 @@ def make_builder(function):
             held["run"] = _rewrite_function(function)
         return (_run_block if block else _run_builder)(function, held["run"], signature, args, kwargs)
 
+    #: Whether calling the wrapper makes and builds a graph, which is what :func:`hawk.diff.jvp` and :func:`hawk.diff.vjp` take.
+    wrapper.makes_graph = not block
     return wrapper
 
 

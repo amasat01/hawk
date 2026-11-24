@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Whole-plane operations called like a kernel: ``hawk.reduce``, ``hawk.scan``, ``hawk.compact``, ``hawk.sort``,
-``hawk.copy``, ``hawk.matmul`` and ``hawk.fft``.
+``hawk.reorder``, ``hawk.copy``, ``hawk.matmul`` and ``hawk.fft``.
 
 One call path serves them all. Called inside a graph builder or block, the call records one node of the graph; called
 anywhere else it runs once. Either way the result arrays are made at the call, in the memory of the first operand, and
@@ -23,7 +23,7 @@ from . import _place, graph_builder, streams
 from .errors import HawkError
 from .runtime import through_door
 
-__all__ = ["compact", "copy", "fft", "matmul", "reduce", "scan", "sort"]
+__all__ = ["compact", "copy", "fft", "matmul", "reduce", "reorder", "scan", "sort"]
 
 _OPS = MappingProxyType(
     {
@@ -63,7 +63,10 @@ class Collective:
     runs it over their planes.
 
     ``arrays`` are the operands in the order ``run`` takes their planes. ``plan`` is the door's plan handle for a transform or
-    a matrix product (``None`` for the others), freed with the node.
+    a matrix product (``None`` for the others), freed with the node. ``kind`` is the operation (``"reduce"``, ``"scan"``,
+    ``"reorder"``, ``"copy"``, ``"matmul"``, ``"fft"``, ``"compact"``, ``"sort"``) and ``op`` its fold where it has one;
+    ``redo(arrays)`` calls the same operation over other ``arrays`` of the same roles (the derivative of a program calls it
+    over tangent planes), and is ``None`` where that has no meaning.
     """
 
     def __init__(
@@ -74,9 +77,14 @@ class Collective:
         run: Callable,
         plan: Any = None,
         free: Callable | None = None,
+        *,
+        kind: str = "",
+        op: str | None = None,
+        redo: Callable | None = None,
     ) -> None:
         """Make the node ``label`` over ``arrays`` held by ``door``; ``run(door, planes)`` calls the door, ``free(door, plan)`` drops its plan."""
         self.label, self.arrays, self.run, self.plan = label, arrays, run, plan
+        self.kind, self.op, self.redo = kind, op, redo
         self.door = door
         if plan is not None:
             weakref.finalize(self, free, self.door, plan)
@@ -171,7 +179,17 @@ def reduce(
         door.reduce(planes[0], planes[1], _OPS[op], _CONTRACTS[contract], index=index)
 
     arrays = (p, result, where) if with_index else (p, result)
-    _call(Collective(f"reduce {op}", door, arrays, run))
+    _call(
+        Collective(
+            f"reduce {op}",
+            door,
+            arrays,
+            run,
+            kind="reduce",
+            op=op,
+            redo=lambda a: reduce(a[0], op, contract, a[1]),
+        )
+    )
     return (result, where) if with_index else result
 
 
@@ -192,7 +210,17 @@ def scan(p: Any, op: str, exclusive: bool = False, out: Any = None) -> Any:
     def run(door: Any, planes: list) -> None:
         door.scan(planes[0], planes[1], _SCAN_OPS[op], flags)
 
-    _call(Collective(f"scan {op}", door, (p, result), run))
+    _call(
+        Collective(
+            f"scan {op}",
+            door,
+            (p, result),
+            run,
+            kind="scan",
+            op=op,
+            redo=lambda a: scan(a[0], op, exclusive, a[1]),
+        )
+    )
     return result
 
 
@@ -214,7 +242,7 @@ def compact(keep: Any, out: tuple | None = None) -> tuple:
     def run(door: Any, planes: list) -> None:
         door.compact(*planes)
 
-    _call(Collective("compact", door, (keep, kept, count), run))
+    _call(Collective("compact", door, (keep, kept, count), run, kind="compact"))
     return kept, count
 
 
@@ -242,8 +270,38 @@ def sort(keys: Any, bound: int, out: tuple | None = None) -> tuple:
     def run(door: Any, planes: list) -> None:
         door.order_by_key(planes[0], planes[1], planes[2], bound)
 
-    _call(Collective("sort", door, (keys, order, starts), run))
+    _call(Collective("sort", door, (keys, order, starts), run, kind="sort"))
     return order, starts
+
+
+def reorder(planes: Any, order: Any) -> None:
+    """Permute the planes in place by ``order``: afterwards ``p[j]`` holds what ``p[order[j]]`` held, for every plane ``p``.
+
+    ``planes`` is a list of arrays of one lane extent (their last axis; a plane of a vector value moves every row by the same
+    order) and ``order`` an int32 or uint32 plane of that extent, such as the one ``hawk.sort`` returns, so
+    ``order, starts = hawk.sort(keys, bound=K)`` then ``hawk.reorder([pos, vel], order)`` sorts both by key. Every entry of
+    ``order`` must lie in ``[0, n)``: the call, or in a graph builder the replay, fails naming how many do not and moves
+    nothing. A repeated entry is not detected and leaves a lane twice. The same bytes on every run and at any thread count.
+    Typing is the runtime's, and its reason for a refusal is shown as given."""
+    members = tuple(planes)
+    if not members:
+        raise HawkError(
+            "hawk.reorder: planes is empty; pass the list of arrays to move"
+        )
+
+    def run(door: Any, handles: list) -> None:
+        door.reorder(handles[:-1], handles[-1])
+
+    _call(
+        Collective(
+            "reorder",
+            _door_of(members[0], "reorder"),
+            (*members, order),
+            run,
+            kind="reorder",
+            redo=lambda a: reorder(a[:-1], a[-1]),
+        )
+    )
 
 
 def copy(src: Any, dst: Any) -> Any:
@@ -252,7 +310,16 @@ def copy(src: Any, dst: Any) -> Any:
     def run(door: Any, planes: list) -> None:
         door.copy(planes[0], planes[1])
 
-    _call(Collective("copy", _door_of(src, "copy"), (src, dst), run))
+    _call(
+        Collective(
+            "copy",
+            _door_of(src, "copy"),
+            (src, dst),
+            run,
+            kind="copy",
+            redo=lambda a: copy(a[0], a[1]),
+        )
+    )
     return dst
 
 
@@ -297,6 +364,10 @@ def matmul(
             run,
             plan,
             lambda d, handle: d.gemm_free(handle),
+            kind="matmul",
+            redo=lambda a, accumulate=accumulate: matmul(
+                a[0], a[1], a[2], transpose_a, transpose_b, accumulate
+            ),
         )
     )
     return result
@@ -359,6 +430,8 @@ def _transform(
             run,
             plan,
             lambda d, handle: d.fft_free(handle),
+            kind="fft",
+            redo=lambda a: _transform(kind, label, a[0], a[1], axes, norm, inverse),
         )
     )
     return result

@@ -202,14 +202,36 @@ def test_a_branch_on_any_is_taken_only_while_a_lane_is_set_and_a_changed_mask_is
     graph.close()
 
 
-def test_the_reverse_of_a_recording_with_a_positioned_minimum_is_refused_by_name_until_it_is_written():
+@hawk.kernel
+def tenfold(r: Scalar, w: Mutable[Scalar]):
+    w = r * 10.0
+
+
+@pytest.mark.parametrize("op", ["min", "max"])
+@pytest.mark.parametrize("with_index", [False, True])
+def test_the_reverse_of_a_minimum_or_maximum_goes_to_the_winner_lane_with_or_without_a_position(
+    op, with_index
+):
+    """Oracle: ``np.argmin`` / ``np.argmax`` (the first of equal values) gets ``20 * seed`` and every other lane zero."""
+
     def build(x) -> hawk.Graph:
         g = hawk.Graph(record=True)
-        g.low, g.where = hawk.reduce(x, "min", with_index=True)
+        if with_index:
+            value, g.where = hawk.reduce(double(x), op, with_index=True)
+        else:
+            value = hawk.reduce(double(x), op)
+        g.result = tenfold(value)
         return g
 
-    with pytest.raises(HawkError, match="has no gradient eagle can pull back"):
-        hawk.Graph.builder(build)(RNG.normal(size=100))
+    x = RNG.integers(0, 5, size=100).astype(np.float64)  # ties
+    graph = hawk.Graph.builder(build)(x)
+    graph.launch()
+    seed = RNG.normal(size=1)
+    gradients = hawk.reverse(graph.record, {"w": seed})
+    want = np.zeros(100)
+    want[np.argmin(x) if op == "min" else np.argmax(x)] = 20.0 * seed[0]
+    np.testing.assert_allclose(gradients["x"], want, rtol=1e-14)
+    graph.close()
 
 
 # ---- refusals ----

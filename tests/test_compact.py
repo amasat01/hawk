@@ -105,18 +105,21 @@ def test_a_branch_on_the_count_is_taken_only_when_something_is_kept_and_a_change
     graph.close()
 
 
-def test_the_reverse_of_a_recording_that_holds_a_compaction_is_refused_by_name_until_it_is_written():
+def test_a_recording_that_holds_a_compaction_reverses_with_no_adjoint_through_kept_and_count():
+    """Oracle: ``kept`` and ``count`` are integers; the kernel beside the compaction reverses as it does alone, ``dJ/dx = 2 * seed``."""
+
     def build(keep, x) -> hawk.Graph:
         g = hawk.Graph(record=True)
         kept, count = hawk.compact(keep)
         g.result = double(x)
         return g
 
-    with pytest.raises(
-        HawkError,
-        match=r"eg_compact \(leaf 0\): eagle does not pull back a compaction yet",
-    ):
-        hawk.Graph.builder(build)(RNG.random(100) < 0.5, RNG.normal(size=100))
+    graph = hawk.Graph.builder(build)(RNG.random(100) < 0.5, RNG.normal(size=100))
+    graph.launch()
+    seed = RNG.normal(size=100)
+    gradients = hawk.reverse(graph.record, {"y": seed})
+    np.testing.assert_allclose(gradients["x"], 2.0 * seed, rtol=1e-14)
+    graph.close()
 
 
 # ---- refusals ----

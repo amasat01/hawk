@@ -61,15 +61,16 @@ def combine(a: Scalar, b: Scalar, y: Mutable[Scalar]):
 
 The text sees its parameters and nothing else: a name of a plane or of anything in the kernel is a compile error
 that names the function. A target the function has no text for is refused by the function's and the target's names. It is
-written once per unit and called, like [a function](../composition). Two limits, today:
+written once per unit and called, like [a function](../composition). Two points, today:
 
-- **It is not differentiable.** Differentiating a kernel that calls one is refused by name; there is no rule for
-  opaque text.
+- **Its derivative is yours.** The text is opaque, so pass `jvp=` and `vjp=` rules
+  ([how they read](../composition)); differentiating a kernel that calls one without the rule for that direction is
+  refused by name.
 - **The device text does not write functions yet.** A kernel that calls one is refused by name when it is built for
   the device.
 
-Reach for `hawk.native` only when a primitive genuinely cannot express what you need, and expect to lose autodiff
-on that kernel.
+Reach for `hawk.native` only when a primitive genuinely cannot express what you need, and expect to write its
+derivative rules yourself.
 
 ## 3. Contribute a native op (the two-repo path)
 
