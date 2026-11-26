@@ -246,9 +246,11 @@ def test_a_function_that_calls_itself_is_refused_by_name():
             out = again(x)
 
 
-def test_the_device_text_refuses_a_call_by_name(tmp_path):
-    with pytest.raises(HawkError, match="not written on the device"):
-        _text(_sixteen(tmp_path, True), target="cuda")
+def test_the_device_text_writes_a_call_as_a_force_inlined_definition_and_the_symbol_over_the_arguments(tmp_path):
+    """RESTATED (the device refused a call by name; it now writes the function once, force-inlined, and the call over its arguments)."""
+    text = _text(_sixteen(tmp_path, True), target="cuda")
+    assert len(re.findall(r"^__device__ __forceinline__ \w+ hawk_fn_helper_\w+\(", text, re.M)) == 1
+    assert len(re.findall(r"hawk_fn_helper_\w+\(", text)) == USES + 1
 
 
 @hawk.function
@@ -379,8 +381,8 @@ def test_a_function_whose_body_holds_a_loop_is_one_definition_with_the_loop_and_
     np.testing.assert_allclose(got, series(x) + series(x * 0.5), rtol=1e-13)
 
 
-def test_a_banded_kernel_that_calls_a_function_is_refused_by_name_on_both_targets():
-    """Banded runs on device paths only: the host refuses every banded kernel, and the device writes no function yet."""
+def test_a_banded_kernel_that_calls_a_function_is_refused_by_the_host_and_written_by_the_device():
+    """RESTATED. Banded runs on device paths only: the host refuses every banded kernel, and the device now writes the function."""
 
     @hawk.function
     def square_plus_one(a: hawk.Scalar) -> hawk.Scalar:
@@ -392,7 +394,5 @@ def test_a_banded_kernel_that_calls_a_function_is_refused_by_name_on_both_target
 
     with pytest.raises(HawkError, match="banded runs on device execution paths"):
         emit_source(kern, mode="banded", targets=("host",))
-    with pytest.raises(
-        HawkError, match="a call of a function is not written on the device yet"
-    ):
-        emit_source(kern, mode="banded", targets=("cuda",))
+    text = emit_source(kern, mode="banded", targets=("cuda",)).sources["cuda"].text
+    assert len(re.findall(r"^__device__ __forceinline__ \w+ hawk_fn_square_plus_one_\w+\(", text, re.M)) == 1

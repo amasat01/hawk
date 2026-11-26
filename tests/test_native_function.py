@@ -249,15 +249,17 @@ def test_two_native_functions_of_one_name_and_different_text_in_one_kernel_are_r
             y = a(x) + b(x)
 
 
-def test_the_device_text_refuses_a_native_function_by_name():
+def test_the_device_text_writes_a_native_function_with_a_device_text_between_line_directives():
+    """RESTATED (the device refused a native function by name; one with a device text is now written like the host's, the author's
+    text between line directives, and one without a device text is still refused by its name and the target's)."""
+
     @hawk.kernel
     def kern(x: hawk.Scalar, y: hawk.Scalar, out: hawk.Mutable[hawk.Scalar]):
         out = fma_sq(x, y)
 
-    with pytest.raises(
-        HawkError, match='the native function "fma_sq" is not written on the device yet'
-    ):
-        _text(kern, target="cuda")
+    text = _text(kern, target="cuda")
+    assert '#line 1 "native function fma_sq"' in text
+    assert "return fma(x, x, y);" in text
 
 
 def test_a_wrong_argument_count_is_refused_by_the_function_name():
