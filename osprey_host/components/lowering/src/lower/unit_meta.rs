@@ -274,6 +274,13 @@ closed! {
     }
 }
 closed! {
+    /// Whose memory a group's scratch entry is.
+    pub enum ScratchKind {
+        /** A scratch plane the author declared. */ Authored = 0 => "EG_SCRATCH_AUTHORED",
+        /** The array that holds the operands of a group-wide reduce or scan, one per lane of the group. */ Work = 1 => "EG_SCRATCH_WORK",
+    }
+}
+closed! {
     /// The shape of a plane the runtime makes.
     pub enum PlaneLayout {
         /** `(per_lane * units,)`. */ Flat = 0 => "EG_LAYOUT_FLAT",
@@ -720,8 +727,10 @@ record! {
     }
 }
 record! {
-    /// A scratch plane of a group: its values, and their count and bytes per group.
+    /// A scratch entry of a group: memory local to one group, its values and their count and bytes per group.
     pub struct GroupScratch {
+        /// Whose memory it is: an authored scratch plane or the work array of a reduce or scan.
+        pub kind: ScratchKind,
         /// The type of one scalar of a value.
         pub dtype: WireDtype,
         /// The extents of one value, empty for a scalar.
@@ -751,11 +760,11 @@ record! {
         pub count: Option<i64>,
         /// The size bound of a group in lanes; absent when the bound is known only at run time or is not stated.
         pub max_size: Option<i64>,
-        /// The bytes of all scratch planes of one group.
+        /// The bytes of all scratch entries of one group, local and held by the runtime alike.
         pub scratch_bytes: i64,
         /// An axes group: the indices of the launch's lane axes that span a group.
         pub axes: Vec<usize>,
-        /// The scratch planes, in declaration order.
+        /// The scratch entries: the authored planes in declaration order, then the work arrays in node order.
         pub scratch: Vec<GroupScratch>,
         /// The slots of the planes the unit assumes are distinct memory (those the host text reads or writes through restrict
         /// pointers), in slot order.

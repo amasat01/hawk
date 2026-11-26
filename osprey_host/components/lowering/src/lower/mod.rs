@@ -529,10 +529,8 @@ fn kernel_units(
     for unit in &mut pending {
         for body in std::iter::once(&mut unit.member).chain(unit.one_step.as_mut()) {
             body.declared.extend(finished_slot(ctx, body));
-            // SAFETY: `ctx` is the live context the caller holds; it is only read here.
-            let context = unsafe { &*ctx };
             body.declared.extend(group::plane_slots(
-                context,
+                ctx,
                 &body.sinks,
                 request.scalar,
                 &cards.deciding,
@@ -667,14 +665,8 @@ fn write_target(
         unit.exports = Exports::Text(String::new());
     }
     unit.functions = functions::table(ctx, walk, cards.served_name)?;
-    // SAFETY: `ctx` is the live context the caller holds; it is only read here.
-    let context = unsafe { &*ctx };
-    unit.planed_scratch = group::planed_names(
-        context,
-        &pending.member.sinks,
-        request.scalar,
-        &cards.deciding,
-    )?;
+    unit.planed_scratch =
+        group::planed_names(ctx, &pending.member.sinks, request.scalar, &cards.deciding)?;
     unit.segment = pending.segment.clone();
     unit.one_step = pending
         .one_step

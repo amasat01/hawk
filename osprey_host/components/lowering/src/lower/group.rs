@@ -7,8 +7,8 @@ use super::request::DeclaredSlot;
 use super::unit_meta as m;
 use aether_writers::contract::types::{Dtype, Role, Scalar};
 use aether_writers::refuse::{bad, fault, not_written, Refusal};
-use aether_writers::spell::group::scratch_slot;
-use aether_writers::unit::group::hoisted_planes;
+use aether_writers::spell::group::{scratch_slot, work_array};
+use aether_writers::unit::group::{hoisted_planes, work_arrays};
 use raptor_ir::record::Ctx;
 use raptor_ir::value::{text_val, Val};
 
@@ -127,9 +127,49 @@ fn scratch_planes(ctx: &Ctx, group: u32, scalar: Scalar) -> Result<Vec<m::GroupS
                 name: name.clone(),
                 realisation: m::ScratchRealisation::Local,
                 slot: None,
+                kind: m::ScratchKind::Authored,
             })
         })
         .collect()
+}
+
+/// The scratch entries of the group: its authored planes, then the work array of each group-wide reduce or scan, each held
+/// locally until `realise` says otherwise.
+fn entries(ctx: *mut Ctx, group: u32, scalar: Scalar) -> Result<Vec<m::GroupScratch>, Refusal> {
+    // SAFETY: `ctx` is the live context the caller holds; it is only read here.
+    let mut entries = scratch_planes(unsafe { &*ctx }, group, scalar)?;
+    for work in work_arrays(ctx.cast(), group)? {
+        let name = work_array(work.node);
+        let (dtype, width) = scalar_of(&work.dtype, scalar, &name)?;
+        entries.push(m::GroupScratch {
+            dtype,
+            shape: vec![],
+            elements: work.lanes,
+            bytes: work.lanes * width,
+            name,
+            realisation: m::ScratchRealisation::Local,
+            slot: None,
+            kind: m::ScratchKind::Work,
+        });
+    }
+    Ok(entries)
+}
+
+/// Where each entry lives: the unit's own text holds entries, in order, while the bytes of all of them stay within the card's
+/// limit (the stack of the thread that runs a group); an entry past it is held by the runtime, one slice per group. A card with no
+/// limit states a target that writes no group, and every entry stays local.
+fn realise(entries: &mut [m::GroupScratch], card: &BuildNumbers) {
+    let Some(limit) = card.group_local_scratch_bytes else {
+        return;
+    };
+    let mut local = 0;
+    for entry in entries {
+        if local + entry.bytes > limit {
+            entry.realisation = m::ScratchRealisation::Plane;
+        } else {
+            local += entry.bytes;
+        }
+    }
 }
 
 /// The indices, in the launch's lane axes, of the axes an `axes` group spans, and the lanes of one group (`None`: an extent known
@@ -234,12 +274,12 @@ pub(super) fn record(parts: &Parts) -> Result<Option<m::Group>, Refusal> {
         }
         other => return Err(fault(format!("a group of membership {other}"))),
     };
-    let mut scratch = scratch_planes(ctx, group, parts.request.scalar)?;
+    let mut scratch = entries(parts.ctx, group, parts.request.scalar)?;
+    realise(&mut scratch, parts.card);
     for plane in &mut scratch {
-        if !in_plane(parts.card, plane.bytes) {
+        if plane.realisation != m::ScratchRealisation::Plane {
             continue;
         }
-        plane.realisation = m::ScratchRealisation::Plane;
         plane.slot = Some(
             parts
                 .typed
@@ -277,30 +317,26 @@ pub(super) fn record(parts: &Parts) -> Result<Option<m::Group>, Refusal> {
     }))
 }
 
-/// Whether a scratch plane of `bytes` per group is held by the runtime: it is when the card states a limit and the plane is larger.
-fn in_plane(card: &BuildNumbers, bytes: i64) -> bool {
-    card.group_scratch_plane_bytes
-        .is_some_and(|limit| bytes > limit)
-}
-
-/// The scratch planes of the group among `sinks` that the runtime holds, from the IR's declarations and the card's limit.
+/// The scratch entries of the group among `sinks` that the runtime holds, from the IR's declarations and the card's limit.
 fn planed(
-    ctx: &Ctx,
+    ctx: *mut Ctx,
     sinks: &[u32],
     scalar: Scalar,
     card: &BuildNumbers,
 ) -> Result<Vec<m::GroupScratch>, Refusal> {
-    let Some(group) = group_of(ctx, sinks) else {
+    // SAFETY: `ctx` is the live context the caller holds; it is only read here.
+    let Some(group) = group_of(unsafe { &*ctx }, sinks) else {
         return Ok(vec![]);
     };
-    let mut planes = scratch_planes(ctx, group, scalar)?;
-    planes.retain(|plane| in_plane(card, plane.bytes));
+    let mut planes = entries(ctx, group, scalar)?;
+    realise(&mut planes, card);
+    planes.retain(|plane| plane.realisation == m::ScratchRealisation::Plane);
     Ok(planes)
 }
 
-/// The names of the scratch planes of the group among `sinks` that the runtime holds: the writer reads them through slots.
+/// The names of the scratch entries of the group among `sinks` that the runtime holds: the writer reads them through slots.
 pub(super) fn planed_names(
-    ctx: &Ctx,
+    ctx: *mut Ctx,
     sinks: &[u32],
     scalar: Scalar,
     card: &BuildNumbers,
@@ -311,10 +347,10 @@ pub(super) fn planed_names(
         .collect())
 }
 
-/// The slots the runtime makes for the scratch planes it holds, as lookup planes of each plane's element type, to join the
+/// The slots the runtime makes for the scratch entries it holds, as lookup planes of each plane's element type, to join the
 /// member's declared slots.
 pub(super) fn plane_slots(
-    ctx: &Ctx,
+    ctx: *mut Ctx,
     sinks: &[u32],
     scalar: Scalar,
     card: &BuildNumbers,
@@ -472,8 +508,20 @@ mod tests {
     /// The group record the lowering states for `request`, with the slots of its walk. The unit description as a whole needs the
     /// facts of the unit's text, which a group body does not have yet, so the record is read by the function that fills it.
     fn described(ctx: *mut Ctx, request: &KernelRequest) -> Result<Described, Refusal> {
+        described_under(ctx, request, None)
+    }
+
+    /// `described` under the shipped card with the group scratch limit replaced by `limit`, when one is given.
+    fn described_under(
+        ctx: *mut Ctx,
+        request: &KernelRequest,
+        limit: Option<Option<i64>>,
+    ) -> Result<Described, Refusal> {
         let docs = CardSet::new(&shipped(), &request.cards, ALL_CARDS);
-        let cards: Cards = load_cards(request, &docs)?;
+        let mut cards: Cards = load_cards(request, &docs)?;
+        if let Some(limit) = limit {
+            cards.deciding.group_local_scratch_bytes = limit;
+        }
         let Body::Plain(member) = &request.body else {
             unreachable!("a plain request")
         };
@@ -517,6 +565,19 @@ mod tests {
         found.expect("a unit with a group states its record")
     }
 
+    /// The work array of a reduce of `lanes` lanes of doubles, as the record states it: `name` is the writers' name of the array.
+    fn work_of(name: &str, lanes: i64) -> m::GroupScratch {
+        m::GroupScratch {
+            dtype: m::WireDtype::Real,
+            shape: vec![],
+            elements: lanes,
+            bytes: lanes * 8,
+            name: name.into(),
+            kind: m::ScratchKind::Work,
+            ..m::GroupScratch::default()
+        }
+    }
+
     /// The plane `t` of 8 doubles, 64 bytes, that `tile` and `ring` declare.
     fn plane_t(dtype: m::WireDtype, bytes: i64) -> m::GroupScratch {
         m::GroupScratch {
@@ -530,14 +591,15 @@ mod tests {
     }
 
     #[test]
-    fn tile_is_a_count_group_of_8_with_one_scratch_of_64_bytes_and_two_phases() {
+    fn tile_is_a_count_group_of_8_with_one_scratch_and_the_work_array_of_its_reduce_and_two_phases()
+    {
         let want = m::Group {
             membership: m::GroupMembership::Count,
             phases: 2,
             count: Some(8),
             max_size: Some(8),
-            scratch_bytes: 64,
-            scratch: vec![plane_t(m::WireDtype::Real, 64)],
+            scratch_bytes: 128,
+            scratch: vec![plane_t(m::WireDtype::Real, 64), work_of("hawk_work_6", 8)],
             // the input plane x and the output plane y of the reference kernel, each read or written at the lane's own element
             distinct_slots: vec![0, 1],
             ..m::Group::default()
@@ -548,47 +610,103 @@ mod tests {
     /// The numbers of the host card with the plane limit set to `limit`.
     fn card_with_limit(limit: Option<i64>) -> BuildNumbers {
         BuildNumbers {
-            group_scratch_plane_bytes: limit,
+            group_local_scratch_bytes: limit,
             ..crate::testing::FixtureCards::host().deciding().clone()
         }
     }
 
-    /// The names of the scratch planes `tile` holds in the runtime under `card`, and the slots made for them.
-    fn planed_of(card: &BuildNumbers) -> (Vec<String>, Vec<DeclaredSlot>) {
-        let (ctx, group) = loaded(TILE);
-        // SAFETY: `ctx` is the live context made above; it is only read here.
-        let context = unsafe { &*ctx };
+    /// The names of the scratch entries `dump` holds in the runtime under `card`, and the slots made for them.
+    fn planed_in(dump: &str, card: &BuildNumbers) -> (Vec<String>, Vec<DeclaredSlot>) {
+        let (ctx, group) = loaded(dump);
         let sinks = [group];
-        let names = planed_names(context, &sinks, Scalar::Float64, card).unwrap();
-        let slots = plane_slots(context, &sinks, Scalar::Float64, card).unwrap();
+        let names = planed_names(ctx, &sinks, Scalar::Float64, card).unwrap();
+        let slots = plane_slots(ctx, &sinks, Scalar::Float64, card).unwrap();
         // SAFETY: `ctx` is the live context made above and is not used after.
         unsafe { rx_ctx_free(ctx) };
         (names, slots)
     }
 
-    /// Oracle: the reference's own numbers: `tile` holds 8 doubles, 64 bytes, per group; a plane is held by the runtime only when it
-    /// is LARGER than the card's limit, so 64 bytes is local at a limit of 64 and in the runtime at 63.
-    #[test]
-    fn a_scratch_is_held_by_the_runtime_only_above_the_cards_limit() {
-        assert_eq!(
-            planed_of(&card_with_limit(Some(64))).0,
-            Vec::<String>::new()
-        );
-        assert_eq!(
-            planed_of(&card_with_limit(Some(63))).0,
-            vec!["t".to_string()]
-        );
-        assert_eq!(planed_of(&card_with_limit(None)).0, Vec::<String>::new());
+    /// The entries `tile` holds in the runtime under `card`, and the slots made for them.
+    fn planed_of(card: &BuildNumbers) -> (Vec<String>, Vec<DeclaredSlot>) {
+        planed_in(TILE, card)
     }
 
-    /// Oracle: the slot is a scalar lookup plane of the scratch's element type (doubles), named by the writers' own naming.
+    /// Oracle: the reference's own numbers: `tile` holds the plane `t` and the work array of its reduce, 8 doubles, 64 bytes, each,
+    /// declared in that order. The entries are held in the unit's text while their bytes together stay within the card's limit
+    /// and in the runtime from the first one past it: 128 bytes are all local at a limit of 128, the work array is in the runtime
+    /// at 127 down to 64 and both are at 63.
     #[test]
-    fn a_planed_scratch_is_made_as_a_lookup_slot_of_its_element_type() {
+    fn the_entries_of_a_group_are_held_by_the_runtime_from_the_one_that_passes_the_cards_limit() {
+        let planed = |limit| planed_of(&card_with_limit(limit)).0;
+        assert_eq!(planed(Some(128)), Vec::<String>::new());
+        assert_eq!(planed(Some(127)), vec!["hawk_work_6".to_string()]);
+        assert_eq!(planed(Some(64)), vec!["hawk_work_6".to_string()]);
+        assert_eq!(
+            planed(Some(63)),
+            vec!["t".to_string(), "hawk_work_6".to_string()]
+        );
+        assert_eq!(planed(None), Vec::<String>::new());
+    }
+
+    /// Oracle: `rows` holds two reduces over 4 doubles, 32 bytes each: both fit a limit of 64 and the second one passes a limit
+    /// of 63, which no single array does.
+    #[test]
+    fn several_work_arrays_that_pass_the_limit_together_put_the_later_ones_in_the_runtime() {
+        let planed = |limit| planed_in(ROWS, &card_with_limit(Some(limit))).0;
+        assert_eq!(planed(64), Vec::<String>::new());
+        assert_eq!(planed(63), vec!["hawk_work_3".to_string()]);
+    }
+
+    /// Oracle: the slot is a scalar lookup plane of the entry's element type (doubles), named by the writers' own naming, for the
+    /// authored plane and for the work array alike.
+    #[test]
+    fn a_planed_entry_is_made_as_a_lookup_slot_of_its_element_type() {
         let slots = planed_of(&card_with_limit(Some(8))).1;
         assert_eq!(
             slots,
-            vec![DeclaredSlot::lookup("group_scratch_t", Dtype::F64)]
+            vec![
+                DeclaredSlot::lookup("group_scratch_t", Dtype::F64),
+                DeclaredSlot::lookup("group_scratch_hawk_work_6", Dtype::F64)
+            ]
         );
+    }
+
+    /// Oracle: at a limit of 64 bytes the work array of `tile` is the one entry past it: the record states it as a work entry held by
+    /// the runtime through the slot the lowering declared for it, and its 64 bytes are in the total with the plane `t`'s.
+    #[test]
+    fn the_record_of_a_planed_work_array_names_its_slot_and_counts_its_bytes() {
+        let card = card_with_limit(Some(64));
+        let (ctx, group) = loaded(TILE);
+        let mut request = request_for("tile", group, &[], Target::Host);
+        let Body::Plain(member) = &mut request.body else {
+            unreachable!("a plain request")
+        };
+        member
+            .declared
+            .extend(plane_slots(ctx, &[group], Scalar::Float64, &card).unwrap());
+        let found = described_under(ctx, &request, Some(Some(64))).unwrap();
+        // SAFETY: `ctx` is the live context made above and is not used after.
+        unsafe { rx_ctx_free(ctx) };
+        let (record, slots) = (found.0.expect("a group record"), found.1);
+        let held: Vec<_> = record
+            .scratch
+            .iter()
+            .map(|e| (e.name.as_str(), e.kind, e.realisation))
+            .collect();
+        assert_eq!(
+            held,
+            vec![
+                ("t", m::ScratchKind::Authored, m::ScratchRealisation::Local),
+                (
+                    "hawk_work_6",
+                    m::ScratchKind::Work,
+                    m::ScratchRealisation::Plane
+                )
+            ]
+        );
+        let slot = record.scratch[1].slot.expect("the planed entry's slot");
+        assert_eq!(slots[slot].1, "group_scratch_hawk_work_6");
+        assert_eq!(record.scratch_bytes, 128);
     }
 
     #[test]
@@ -607,11 +725,13 @@ mod tests {
     }
 
     #[test]
-    fn rows_spans_the_axis_col_of_4_lanes_with_no_scratch_and_two_phases() {
+    fn rows_spans_the_axis_col_of_4_lanes_with_the_work_arrays_of_its_two_reduces_and_two_phases() {
         let want = m::Group {
             membership: m::GroupMembership::Axes,
             phases: 2,
             max_size: Some(4),
+            scratch_bytes: 64,
+            scratch: vec![work_of("hawk_work_1", 4), work_of("hawk_work_3", 4)],
             axes: vec![1],
             // all four planes of the reference kernel are read or written at the lane's own element
             distinct_slots: vec![0, 1, 2, 3],
@@ -624,8 +744,12 @@ mod tests {
     #[test]
     fn a_single_precision_unit_holds_its_real_scratch_in_4_bytes_per_value() {
         let found = record_of(TILE, "tile", &[], Scalar::Float32);
-        assert_eq!(found.scratch, vec![plane_t(m::WireDtype::Real, 32)]);
-        assert_eq!(found.scratch_bytes, 32);
+        let work = m::GroupScratch {
+            bytes: 32,
+            ..work_of("hawk_work_6", 8)
+        };
+        assert_eq!(found.scratch, vec![plane_t(m::WireDtype::Real, 32), work]);
+        assert_eq!(found.scratch_bytes, 64);
     }
 
     #[test]

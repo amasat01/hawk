@@ -684,7 +684,7 @@ fn group(out: &mut Out, group: Option<&Group>) -> String {
                 ("bytes", p.bytes.to_string()),
                 ("name", lit(&p.name)),
                 ("slot", index(p.slot)),
-                ("reserved1", "0".into()),
+                ("kind", p.kind.c_name().into()),
             ];
             out.record("eg_unit_group_scratch", &format!("gs{at}"), &members)
         })

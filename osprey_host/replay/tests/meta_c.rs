@@ -325,17 +325,30 @@ fn full_tree() -> (LibraryMeta, UnitMeta) {
             key_slot: None,
             count: None,
             max_size: Some(5),
-            scratch_bytes: 120,
+            scratch_bytes: 160,
             axes: vec![1],
-            scratch: vec![GroupScratch {
-                dtype: WireDtype::Real,
-                shape: vec![3],
-                elements: 15,
-                bytes: 120,
-                name: "t".into(),
-                realisation: ScratchRealisation::Plane,
-                slot: Some(3),
-            }],
+            scratch: vec![
+                GroupScratch {
+                    dtype: WireDtype::Real,
+                    shape: vec![3],
+                    elements: 15,
+                    bytes: 120,
+                    name: "t".into(),
+                    realisation: ScratchRealisation::Plane,
+                    slot: Some(3),
+                    kind: ScratchKind::Authored,
+                },
+                GroupScratch {
+                    dtype: WireDtype::Real,
+                    shape: vec![],
+                    elements: 5,
+                    bytes: 40,
+                    name: "hawk_work_7".into(),
+                    realisation: ScratchRealisation::Local,
+                    slot: None,
+                    kind: ScratchKind::Work,
+                },
+            ],
             distinct_slots: vec![0, 2],
         }),
         derived: Some(Derived {
@@ -408,6 +421,7 @@ fn every_closed_set_and_name_is_the_headers() {
         WideLayout,
         GroupMembership,
         ScratchRealisation,
+        ScratchKind,
         DispatchStrategy,
         StepsRegime,
         ReduceOp,
@@ -501,9 +515,11 @@ int main(void) {
            group ? (long long)group->max_size : -1, group ? (long long)group->scratch_bytes : -1, group ? group->n_axes : -1,
            group ? group->axes[0] : -1, group ? group->n_scratch : -1);
     if (group) {
-        const struct eg_unit_group_scratch* t = group->scratch[0];
-        printf("scratch %s dtype %d rank %d shape %lld elements %lld bytes %lld\n", t->name, t->dtype, t->rank, (long long)t->shape[0],
-               (long long)t->elements, (long long)t->bytes);
+        for (int i = 0; i < group->n_scratch; ++i) {
+            const struct eg_unit_group_scratch* t = group->scratch[i];
+            printf("scratch %s kind %d dtype %d rank %d shape %lld elements %lld bytes %lld\n", t->name, t->kind, t->dtype, t->rank,
+                   t->rank ? (long long)t->shape[0] : 0LL, (long long)t->elements, (long long)t->bytes);
+        }
         printf("distinct %d first %d last %d\n", group->n_distinct, group->distinct_slots[0], group->distinct_slots[group->n_distinct - 1]);
     }
     return 0;
@@ -546,9 +562,11 @@ fn a_c_reader_of_the_compiled_record_sees_the_branch_costs_and_the_products_that
         // a unit with the member keeps its kernel: a host plan runs it, and a device plan the door cannot route does
         "gemm 1 fanin 6 host_entry kept\n",
         "call flags 9 slots 1 0 2 shape 8 -1 8 6 -1 6\n",
-        // the group record: AXES over lane axis 1, bound 5, one scratch of 3-value rows (15 scalars, 120 bytes)
-        "group 1 phases 2 key -1 count 0 max 5 bytes 120 axes 1 first 1 scratch 1\n",
-        "scratch t dtype 0 rank 1 shape 3 elements 15 bytes 120\n",
+        // the group record: AXES over lane axis 1, bound 5, one scratch of 3-value rows (15 scalars, 120 bytes) and the work array of a
+        // reduce (5 scalars, 40 bytes)
+        "group 1 phases 2 key -1 count 0 max 5 bytes 160 axes 1 first 1 scratch 2\n",
+        "scratch t kind 0 dtype 0 rank 1 shape 3 elements 15 bytes 120\n",
+        "scratch hawk_work_7 kind 1 dtype 0 rank 0 shape 0 elements 5 bytes 40\n",
         // the planes the unit assumes distinct: two slots, 0 and 2
         "distinct 2 first 0 last 2\n",
     ];

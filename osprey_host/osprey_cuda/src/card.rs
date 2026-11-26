@@ -503,7 +503,7 @@ impl DeviceCard {
             copy_threads: self.copy_threads,
             team_threads: self.team_threads,
             team_threads_large: self.team_threads_large,
-            group_scratch_plane_bytes: None,
+            group_local_scratch_bytes: None,
             box_lanes: self.box_lanes.clone(),
             steps_reverse: None,
             device_steps_reverse: Some(self.steps_reverse.clone()),

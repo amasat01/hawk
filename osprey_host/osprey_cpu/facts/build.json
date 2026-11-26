@@ -16,7 +16,7 @@
   "linalg_team_max_dim": 4096,
   "cells_row": 32,
   "scatter_max_chunks": 256, "scatter_threads": 32,
-  "group_scratch_plane_bytes": 65536,
+  "group_local_scratch_bytes": 65536,
   "host_wide": {
     "runtime_min": {
       "read": {"4": 16, "8": 2},
