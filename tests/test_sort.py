@@ -18,8 +18,17 @@ from hawk import HawkError, Mutable, Scalar
 RNG = np.random.default_rng(20261130)
 #: Empty, one, around a radix pass of 256 buckets, and a size above the chunk the host splits by.
 SIZES = (0, 1, 255, 256, 257, 100_000)
-#: The integer dtypes a plane carries today.
-DTYPES = (np.int8, np.int32, np.uint32, np.int64)
+#: The integer dtypes a plane carries.
+DTYPES = (
+    np.int8,
+    np.uint8,
+    np.int16,
+    np.uint16,
+    np.int32,
+    np.uint32,
+    np.int64,
+    np.uint64,
+)
 
 
 def keys_of(n, bound, dtype=np.int32, skew=False):
@@ -156,7 +165,7 @@ def test_real_keys_are_refused_by_name():
 
 def test_a_dtype_no_plane_carries_is_refused_by_the_runtime_with_its_reason():
     with pytest.raises(HawkError, match="is not one eagle runs"):
-        hawk.sort(np.zeros(10, dtype=np.uint16), bound=4)
+        hawk.sort(np.zeros(10, dtype=np.complex64), bound=4)
 
 
 def test_a_bound_below_one_is_refused_by_name():
