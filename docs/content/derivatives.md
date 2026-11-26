@@ -44,4 +44,17 @@ A `for` differentiates in both directions, a nested `for` included: reverse mode
 
 A plane filled element by element (`out[0] = ...`, `out[3 * i + d] = ...` in loops, a store on both arms of an `if`) differentiates when the body stores every element before it reads one. A partial fill, a read of an element not yet stored (`out[j + 1]` in a loop over `j`), a store under a one-sided `if` or an index the trace cannot compute keeps the launch-start value, and the derivative is refused with "read before it is assigned".
 
+## Groups of lanes
+
+`g.scan(x)` is the inclusive running sum of `x` over the lanes of a group in rank order, beside `g.sum(x)`; `g.scan(x, exclusive=True)` is refused by name.
+
+```python
+@hawk.kernel
+def running(x: Scalar, y: Mutable[Scalar]):
+    with hawk.group(lanes=8) as g:
+        y = g.scan(x)  # lane r gets x[0] + ... + x[r] of its group
+```
+
+`jvp` of a kernel with a `hawk.group` is a kernel with the same group: the same lanes, phases and barriers. Each floating scratch plane gets a tangent plane `dot_<name>` of the same size, stored and read wherever the scratch is. `g.sum` and a scan are linear, so their tangent is the sum or scan of the tangents. `g.min` and `g.max` take the tangent of the lane holding the result, the first in rank order among equals; a lane holding NaN never wins, and a group of NaN has a zero tangent. `g.any`, `g.all`, `g.rank`, `g.size` and integer scratch carry none. `vjp` of a kernel with a `hawk.group` is one kernel with the same group. Its body first recomputes the scratch stores, then runs the phases in reverse order, each separated by a barrier; each floating scratch plane gets an adjoint plane `bar_<name>` beside it. A scratch read by several lanes is gathered, not added to by every lane: the reading lane stores its contribution, and after a barrier the slot's own lane sums what the lanes that read it sent. A read at `rank + k` is sent back by the inverse of its edge rule: `wrap` and `zero` read the sent plane at `rank - k`, and `clamp` also adds to the first or last slot the lanes it folded onto it. `g.sum` gives every lane the group sum of the adjoints of its result, a scan gives lane `r` the sum of the adjoints of lanes `r` to the end, and `g.min` and `g.max` give the summed adjoint to the winner lane (first in rank order among equals; a lane holding NaN never wins, and a group of NaN gives zero). A keyed add or store is differentiated as outside a group. `g.any`, `g.all`, `g.rank`, `g.size` and integer scratch carry none. A scratch plane stored more than once, a scratch read at an index that is not `rank + k`, and a group beside a sink outside it are refused by name. `step_jvp`, `step_vjp` and `with_derivative` of a kernel with a group are refused by name.
+
 `hawk.diff.CELL_PLANE` is the name of the per-cell parameter plane a promoted kernel reads, beside `ADJOINT_PREFIX` and `TANGENT_PREFIX`. `hawk.runtime.check_scatter_status(name, team, status, cells)` refuses, by name, a run whose ordered scatter dropped a key outside its plane; `team` is the sidecar's team record and `status` the status plane after the run.

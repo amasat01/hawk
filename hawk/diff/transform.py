@@ -29,6 +29,17 @@ from ..trace.value import DISPATCH_STRATEGIES, dispatch_node, dispatch_strategy
 from . import rules
 from .altpath import AltPath
 from .functions import FLOATS, call_adjoints, call_tangent
+from .group import (
+    flat_sinks,
+    groups_in,
+    has_tangent,
+    reduce_adjoint,
+    reduce_tangent,
+    reverse_group,
+    scan_tangent,
+    tangent_group,
+    tangent_scratch,
+)
 from .jump import JumpPlan, drop_width, jump_of
 from .program import is_builder, jvp_builder, vjp_builder
 from .loops import (
@@ -334,7 +345,7 @@ def vjp(
 
         return vjp_chain(primal, wrt, primal_unit, strategy)
     primal = _single_step(primal)
-    sinks = _sinks_of(primal)
+    sinks = _sinks_of(primal, grouped=True)
     cells = _ir.param_cell_names(_ir.canonical_nodes(sinks)[0])
     if cells:
         return _vjp_param_cells(primal, cells, wrt, primal_unit, strategy)
@@ -378,6 +389,12 @@ def _vjp(
         for node in seq:
             if not _is_terminal(node):
                 alt.visit(node, None)
+    groups = groups_in(sinks)
+    if groups and (len(groups) > 1 or len(sinks) > 1 or alt is not None or plan is not None):
+        raise HawkError(
+            f"{primal!r}: the reverse derivative of a group takes one group holding every output, with no `jump=` "
+            "declaration; commit the outputs inside the scope"
+        )
     adjoint: dict[Any, Any] = {}
     for sink in sinks:
         if _ir.is_a(sink, "loop"):
@@ -387,8 +404,8 @@ def _vjp(
                 "mode through a `for` is not built. Publish the first "
                 "derivative and differentiate that kernel"
             )
-        if _ir.type_of(sink).dtype in _ir.INT_PLANE_DTYPES:
-            continue  # an integer plane takes no adjoint
+        if _ir.is_a(sink, "group") or _ir.type_of(sink).dtype in _ir.INT_PLANE_DTYPES:
+            continue  # an integer plane takes no adjoint; a group seeds its own sinks
         _accumulate(adjoint, key, sink.operands[0], _seed(sink, name))
     if alt is not None:
         alt.g = alt.seed_gain(sinks, lambda s: _seed(s, name))
@@ -399,50 +416,84 @@ def _vjp(
     scatters: list[Any] = []
     scattered: set[str] = set()
     accumulated: set[str] = set()
-    _reverse_pass(
-        seq,
-        key,
-        adjoint,
-        inputs,
-        name,
-        scatters,
-        scattered,
-        overrides=overrides,
-        jump=None if alt is not None else plan,
-        accumulated=accumulated,
-        exclusive=_loop_exclusive(seq, inputs),
-        alt=alt,
-    )
-    for leaf in inputs:
-        if name(leaf.field_text("name")) not in accumulated:
-            continue
-        if adjoint.get(key(leaf)) is not None:  # pragma: no cover - by the pre-scan
-            raise HawkError(
-                f"the gradient of {leaf.field_text('name')!r} is accumulated at runtime indices "
-                "inside a loop AND reaches a contribution outside that loop"
-            )
-    gradients = [
-        _gradient_sink(
-            leaf,
-            name(leaf.field_text("name")),
-            summed,
-            adjoint.get(key(leaf)) or _ir.zero_like(context, _ir.type_of(leaf)),
+    exclusive = _loop_exclusive(seq, inputs)
+
+    def reverse_pass(seeded: dict) -> None:
+        _reverse_pass(
+            seq,
+            key,
+            seeded,
+            inputs,
+            name,
+            scatters,
+            scattered,
+            overrides=overrides,
+            jump=None if alt is not None else plan,
+            accumulated=accumulated,
+            exclusive=exclusive,
+            alt=alt,
         )
-        for leaf in inputs
-        if leaf.field_text("role") != "lookup"
-        and leaf.field_text("name") not in scattered
-        and name(leaf.field_text("name")) not in accumulated
-    ]
-    held = getattr(primal, "broadcast", ())
-    scatters = _compensated(
-        scatters,
-        {
-            name(leaf.field_text("name"))
+
+    def commit(adjoint: dict) -> list:
+        """The gradient sinks and scatters of the inputs, given the adjoint of each."""
+        for leaf in inputs:
+            if name(leaf.field_text("name")) not in accumulated:
+                continue
+            if adjoint.get(key(leaf)) is not None:  # pragma: no cover - by the pre-scan
+                raise HawkError(
+                    f"the gradient of {leaf.field_text('name')!r} is accumulated at runtime indices "
+                    "inside a loop AND reaches a contribution outside that loop"
+                )
+        gradients = [
+            _gradient_sink(
+                leaf,
+                name(leaf.field_text("name")),
+                summed,
+                adjoint.get(key(leaf)) or _ir.zero_like(context, _ir.type_of(leaf)),
+            )
             for leaf in inputs
-            if leaf.field_text("name") in held
-        },
-    )
-    out = _ir.slotwise(_mask_termination(gradients + list(scatters), primal, context))
+            if leaf.field_text("role") != "lookup"
+            and leaf.field_text("name") not in scattered
+            and name(leaf.field_text("name")) not in accumulated
+        ]
+        held = getattr(primal, "broadcast", ())
+        return gradients + _compensated(
+            scatters,
+            {
+                name(leaf.field_text("name"))
+                for leaf in inputs
+                if leaf.field_text("name") in held
+            },
+        )
+
+    if groups:
+
+        def run_phase(seeds: Sequence[tuple[Any, Any]]):
+            """The reverse pass over one phase of the group: the adjoint of any node it reached."""
+            phase: dict[Any, Any] = {}
+            for node, seeded in seeds:
+                _accumulate(phase, key, node, seeded)
+            reverse_pass(phase)
+            return lambda node: phase.get(key(node))
+
+        def finish(totals: dict) -> list:
+            return commit({key(leaf): total for leaf, total in totals.items()})
+
+        roots = (
+            reverse_group(
+                groups[0],
+                inputs,
+                lambda s: _seed(s, name),
+                run_phase,
+                finish,
+                name,
+                name.taken,
+            ),
+        )
+    else:
+        reverse_pass(adjoint)
+        roots = tuple(commit(adjoint))
+    out = _ir.slotwise(_mask_termination(roots, primal, context))
     if kept is not None:
         out = order(out, kept)
     names = tuple(leaf.field_text("name") for leaf in inputs)
@@ -458,10 +509,20 @@ def _vjp(
         gradients={name(n): n for n in names},
         cotangents={
             name(sink.field_text("name")): sink.field_text("name")
-            for sink in sinks
+            for sink in _output_sinks(sinks)
             if _ir.type_of(sink).dtype not in _ir.INT_PLANE_DTYPES
         },
     )
+
+
+def _output_sinks(sinks: Iterable[Any]) -> list:
+    """The sinks that commit an output plane: ``sinks`` with each group replaced by its body's commits (a scratch store and a
+    barrier are not outputs)."""
+    return [
+        s
+        for s in flat_sinks(sinks)
+        if _ir.is_a(s, "sink") and not (_ir.is_a(s, "update") and s.field_text("role") == "scratch")
+    ]
 
 
 def _compact_counts(primal: Any, context: Any) -> dict:
@@ -723,7 +784,8 @@ def _jvp(
     _refuse_prior_read(seq)
     context = sinks[0].ctx
     inputs = drop_width(_wrt(seq, wrt), None, jump)
-    name = _Namer(TANGENT_PREFIX, _taken(seq), _named(sinks, inputs))
+    scratches = [s for g in groups_in(sinks) for s in g.field_nodes("scratch") if has_tangent(s)]
+    name = _Namer(TANGENT_PREFIX, _taken(seq), _named(flat_sinks(sinks), (*inputs, *scratches)))
     name.winners = _ranked(primal)
     key = _keyer(position)
     plan = _plan(seq, key, inputs, jump, primal)
@@ -740,6 +802,9 @@ def _jvp(
         )
         for leaf in inputs
     }
+    # each floating scratch plane gets a tangent plane beside it
+    tangent_scratches = {s: tangent_scratch(s, name(s.field_text("name"))) for s in scratches}
+    tangent.update((key(s), t) for s, t in tangent_scratches.items() if s in position)
     #: The AUGMENTED loop a lowered `for` becomes in forward mode — one loop
     #: carrying the primal slots and their tangents side by side; slot `m + j`
     #: is the tangent of the primal's slot `j` (hawk/diff/loops.py).
@@ -782,6 +847,14 @@ def _jvp(
             if any(t is not None for t in supplied):
                 tangent[key(node)] = call_tangent(node, supplied, name.derived)
             continue
+        if _ir.is_a(node, "group_reduce", "group_scan"):
+            value = tangent.get(key(node.operands[0]))
+            if value is not None:
+                rule = reduce_tangent if _ir.is_a(node, "group_reduce") else scan_tangent
+                got = rule(node, value)
+                if got is not None:
+                    tangent[key(node)] = got
+            continue
         if _ir.is_a(node, "at"):
             plane, *indices = node.operands
             plane = tangent.get(key(plane))
@@ -820,13 +893,17 @@ def _jvp(
         )
     else:
         made = tuple(
-            _tangent_sink(s, tangent.get(key(s.operands[0])), name)
+            _tangent_group(s, tangent_scratches, tangent, key, name)
+            if _ir.is_a(s, "group")
+            else _tangent_sink(s, tangent.get(key(s.operands[0])), name)
             for s in sinks
-            if _ir.type_of(s).dtype not in _ir.INT_PLANE_DTYPES
+            if _ir.is_a(s, "group") or _ir.type_of(s).dtype not in _ir.INT_PLANE_DTYPES
         )
     # an append is kept whole: the ticket is taken once and the value and its tangent are stored at it
     appended = _appended(primal)
-    whole = tuple(s for s in sinks if s.field_text("name") in {*appended, *appended.values()})
+    whole = tuple(
+        s for s in sinks if not _ir.is_a(s, "group") and s.field_text("name") in {*appended, *appended.values()}
+    )
     out = _ir.slotwise(_mask_termination((*whole, *made), primal, context))
     names = tuple(leaf.field_text("name") for leaf in inputs)
     if plan is not None:
@@ -841,6 +918,17 @@ def _jvp(
         tangents=dict(name.source),
         counts=appended,
     )
+
+
+def _tangent_group(group: Any, tangent_scratches: dict, tangent: dict, key, name: _Namer) -> Any:
+    """The group of the tangent kernel (:func:`hawk.diff.group.tangent_group`): each floating body sink gets its twin."""
+
+    def derive(sink: Any) -> Any:
+        if not has_tangent(sink):
+            return None
+        return _tangent_sink(sink, tangent.get(key(sink.operands[0])), name)
+
+    return tangent_group(group, tangent_scratches, derive, group.ctx)
 
 
 def _jump_jvp(node: Any, plan: JumpPlan, key, tangent: dict) -> bool:
@@ -931,6 +1019,10 @@ def _reverse_pass(
                 accumulated |= set(derived.accumulated)
             continue
         if g is None or _is_terminal(node):
+            continue
+        if _ir.is_a(node, "group_reduce", "group_scan"):
+            for child, contribution in reduce_adjoint(node, g):
+                _accumulate(adjoint, key, child, _reduce_to(contribution, child))
             continue
         if _ir.is_a(node, "at"):
             plane, *indices = node.operands
@@ -1259,14 +1351,18 @@ def _recorded_places(primal: Any, kept: tuple, appended: dict) -> tuple:
     return tuple(next(swapped) if s in stores else s for s in kept if s not in dropped)
 
 
-def _sinks_of(primal: Any, forward: bool = False) -> tuple[Any, ...]:
+def _sinks_of(
+    primal: Any, forward: bool = False, *, grouped: bool = False
+) -> tuple[Any, ...]:
     """The sinks of ``primal`` to differentiate, refusing by name an update that has no derivative. The ticket an append takes
     is an integer and carries none; the forward derivative keeps the append (one ticket stores a value and its tangent), and
-    the reverse derivative reads the places the primal run gave (:func:`_recorded_places`)."""
-    refuse_group(primal, "hawk.diff")
+    the reverse derivative reads the places the primal run gave (:func:`_recorded_places`). Only ``vjp`` takes a kernel with a
+    group (``grouped``); the other reverse entries refuse it by name."""
+    if not forward and not grouped:
+        refuse_group(primal, "hawk.diff")
     appended = _appended(primal)
     sinks = tuple(getattr(primal, "sinks", primal))
-    if not sinks or not all(_ir.is_a(s, "sink", "loop") for s in sinks):
+    if not sinks or not all(_ir.is_a(s, "sink", "loop", "group") for s in sinks):
         raise HawkError(
             f"{primal!r} is not a kernel or a sink set — a transform differentiates "
             "an IR whose roots are its sinks"
@@ -1274,8 +1370,11 @@ def _sinks_of(primal: Any, forward: bool = False) -> tuple[Any, ...]:
     # Termination is DISCRETE: a primal's finish statement has no derivative,
     # so the derived kernel binds no counter, writes no mask and carries no
     # sidecar ``finish``; it keeps the primal's mask READ (``_mask_termination``).
-    kept = _ir.expand_stores([s for s in sinks if not _ir.is_a(s, "finish")])
-    refused = next((r for s in kept if (r := _refused_update(s, frozenset(appended)))), None)
+    kept = _ir.expand_stores([s for s in sinks if not _ir.is_a(s, "finish", "group")])
+    kept = (*kept, *groups_in(sinks))
+    # a reverse derivative reads every sink of a group too
+    held = kept if forward else flat_sinks(kept)
+    refused = next((r for s in held if (r := _refused_update(s, frozenset(appended)))), None)
     if refused:
         what, why = refused
         raise HawkError(f"{primal!r} {what}: {why}; differentiate a kernel that does not write it")
@@ -1308,7 +1407,9 @@ def _wrt(seq: Iterable[Any], wrt: Sequence[str] | None) -> tuple[Any, ...]:
     leaves = [
         n
         for n in seq
-        if _ir.is_a(n, "leaf") and _ir.type_of(n).dtype in _DIFFERENTIABLE
+        if _ir.is_a(n, "leaf")
+        and n.field_text("role") != "scratch"
+        and _ir.type_of(n).dtype in _DIFFERENTIABLE
     ]
     if wrt is None:
         return tuple(leaves)
@@ -1443,6 +1544,11 @@ def _tangent_sink(sink: Any, tangent: Any, name: _Namer, indices: Any = None) ->
     value = tangent if tangent is not None else _ir.zero_like(sink.ctx, ttype)
     derived = name(sink.field_text("name"))
     indices = _indices_of(sink) if indices is None else indices
+    if _ir.is_store(sink) and sink.field_text("role") == "scratch":
+        return _ir.make_node(
+            "Update", ttype, [value, *indices], name=derived, op="store", role="scratch", edge=sink.field_text("edge"),
+            axes=_ir.field_pairs(sink, "axes"),
+        )
     if _is_ordered_fold(sink):
         # the tangent of an element is the tangent of its winning lane: a unique store that only that lane makes
         _, places = _winner_mask(sink, name)

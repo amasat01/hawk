@@ -1,7 +1,7 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""A group-wide reduce and scan run on the host, from the author's ``g.sum``, ``g.min``, ``g.max``, ``g.any`` and ``g.all``.
+"""A group-wide reduce and scan run on the host, from the author's ``g.sum``, ``g.scan``, ``g.min``, ``g.max``, ``g.any`` and ``g.all``.
 
 Every value is checked against a reference written here from the contract, never against the kernel's own output: the sum in
 the ``tree`` order is the halving tree of the runtime's in-leaf reduction (slots of 256, then the width halving; an absent partner
@@ -23,7 +23,6 @@ import hawk
 from hawk import Grid, Mutable, Scalar
 from hawk import math as m
 from hawk.artifact import build_bundle, emit_source
-from hawk.trace.value import Value, node_of
 
 RNG = np.random.default_rng(20261126)
 SIZES = (1, 2, 3, 7, 8, 64, 100)
@@ -56,17 +55,6 @@ def _lane_sum(terms, dtype):
     return functools.reduce(lambda acc, x: dtype(acc + x), (dtype(x) for x in terms))
 
 
-def _scan_of(value):
-    """The inclusive running sum of ``value`` over the lanes of the group, recorded as the library's ``GroupScan`` node (the
-    authoring has no name for it yet, so the test builds the node the way ``g.sum`` builds its reduce)."""
-    node = node_of(value)
-    return Value(
-        node.ctx.new(
-            "GroupScan", "(('op', 'sum'), ('value', #0), ('inclusive', True))", [node]
-        )
-    )
-
-
 def _sum_kernel(lanes, order):
     @hawk.kernel
     def summed(x: Scalar, y: Mutable[Scalar]):
@@ -81,7 +69,7 @@ def _scan_kernel(lanes):
     @hawk.kernel
     def scanned(x: Scalar, y: Mutable[Scalar]):
         with hawk.group(lanes=lanes) as g:
-            y = _scan_of(x)
+            y = g.scan(x)
 
     scanned.name = f"scan_{lanes}"
     return scanned
@@ -122,6 +110,16 @@ def share(x: Scalar, y: Mutable[Scalar]):
 
 
 @hawk.kernel
+def share_twice(x: Scalar, y: Mutable[Scalar]):
+    """A reduce read three times in a later phase, as the quotient rule of a normalisation reads it."""
+    with hawk.group(lanes=8) as g:
+        t = g.scratch("t", Scalar)
+        t[g.rank] = x * x
+        total = g.sum(t[g.rank])
+        y = t[g.rank] / total + t[g.rank] * x / (total * total)
+
+
+@hawk.kernel
 def sum_of_sums(x: Scalar, y: Mutable[Scalar]):
     """A reduce whose operand holds another reduce: the inner one is evaluated a phase before the outer one."""
     with hawk.group(lanes=8) as g:
@@ -149,6 +147,63 @@ def rows_of_runtime_extent(lane: Grid["row", "col":4], x: Scalar, y: Mutable[Sca
         y = g.sum(x)
 
 
+PLANED_LANES = 4096  # a work array of 4096 doubles is 32 KiB: two stay in the unit's own memory, a third is held by the runtime
+MANY = 20  # the reductions of ``many_maxima``: 640 KiB of work arrays, more than a pool thread's stack
+
+
+@hawk.kernel
+def three_sums(x: Scalar, a: Mutable[Scalar], b: Mutable[Scalar], c: Mutable[Scalar]):
+    """Three tree sums over a group of 4096 lanes: the third passes the limit of the unit's own memory."""
+    with hawk.group(lanes=PLANED_LANES) as g:
+        a = g.sum(x * 1.0)
+        b = g.sum(x * 2.0)
+        c = g.sum(x * 3.0)
+
+
+@hawk.kernel
+def third_sum_alone(x: Scalar, y: Mutable[Scalar]):
+    """The third sum of ``three_sums`` as the only reduction of its group: its work array stays in the unit's own memory."""
+    with hawk.group(lanes=PLANED_LANES) as g:
+        y = g.sum(x * 3.0)
+
+
+@hawk.kernel
+def many_maxima(x: Scalar, y: Mutable[Scalar]):
+    """Twenty group maxima of 4096 lanes, each of the operand scaled by its own number, added in that order."""
+    with hawk.group(lanes=PLANED_LANES) as g:
+        y = (
+            g.max(x * 1.0)
+            + g.max(x * 2.0)
+            + g.max(x * 3.0)
+            + g.max(x * 4.0)
+            + g.max(x * 5.0)
+            + g.max(x * 6.0)
+            + g.max(x * 7.0)
+            + g.max(x * 8.0)
+            + g.max(x * 9.0)
+            + g.max(x * 10.0)
+            + g.max(x * 11.0)
+            + g.max(x * 12.0)
+            + g.max(x * 13.0)
+            + g.max(x * 14.0)
+            + g.max(x * 15.0)
+            + g.max(x * 16.0)
+            + g.max(x * 17.0)
+            + g.max(x * 18.0)
+            + g.max(x * 19.0)
+            + g.max(x * 20.0)
+        )
+
+
+@hawk.kernel
+def scratch_over_max(x: Scalar, y: Mutable[Scalar]):
+    """A scratch of 8192 doubles, 64 KiB, just within the limit, and the maximum of it: the work array does not fit beside it."""
+    with hawk.group(lanes=8192) as g:
+        t = g.scratch("t", Scalar)
+        t[g.rank] = x * x
+        y = t[g.rank] / g.max(t[g.rank])
+
+
 KERNELS = (
     [_sum_kernel(n, order) for n in SIZES for order in ("tree", "lane", "any")]
     + [_scan_kernel(n) for n in (1, 3, 8, 100)]
@@ -158,9 +213,14 @@ KERNELS = (
         group_any,
         group_all,
         share,
+        share_twice,
         sum_of_sums,
         over_cols,
         over_rows,
+        three_sums,
+        third_sum_alone,
+        many_maxima,
+        scratch_over_max,
     ]
 )
 
@@ -338,6 +398,24 @@ def test_a_value_read_in_a_later_phase_is_the_group_sum_every_lane_normalises_by
     np.testing.assert_allclose(y, want, rtol=1e-14, atol=0)
 
 
+@pytest.mark.parametrize("n", (8, 19))
+def test_a_reduce_read_by_several_terms_of_a_later_phase_is_one_total_per_group(
+    bundle, n
+):
+    """Oracle: ``t / T + t x / T^2`` from NumPy's per-group sum ``T`` of ``t = x^2``."""
+    x = RNG.uniform(0.5, 2.0, size=n)
+    y = np.zeros(n)
+    _run(bundle, "share_twice", x=x, y=y)
+    t = x * x
+    want = np.concatenate(
+        [
+            g / g.sum() + g * xs / g.sum() ** 2
+            for g, xs in zip(_groups(t, 8), _groups(x, 8))
+        ]
+    )
+    np.testing.assert_allclose(y, want, rtol=1e-13, atol=0)
+
+
 def test_a_reduce_whose_operand_holds_a_reduce_is_evaluated_after_the_inner_one(bundle):
     x = RNG.normal(size=40)
     y = np.zeros(40)
@@ -379,7 +457,77 @@ def test_a_scan_is_numpys_cumulative_sum_of_each_group_with_a_short_last_group(
     )
 
 
+def _in_the_runtime(text, count):
+    """Whether exactly ``count`` work arrays of ``text`` are slices of the runtime's plane."""
+    return text.count("reinterpret_cast<Real*>(lut_group_scratch_hawk_work_") == count
+
+
+def test_a_work_array_held_by_the_runtime_gives_the_bits_of_the_same_sum_over_the_unit_own_array(
+    bundle,
+):
+    """Oracle: ``_tree_sum`` for every sum, and the third sum over a work array of the unit's own memory: the planed form and the
+    local form add the same terms in the same tree, so the values are equal bit for bit."""
+    n = 2 * PLANED_LANES + 77
+    x = RNG.normal(size=n) * 10.0 ** RNG.integers(-3, 4, size=n)
+    a, b, c, alone = (np.zeros(n) for _ in range(4))
+    _run(bundle, "three_sums", x=x, a=a, b=b, c=c)
+    _run(bundle, "third_sum_alone", x=x, y=alone)
+    for got, scale in ((a, 1.0), (b, 2.0), (c, 3.0)):
+        np.testing.assert_array_equal(
+            got,
+            _expected(
+                x, PLANED_LANES, lambda g: _tree_sum(g * scale, np.float64), np.float64
+            ),
+        )
+    np.testing.assert_array_equal(c, alone)
+
+
+def test_a_group_with_more_work_arrays_than_a_pool_thread_has_stack_runs_on_the_team_and_equals_the_reference(
+    bundle,
+):
+    """Oracle: the maxima as ``numpy`` writes them (the scaled maximum is the maximum of the scaled terms), added in the kernel's
+    order. Twenty work arrays of 32 KiB were 640 KiB of the stack of each worker, which ended the process."""
+    groups = (
+        130  # above the tile of the team, so workers other than the caller run groups
+    )
+    x = RNG.normal(size=groups * PLANED_LANES)
+    y = np.zeros_like(x)
+    hawk.set_host_threads(4)
+    try:
+        hawk.plan(hawk.load(bundle.directory, "many_maxima"), hawk.HostTeam).bind(
+            x=x, y=y
+        ).launch()
+    finally:
+        hawk.set_host_threads(None)
+    for group, got in zip(_groups(x, PLANED_LANES), _groups(y, PLANED_LANES)):
+        peak = group.max()
+        want = functools.reduce(
+            lambda acc, k: acc + peak * float(k), range(2, MANY + 1), peak * 1.0
+        )
+        np.testing.assert_array_equal(got, np.full(len(group), want))
+
+
+def test_a_scratch_within_the_limit_and_a_reduction_that_does_not_fit_beside_it_gives_the_numpy_values(
+    bundle,
+):
+    """Oracle: ``numpy`` per group: each square over the group's largest square."""
+    x = RNG.normal(size=3 * 8192 + 5)
+    y = np.zeros_like(x)
+    _run(bundle, "scratch_over_max", x=x, y=y)
+    want = np.concatenate([g * g / (g * g).max() for g in _groups(x, 8192)])
+    np.testing.assert_array_equal(y, want)
+
+
 # ---- the text ----
+
+
+def test_a_work_array_is_local_while_the_unit_holds_at_most_the_limit_and_a_slice_of_the_runtime_past_it():
+    text = _host_text(three_sums)
+    assert len(re.findall(r"^\s+Real hawk_work_\d+\[4096\];", text, re.M)) == 2
+    assert _in_the_runtime(text, 1)
+    assert _in_the_runtime(_host_text(third_sum_alone), 0)
+    assert _in_the_runtime(_host_text(many_maxima), MANY - 2)
+    assert _in_the_runtime(_host_text(_sum_kernel(100, "tree")), 0)
 
 
 def _host_text(kernel):

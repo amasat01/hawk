@@ -354,8 +354,6 @@ def test_what_every_lane_must_reach_is_refused_by_name_inside_an_if_or_a_for(
 @pytest.mark.parametrize(
     "entry",
     [
-        hawk.diff.vjp,
-        hawk.diff.jvp,
         hawk.diff.with_derivative,
         lambda k: hawk.diff.tape(k, 4),
         hawk.diff.step_vjp,
@@ -364,8 +362,6 @@ def test_what_every_lane_must_reach_is_refused_by_name_inside_an_if_or_a_for(
         hawk.diff.refine_entry,
     ],
     ids=[
-        "vjp",
-        "jvp",
         "with_derivative",
         "tape",
         "step_vjp",
@@ -374,7 +370,7 @@ def test_what_every_lane_must_reach_is_refused_by_name_inside_an_if_or_a_for(
         "refine_entry",
     ],
 )
-def test_a_kernel_with_a_group_has_no_derivative_yet_at_every_transform_entry(
+def test_a_kernel_with_a_group_has_no_derivative_yet_at_every_entry_but_jvp_and_vjp(
     kernel, entry
 ):
     with pytest.raises(

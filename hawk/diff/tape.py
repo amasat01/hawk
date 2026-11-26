@@ -55,8 +55,9 @@ _FLOAT = ("f64", "f32")
 
 
 def refuse_group(primal: Any, entry: str) -> None:
-    """Refuse by name a kernel that holds a group: no transform differentiates the scratch, the barriers and the group-wide
-    results of a group yet, and the library would otherwise name the group an unknown sink."""
+    """Refuse by name a kernel that holds a group, at every entry but the forward ``jvp`` (:mod:`hawk.diff.group`): the
+    reverse and the step derivatives of the scratch, the barriers and the group-wide results of a group are not built, and
+    the library would otherwise name the group an unknown sink."""
     sinks = getattr(primal, "sinks", None) or ()
     if any(_ir.is_a(s, "group") for s in sinks):
         name = getattr(primal, "name", None)

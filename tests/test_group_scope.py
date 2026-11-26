@@ -341,3 +341,15 @@ def test_a_kernel_with_a_count_group_is_built_for_the_host(tmp_path, cache_dir):
         [ring], tmp_path, targets=("host",), cache_dir=cache_dir
     )
     assert hawk.load(bundle.directory, "ring") is not None
+
+
+def test_an_exclusive_scan_is_refused_by_name():
+    with pytest.raises(
+        HawkError,
+        match=r"g\.scan\(exclusive=True\): only the inclusive running sum is built",
+    ):
+
+        @hawk.kernel
+        def exclusive(x: Scalar, y: Mutable[Scalar]):
+            with hawk.group(lanes=8) as g:
+                y = g.scan(x, exclusive=True)

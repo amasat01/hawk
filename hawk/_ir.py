@@ -541,6 +541,12 @@ def group_reduce(op: str, value: Any, order: str) -> Any:
 
 
 @_as_hawk_error
+def group_scan(op: str, value: Any, inclusive: bool) -> Any:
+    """Make the running ``op`` (``sum``) of ``value`` over the lanes of the group, in rank order, ``inclusive`` of the lane's own."""
+    return value.ctx.new("GroupScan", f"(('op', {op!r}), ('value', #0), ('inclusive', {bool(inclusive)!r}))", [value])
+
+
+@_as_hawk_error
 def loop_value(loop_node: Any, slot: int) -> Any:
     """Make the value carry ``slot`` holds when ``loop_node`` ends (checked by the library)."""
     return loop_node.ctx.new("LoopValue", f"(('loop', #0), ('slot', {int(slot)}))", [loop_node])
@@ -946,6 +952,12 @@ def slot_of(walk: Walk) -> dict:
     return {slot: index for index, slot in enumerate(arg_spec(walk))}
 
 
+def _with_group_parts(sinks: Sequence[Any]) -> list:
+    """The ``sinks`` followed by the scratch planes and body sinks of every group among them (a group holds them in fields)."""
+    parts = [n for g in sinks if is_a(g, "group") for n in (*g.field_nodes("scratch"), *group_body(g))]
+    return [*sinks, *parts]
+
+
 @_as_hawk_error
 def canonical_nodes(sinks: Sequence[Any]) -> tuple:
     """Return the walk's node order and ``{node: position}`` of every node it reached.
@@ -956,7 +968,7 @@ def canonical_nodes(sinks: Sequence[Any]) -> tuple:
     context = walk.context
     positions = {
         node: context.walk_position(walk.number, node)
-        for node in post_order(sinks)
+        for node in post_order(_with_group_parts(sinks))
         if not context.in_loop_body(walk.number, node)
     }
     return context.walk_order(walk.number), positions

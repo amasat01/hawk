@@ -66,7 +66,7 @@ def group(
     scope closes.
 
     Inside the scope: ``g.rank`` (this lane's place in its group) and ``g.size`` (the lanes of its group) are values;
-    ``g.scratch(name, type)`` declares a scratch plane; ``g.barrier()`` separates two phases; ``g.sum / min / max / any /
+    ``g.scratch(name, type)`` declares a scratch plane; ``g.barrier()`` separates two phases; ``g.sum / scan / min / max / any /
     all`` combine one value per lane over the group. Outputs assigned in the scope are sinks of the group. A kernel holds
     one group; a group sits at the top level of the body (not inside an ``if`` or a ``for``) and holds no branch or loop."""
     given = {"lanes": lanes, "over": over, "key": key}
@@ -287,6 +287,20 @@ class GroupScope:
                 )
             )
         return self._reduce("sum", value, order)
+
+    def scan(self, value: Any, exclusive: bool = False) -> Value:
+        """The running sum of ``value`` over the lanes of the group in rank order: lane ``r`` gets the sum of the values of
+        lanes ``0..r``, itself included. Only that inclusive form is built; ``exclusive=True`` is refused. Like a reduce,
+        the result is available after the end of the phase that evaluates ``value``."""
+        self._live("g.scan")
+        if exclusive:
+            raise _named(
+                HawkError(
+                    "g.scan(exclusive=True): only the inclusive running sum is built; subtract the lane's own value"
+                )
+            )
+        with _library():
+            return Value(_ir.group_scan("sum", node_of(value), True))
 
     def min(self, value: Any) -> Value:
         """The minimum of ``value`` over the lanes of the group (exact; no order to state)."""
