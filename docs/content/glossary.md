@@ -79,9 +79,9 @@ kernel kind
   A declared shared shape for a family of kernels (`KernelKind`), grown by
   ordinary Python inheritance.
 
-primitive
-  A function you register with `hawk.ext.primitive` together with its
-  forward and, optionally, `jvp`/`vjp` rules, so it can appear in a kernel.
+function with rules
+  A function declared with `@hawk.function(jvp=, vjp=)`: written once in the
+  generated text and called, with derivative rules you supply.
 
 guard
   Which masks gate a sample (`hawk.ext.Guard`): a sample runs only when

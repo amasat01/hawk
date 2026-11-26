@@ -39,7 +39,6 @@ from typing import Any
 
 from .. import _ir
 from ..errors import HawkError
-from ..ext.primitive import jvp_tangent, vjp_contributions
 from .functions import call_adjoints, call_tangent
 from ..trace.value import dispatch_node, dispatch_strategy
 from . import rules
@@ -284,10 +283,6 @@ def _pullback(
                 "second-order object: write jvp(vjp(kernel)), whose tangent of "
                 "a tape read is the same row of the AUGMENTED forward loop"
             )
-        if _ir.is_a(node, "primitive"):
-            for child, contribution in vjp_contributions(node, g):
-                _accumulate(store, child, _reduce_to(contribution, child))
-            continue
         if _ir.is_a(node, "call"):
             for child, contribution in call_adjoints(node, g, name.derived):
                 _accumulate(store, child, _reduce_to(contribution, child))
@@ -897,13 +892,6 @@ def forward_loop(loop: Any, tangent_of, name, augmented_of=None, jump=None, alt=
                 "as a BODY node rather than as a boundary operand — the boundary "
                 "computation and the forward traversal disagree"
             )
-        if _ir.is_a(node, "primitive"):
-            supplied = [tangent.get(c) for c in node.operands[1:]]
-            if any(s is not None for s in supplied):
-                got = jvp_tangent(node, supplied)
-                if got is not None:
-                    tangent[node] = got
-            continue
         if _ir.is_a(node, "call"):
             supplied = [tangent.get(c) for c in node.operands]
             if any(s is not None for s in supplied):

@@ -147,7 +147,7 @@ def test_a_text_that_names_a_plane_fails_to_compile_and_the_failure_names_the_fu
     assert 'compile of "kern" failed' in message
     # the compiler reads the author's own numbering under the function's name: the plane is named on the second line
     assert re.search(
-        r"native function peek:2:\d+: error: [^\n]*'out'",
+        r"native function peek:2:\d+: error: [^\n]*\bout\b",
         message,
     )
 

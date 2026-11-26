@@ -22,10 +22,25 @@ from .runtime import through_door
 
 __all__ = ["Stream", "apply", "door_in_scope"]
 
-#: The scope this thread is in: ``(stream, outer scope)``, or ``None`` outside every scope.
+#: The scope this context is in: ``(stream, outer scope, open)``, or ``None`` outside every scope. ``open`` is set while the
+#: thread that entered the scope is inside it; a copy of the context made for another thread shares it, so that leaving the
+#: scope is seen wherever the scope was inherited.
 _SCOPE: contextvars.ContextVar = contextvars.ContextVar(
     "hawk_stream_scope", default=None
 )
+
+
+def _current() -> tuple | None:
+    """The innermost scope still open, else ``None``. A scope the calling thread inherited and whose starter has left is not in
+    scope any more: the doors this thread stated for it are put back here, as leaving would have."""
+    scope = _SCOPE.get()
+    left = []
+    while scope is not None and not scope[2].is_set():
+        left.append(scope[0])
+        scope = scope[1]
+    for stream in left:
+        stream._put_back(scope)
+    return scope
 
 
 def apply(door: Any) -> None:
@@ -33,7 +48,7 @@ def apply(door: Any) -> None:
     scope is read on the calling thread and the door keeps its stream in use per thread, so a launch made on another thread is
     placed by that thread's own scope. Outside every scope there is nothing to state: leaving a scope has already put back the
     doors its thread used."""
-    scope = _SCOPE.get()
+    scope = _current()
     if scope is None:
         return
     through_door(door.stream_use, scope[0]._handle)
@@ -46,7 +61,7 @@ def door_in_scope() -> Any:
 
     A stream knows its door once it has launched through it, and a stream the library made knows it from the start; a stream
     adopted and not yet launched on, or one launched on over several doors, has no one door and is refused by name."""
-    scope = _SCOPE.get()
+    scope = _current()
     if scope is None:
         return _place.door_of(_place.HOST)
     doors = scope[0]._doors
@@ -121,7 +136,9 @@ class Stream:
                 "hawk.Stream: a stream scope cannot be opened inside a recording; there the queues are derived from "
                 "parallel() branches and wait(planes)"
             )
-        _SCOPE.set((self, _SCOPE.get()))
+        opened = threading.Event()
+        opened.set()
+        _SCOPE.set((self, _SCOPE.get(), opened))
         return self
 
     def _stated_here(self) -> set:
@@ -132,8 +149,14 @@ class Stream:
     def __exit__(self, *exc: object) -> None:
         """Leave the scope: the outer stream is in scope again on every door this thread stated this stream to, also after an
         exception."""
-        outer = _SCOPE.get()[1]
+        _, outer, opened = _SCOPE.get()
+        opened.clear()
         _SCOPE.set(outer)
+        self._put_back(_current())
+
+    def _put_back(self, outer: tuple | None) -> None:
+        """State ``outer``'s stream (the library's own when there is none) on the doors this stream was stated to on the calling
+        thread."""
         back = 0 if outer is None else outer[0]._handle
         for door in self._stated_here():
             through_door(door.stream_use, back)

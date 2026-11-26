@@ -1,19 +1,16 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""Plain ``def`` helpers, ``@hawk.primitive`` and the complex-pair helpers.
+"""Plain ``def`` helpers and the complex-pair helpers.
 
 * **Helpers.** A user function called from a kernel with traced values gets the
   kernel body's control-flow rewrite once, is inlined, and is differentiated
   through. Library functions and calls with untraced arguments are left alone.
-* **``@hawk.primitive``.** Named after the function, bare or with rules;
-  registering the same function again is a no-op.
 * **Complex pairs.** ``cmul``, ``conj``, ``abs2`` and ``arg`` on ``Vector[2]``."""
 
 from __future__ import annotations
 
 import math
-import textwrap
 
 import numpy as np
 import pytest
@@ -153,63 +150,6 @@ def test_the_rewrite_runs_once_per_function(monkeypatch):
         def twice(x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
             y = once(x) + once(x * 2.0)
     assert seen.count("__hawk_helper__") == 1       # the kernel is the other transform
-
-
-# --------------------------------------------------------------------------- #
-# @hawk.primitive
-# --------------------------------------------------------------------------- #
-def test_a_bare_primitive_is_named_after_its_function_and_differentiates_through_it():
-    @hawk.primitive
-    def hd_softplus(x):
-        return m.log(1.0 + m.exp(x))
-
-    assert hawk.primitive is hawk.ext.primitive
-    assert hawk.ext.primitives()["hd_softplus"] is hd_softplus
-
-    @hawk.kernel
-    def k(x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
-        y = hd_softplus(x)
-
-    got = evaluate(vjp(k.sinks), {"x": 0.3, "bar_y": 1.0})["bar_x"]
-    assert got == pytest.approx(1.0 / (1.0 + math.exp(-0.3)), rel=1e-12)
-
-
-def test_a_primitive_with_rules_still_takes_them_and_a_helper_inside_it_is_rewritten():
-    @hawk.primitive("hd_branchy", vjp=lambda x, bar: 7.0 * bar)
-    def branchy(x):
-        return side(x)
-
-    @hawk.kernel
-    def k(x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
-        y = branchy(x)
-
-    assert evaluate(k.sinks, {"x": 0.8})["y"] == pytest.approx(0.64)
-    assert evaluate(vjp(k.sinks), {"x": 0.8, "bar_y": 1.0})["bar_x"] == pytest.approx(7.0)
-
-
-def test_running_a_notebook_cell_twice_registers_once():
-    cell = textwrap.dedent('''
-        import hawk, hawk.math as m
-
-        @hawk.primitive
-        def hd_cell_square(x):
-            return x * x
-    ''')
-    first, second = {}, {}
-    exec(compile(cell, "<cell>", "exec"), first)
-    exec(compile(cell, "<cell>", "exec"), second)
-    assert second["hd_cell_square"] is first["hd_cell_square"]
-
-
-def test_a_different_function_under_a_taken_name_is_refused():
-    @hawk.primitive("hd_taken")
-    def one(x):
-        return x + 1.0
-
-    with pytest.raises(HawkError, match="already registered"):
-        @hawk.primitive("hd_taken")
-        def other(x):
-            return x + 2.0
 
 
 # --------------------------------------------------------------------------- #

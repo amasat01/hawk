@@ -58,7 +58,6 @@ BASELINE = {
     "diff/event.py": ("_OPS", "_SIGN"),
     "diff/jump.py": ("_ORDERED",),
     "ext/__init__.py": ("SINK_POLICIES", "_UNBUILT_SINKS"),
-    "ext/primitive.py": ("_REGISTRY",),
     "options.py": ("LEGACY",),
     "trace/astpass.py": ("_BANNED_EXPR", "_STORE_OPS"),
     "trace/decl.py": ("_FORM_ROLE",),
@@ -72,10 +71,6 @@ ALLOWED = {
     ("graph_builder.py", "_ACTIVE"): "the recorder of the running builder: a context variable, one value per thread or task",
     ("graph_builder.py", "_HG"): "the runtime the rewritten builder code calls: static methods only, no state of its own",
     ("graph_builder.py", "_MEMO"): "the compiled code of each builder function, keyed by its code object; a repeat only recompiles",
-    (
-        "ext/primitive.py",
-        "_RULES",
-    ): "the rule templates of declared primitives; a name is claimed under one lock",
     ("streams.py", "_SCOPE"): "the stream scope of the running thread: a context variable, one value per thread or task",
     ("targets/__init__.py", "TARGETS"): VIEW,
     ("targets/__init__.py", "DEFAULT_TARGETS"): VIEW,

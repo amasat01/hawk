@@ -29,11 +29,6 @@ post-hoc edit of generated text. This module lands two seams:
   ``map[t]``. It is the active-set prologue without the mask, so a kernel
   may accumulate or reduce under it (see :class:`IndexSet`).
 
-The custom-primitive seam (:mod:`hawk.ext.primitive`) adds a forward the
-author writes as an ordinary Python function of traced values, inlined at
-every call, plus the VJP/JVP rules that replace the table's rule for that
-subgraph.
-
 A :class:`Kind` carries all of these plus its compile hook. A vocabulary is
 extended by INHERITANCE: a :class:`KernelKind` subclass, or :meth:`Kind.extend`
 for the instance form, carries a base's vocabulary and seam fields forward,
@@ -50,10 +45,9 @@ from typing import Any
 
 from .. import _ir
 from ..errors import HawkError
-from .primitive import PrimitiveDef, primitive, primitives
 
 __all__ = ["Guard", "IndexSet", "Kind", "Output", "PLAIN", "ATOMIC", "DEFAULT_GUARD",
-           "sink_policy", "compensated", "PrimitiveDef", "primitive", "primitives"]
+           "sink_policy", "compensated"]
 
 
 @dataclass(frozen=True)

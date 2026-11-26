@@ -18,8 +18,8 @@ import re
 import numpy as np
 import pytest
 from test_function_calls import LANES, USES, _drag, _sixteen, _text, _vectors, drag, horner, reference
-from test_function_parity_primitive import primitive_kernel, wrong_kernel
-from test_function_parity_primitive_loops import uses_looped
+from test_function_supplied_rules import softplus_kernel, wrong_kernel
+from test_function_loop_rules import uses_looped
 from test_helper_defs import side
 
 import hawk
@@ -106,16 +106,16 @@ def test_a_function_whose_body_holds_a_loop_runs_on_the_card_and_equals_numpy(tm
 @pytest.mark.gpu
 def test_the_supplied_rules_of_a_function_run_on_the_card_forward_and_reverse(tmp_path, cache_dir):
     cupy = _cupy()
-    reverse = Kernel("primitive_kernel_vjp", vjp(primitive_kernel))
-    forward = Kernel("primitive_kernel_jvp", jvp(primitive_kernel))
+    reverse = Kernel("softplus_kernel_vjp", vjp(softplus_kernel))
+    forward = Kernel("softplus_kernel_jvp", jvp(softplus_kernel))
     x = np.random.default_rng(9).uniform(-2.0, 2.0, LANES)
     seed = np.random.default_rng(10).uniform(0.2, 1.4, LANES)
     sigmoid = 1.0 / (1.0 + np.exp(-x))
     planes = {"x": cupy.asarray(x), "bar_y": cupy.asarray(seed), "bar_x": cupy.zeros(LANES)}
-    got = _device([primitive_kernel, reverse], tmp_path / "r", cache_dir, "primitive_kernel_vjp", **planes)["bar_x"].get()
+    got = _device([softplus_kernel, reverse], tmp_path / "r", cache_dir, "softplus_kernel_vjp", **planes)["bar_x"].get()
     np.testing.assert_allclose(got, 2.0 * seed * sigmoid, rtol=1e-12)
     planes = {"x": cupy.asarray(x), "dot_x": cupy.asarray(seed), "dot_y": cupy.zeros(LANES)}
-    got = _device([primitive_kernel, forward], tmp_path / "f", cache_dir, "primitive_kernel_jvp", **planes)["dot_y"].get()
+    got = _device([softplus_kernel, forward], tmp_path / "f", cache_dir, "softplus_kernel_jvp", **planes)["dot_y"].get()
     np.testing.assert_allclose(got, 2.0 * seed * sigmoid, rtol=1e-12)
 
 

@@ -204,6 +204,35 @@ def test_a_scope_puts_back_only_the_doors_its_own_thread_stated(monkeypatch):
     assert leaving == [41, 0]
 
 
+def test_a_scope_left_by_its_starter_is_withdrawn_on_a_thread_that_inherited_it(
+    monkeypatch,
+):
+    """A thread running in a copy of the starter's context states the starter's stream while the starter is in the scope. Once
+    the starter has left it (and may free the stream), that thread's next launch states the stream no more: the door is put
+    back on the thread, never made to name the stream again."""
+    calls = _count_stream_use(monkeypatch)
+    door = _FakeDoor()
+    inside = threading.Event()
+    left = threading.Event()
+    worker_ident = []
+
+    def worker():
+        worker_ident.append(threading.get_ident())
+        streams.apply(door)
+        inside.set()
+        left.wait()
+        streams.apply(door)
+
+    with hawk.Stream(61):
+        thread = threading.Thread(target=contextvars.copy_context().run, args=(worker,))
+        thread.start()
+        inside.wait()
+    left.set()
+    thread.join()
+    stated = [handle for ident, _, handle in calls if ident == worker_ident[0]]
+    assert stated == [61, 0]
+
+
 # ---- device rows (run on a machine with a card) ----
 
 

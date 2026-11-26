@@ -6,7 +6,7 @@ host implementation, a device implementation, and a derivative rule. Six
 files across two repositories. Cross-linked from
 [aether's own "adding a function" tutorial](https://amasat01.github.io/aether/).
 
-No public seam skips this today: [`hawk.ext.primitive`](../vocabulary/03_your_own_derivative)
+No public seam skips this today: [`hawk.function`](../vocabulary/03_your_own_derivative)
 only *composes* existing ops, and [`hawk.native`](../vocabulary/when_hawk_cant_spell_it)
 differentiates only through rules you write. A genuinely new native op is this six-step edit.
 
@@ -40,7 +40,7 @@ table (the rank-0 `aether::math::foo` spelling), and to its coefficient-wise una
 `hawk/diff/rules.py` — add `foo`'s rule to the table (`erf`'s entry is a
 model: `"erf": lambda n, x: _mul(_c(_TWO_OVER_SQRT_PI), _o("exp", _neg(_mul(x, x))))`).
 This is the rule every kernel calling `foo` gets automatically — the whole
-point of a native op over a primitive is that *no caller* has to supply one.
+point of a native op over a function with rules is that *no caller* has to supply one.
 
 ## 5. hawk: the authoring name
 
@@ -63,4 +63,4 @@ but no rule, and so on).
 ## Next
 
 Back to [when hawk can't spell it](../vocabulary/when_hawk_cant_spell_it) for the
-decision between a primitive, `hawk.native`, and this path.
+decision between a function with rules, `hawk.native`, and this path.

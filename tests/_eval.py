@@ -442,10 +442,6 @@ def _compute(node, env: dict, memo: dict):
         return _loop_state(loop, env, memo)[1][node.field_int("slot")][ordinal]
     if _ir.is_a(node, "sample_index"):
         return env["__lane__"]
-    if _ir.is_a(node, "primitive"):
-        # a primitive's FORWARD is its inlined subgraph; the boundary node adds
-        # no arithmetic, which is exactly what the emitter renders too.
-        return _value(node.operands[0], env, memo)
     if _ir.is_a(node, "call"):
         # a call is its function's body evaluated over the argument values, in a memo of its own: the body is a graph over the
         # function's parameters, which are not nodes of the caller's graph

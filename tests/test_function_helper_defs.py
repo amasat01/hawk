@@ -1,11 +1,9 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""The ``@hawk.primitive`` rows of test_helper_defs.py restated on ``@hawk.function``, the decorator renamed.
-
-Two rows are restated beyond the rename, each where it stands: the notebook cell run twice (there is no registry that returns
-the first object) and the name collision (the function table refuses it). The registry race test has no restatement: it pins
-the claim of a name in the primitive registry, which a function does not have."""
+"""``@hawk.function`` beside the plain helpers of test_helper_defs.py: a bare decorator names the function after its ``def``, rules
+are taken beside a helper that needs the control-flow rewrite, a notebook cell run twice gives one digest, and a taken name is
+refused by the function table."""
 
 import math
 import textwrap

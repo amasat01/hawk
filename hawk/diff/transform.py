@@ -25,7 +25,6 @@ from typing import Any
 
 from .. import _ir
 from ..errors import HawkError
-from ..ext.primitive import jvp_tangent, vjp_contributions
 from ..trace.value import DISPATCH_STRATEGIES, dispatch_node, dispatch_strategy
 from . import rules
 from .altpath import AltPath
@@ -778,13 +777,6 @@ def _jvp(
                     augmented, len(loop.field_nodes("carries")) + slot
                 )
             continue
-        if _ir.is_a(node, "primitive"):
-            supplied = [tangent.get(key(c)) for c in node.operands[1:]]
-            if any(t is not None for t in supplied):
-                got = jvp_tangent(node, supplied)
-                if got is not None:
-                    tangent[key(node)] = got
-            continue
         if _ir.is_a(node, "call"):
             supplied = [tangent.get(key(c)) for c in node.operands]
             if any(t is not None for t in supplied):
@@ -956,12 +948,6 @@ def _reverse_pass(
                         _ir.field_pairs(plane, "axes"),
                     )
                 )
-            continue
-        if _ir.is_a(node, "primitive"):
-            # Operand 0 (the forward subgraph) is deliberately skipped: the
-            # supplied rule already is this primitive's derivative.
-            for child, contribution in vjp_contributions(node, g):
-                _accumulate(adjoint, key, child, _reduce_to(contribution, child))
             continue
         if _ir.is_a(node, "call"):
             for child, contribution in call_adjoints(node, g, name.derived):

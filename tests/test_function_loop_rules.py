@@ -1,12 +1,11 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""The loop tests of ``hawk.primitive`` restated on ``@hawk.function(jvp=, vjp=)``: the rules hold a fixed-count loop.
+"""Rules of a function that hold a fixed-count loop, checked against central differences on the host.
 
-Four of the primitive's rows pin the rule TEMPLATE registry (a template holding a loop, its closure checks, its substitution
-into loop locals). A function has no template: its rule is an ordinary traced function of the same table, whose body may read
-nothing but its parameters, so those rows have no restatement; the properties they pin are held by test_function_derivatives.py
-(a function whose body holds a loop, a call inside a loop). The rows below are the primitive's, with the decorator renamed."""
+A function's rule is an ordinary traced function of the function table whose body may read nothing but its parameters, so the
+properties of a loop in a rule (free leaves, loop locals) are those of a function whose body holds a loop or a call inside a
+loop, held by test_function_derivatives.py."""
 
 import pytest
 from _eval import evaluate

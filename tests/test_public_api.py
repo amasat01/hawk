@@ -61,7 +61,7 @@ _EXPECTED_MANIFEST = {
         "Param", "Partition", "Quantity", "Quat", "Record", "Rows", "Scalar", "SkipGuard", "Sorted",
         "Staged", "Stream", "Table", "Tensor", "Terminated", "ToolchainAbsent", "UInt32", "Value", "Vector", "Wide",
         "WideOut", "__version__", "append", "asarray", "banded_pack", "banded_unpack", "build", "chain", "compact", "copy", "deploy", "device_props", "fft", "function", "geometry", "group",
-        "host_step", "host_threads", "kernel", "load", "matmul", "max", "mean", "min", "native", "plan", "primitive", "reduce", "reorder", "repeat_while", "resolve_dispatch", "reverse", "run",
+        "host_step", "host_threads", "kernel", "load", "matmul", "max", "mean", "min", "native", "plan", "reduce", "reorder", "repeat_while", "resolve_dispatch", "reverse", "run",
         "sample_position", "samples_first", "samples_last", "scan", "scatter", "set_host_threads", "simulate", "skippable", "sort", "steps", "sum", "synchronize",
         "to_numpy", "until_done",
     ],
@@ -98,8 +98,8 @@ _EXPECTED_MANIFEST = {
     "hawk.graph": ["Edge", "Graph", "GraphPipeline", "GraphRecord", "RepeatWhile", "SkipGuard", "Skippable", "repeat_while", "reverse", "skippable"],
     "hawk.ext": [
         "ATOMIC", "DEFAULT_GUARD", "DEFAULT_KIND", "Guard", "IndexSet",
-        "KernelKind", "Kind", "Output", "PLAIN", "PrimitiveDef",
-        "compensated", "primitive", "primitives", "sink_policy",
+        "KernelKind", "Kind", "Output", "PLAIN",
+        "compensated", "sink_policy",
     ],
     "hawk.diff": [
         "ADJOINT_PREFIX", "CELL_PLANE", "Derived", "TANGENT_PREFIX", "jvp", "param_planes",
@@ -139,7 +139,7 @@ def test_the_public_manifest_is_exactly_this():
 #: name alone. Every other duplicate below still fails: this is the one
 #: named exception, not a loophole.
 _TOP_LEVEL_DOOR_NAMES = frozenset({
-    "build", "load", "run", "primitive", "plan", "deploy", "Partition", "HostTeam", "HostSerial", "DeviceKernel", "asarray",
+    "build", "load", "run", "plan", "deploy", "Partition", "HostTeam", "HostSerial", "DeviceKernel", "asarray",
     "to_numpy", "synchronize", "banded_pack", "banded_unpack", "ActiveSet", "until_done", "simulate", "Graph",
     "GraphPipeline", "reverse", "SkipGuard", "skippable", "repeat_while", "DeviceProps", "device_props",
     "host_threads", "set_host_threads"})

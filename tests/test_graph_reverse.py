@@ -377,3 +377,104 @@ def test_the_policy_words_are_the_librarys_one_deterministic_order_and_the_other
         hawk.reverse(graph.record, {"z": np.ones(N)}, policy="fast")
     with pytest.raises(HawkError, match="strict= is True or False"):
         hawk.reverse(graph.record, {"z": np.ones(N)}, strict=1)
+
+
+# 5. a scan and a reorder inside a WHILE body
+#
+# Each row differentiates a loop whose body holds the node, against central differences of the forward replay in float64
+# (step H, so the rounding error of a difference is about eps * |J| / H, below ``FD_TOL`` for the magnitudes here: |J| below
+# 1e4, eps 2.2e-16, H 1e-6) and against a closed form built from the loop's matrix. A scan is piecewise linear and a
+# reorder linear, so the difference has no truncation error away from a tie.
+
+H = 1e-6
+FD_TOL = 1e-5
+PASSES = 3
+
+
+@hawk.Graph.builder
+def scanned(x, t, u, v, one, c, op) -> hawk.Graph:
+    g = hawk.Graph(record=True)
+    for _ in range(PASSES):
+        if not c:
+            break
+        scale(x, one, y=t)
+        hawk.scan(t, "sum", out=u)
+        if op == "max":
+            hawk.scan(u, "max", out=v)
+            scale(v, one, y=x)
+        else:
+            scale(u, one, y=x)
+        tick(c)
+    return g
+
+
+@pytest.mark.parametrize("start", [2, 5, 0])
+@pytest.mark.parametrize("op", ["sum", "max"])
+def test_a_gradient_flows_through_a_scan_in_a_while_body(op, start):
+    """``x <- cumsum(x)`` (or ``maximum.accumulate(cumsum(x))``) per pass, ``min(start, cap)`` passes. Oracles: the loop in
+    NumPy for the values; central differences of J = seed . x for the gradient; for the sum, also ``(L^T)^p seed`` with L
+    the lower triangle of ones, the Jacobian of one pass."""
+    x0, seed = RNG.normal(size=N), RNG.normal(size=N)
+    x, t, u, c = x0.copy(), np.zeros(N), np.zeros(N), cell(start)
+    graph = scanned(x, t, u, np.zeros(N), np.ones(N), c, op)
+    graph()
+    passes = min(start, PASSES)
+    want = x0.copy()
+    for _ in range(passes):
+        want = np.cumsum(want)
+        want = np.maximum.accumulate(want) if op == "max" else want
+    np.testing.assert_allclose(x, want, rtol=1e-12)
+    gradients = hawk.reverse(graph.record, {"scale#2.y": seed})
+    np.testing.assert_allclose(x, want, rtol=1e-12)  # the reverse leaves the state as the forward left it
+
+    def forward():
+        x[:], c[0] = x0, start
+        graph()
+        return float(seed @ x)
+
+    for index in range(N):
+        np.testing.assert_allclose(
+            gradients["scale.x"][index], central(forward, x0, index, H), atol=FD_TOL, rtol=FD_TOL
+        )
+    if op == "sum":
+        lower = np.tril(np.ones((N, N)))
+        np.testing.assert_allclose(gradients["scale.x"], np.linalg.matrix_power(lower.T, passes) @ seed, rtol=1e-12)
+
+
+@hawk.Graph.builder
+def reordered(x, a, t, one, order, c) -> hawk.Graph:
+    g = hawk.Graph(record=True)
+    for _ in range(PASSES):
+        if not c:
+            break
+        scale(x, a, y=t)
+        hawk.reorder([t], order)
+        scale(t, one, y=x)
+        tick(c)
+    return g
+
+
+@pytest.mark.parametrize("start", [2, 5, 0])
+def test_a_gradient_flows_through_a_reorder_in_a_while_body(start):
+    """``x <- (a x)[order]`` per pass. Oracles: ``M = P diag(a)`` with ``P[j, order[j]] = 1``, so ``x_p = M^p x0``,
+    ``dJ/dx0 = (M^T)^p seed`` and ``dJ/da`` by central differences of the forward replay."""
+    x0, a, seed = X.copy(), W.copy(), RNG.normal(size=N)
+    order = RNG.permutation(N).astype(np.int32)
+    x, t, c = x0.copy(), np.zeros(N), cell(start)
+    graph = reordered(x, a, t, np.ones(N), order, c)
+    graph()
+    passes = min(start, PASSES)
+    matrix = np.eye(N)[order] @ np.diag(a)
+    np.testing.assert_allclose(x, np.linalg.matrix_power(matrix, passes) @ x0, rtol=1e-12)
+    gradients = hawk.reverse(graph.record, {"scale#2.y": seed})
+    np.testing.assert_allclose(gradients["x"], np.linalg.matrix_power(matrix.T, passes) @ seed, rtol=1e-12)
+
+    def forward():
+        x[:], c[0] = x0, start
+        graph()
+        return float(seed @ x)
+
+    for index in (0, N - 1):
+        np.testing.assert_allclose(
+            gradients["scale.w"][index], central(forward, a, index, H), atol=FD_TOL, rtol=FD_TOL
+        )

@@ -43,7 +43,6 @@ The declarations a kernel is written in, and the top-level functions. Each has i
    hawk.chain
    hawk.scatter
    hawk.sample_position
-   hawk.primitive
    hawk.resolve_dispatch
    hawk.samples_first
    hawk.samples_last

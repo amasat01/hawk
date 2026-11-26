@@ -861,14 +861,15 @@ def _refusal(kernel):
     return str(raised.value)
 
 
-def test_a_group_reduce_is_refused_by_name_on_the_host():
+def test_a_group_reduce_is_written_on_the_host():
+    """The host writes a group reduce (its values are checked in ``test_group_reduce_host``)."""
+
     @hawk.kernel
     def summed(x: Scalar, y: Mutable[Scalar]):
         with hawk.group(lanes=8) as g:
             y = g.sum(x)
 
-    assert "a group reduce is not written on the host yet" in _refusal(summed)
-    assert '"summed"' in _refusal(summed)
+    assert "hawk_work_" in _host_text(summed)
 
 
 def test_a_group_by_key_is_refused_by_name_on_the_host():
@@ -908,3 +909,96 @@ def test_a_group_reduce_and_a_group_by_key_are_refused_by_name_on_the_device():
     for kernel, what in ((summed, "a group reduce"), (keyed, "a group by key")):
         with pytest.raises(HawkError, match=rf"{what} is not written on the device yet"):
             emit_source(kernel, targets=("cuda",))
+
+
+# ---- a group whose scratch is too large for a worker's stack is held by the runtime as a plane ----
+
+#: Doubles of scratch per group at which the runtime stops keeping it on the stack: 65,536 bytes.
+LOCAL_LIMIT = 8192
+
+
+def _scratch_ring(lanes):
+    """A kernel whose group of ``lanes`` lanes writes one scratch plane and reads its own and its neighbour's entry back."""
+
+    @hawk.kernel
+    def ring(x: Scalar, y: Mutable[Scalar]):
+        with hawk.group(lanes=lanes) as g:
+            t = g.scratch("t", Scalar)
+            t[g.rank] = x
+            g.barrier()
+            y = t[g.rank] + 2.0 * t.at(g.rank + 1, edge="wrap")
+
+    ring.name = f"scratch_ring_{lanes}"
+    return ring
+
+
+def _scratch_ring_oracle(x, lanes):
+    """Oracle: each group's entry plus twice its neighbour's, the last entry wrapping to the group's first, as NumPy writes it."""
+    return np.concatenate([g + 2.0 * np.roll(g, -1) for g in _groups(x, lanes)])
+
+
+SCRATCH_SIZES = (LOCAL_LIMIT, LOCAL_LIMIT + 1, 80_000, 4_000_000)
+
+
+@pytest.fixture(scope="module")
+def scratch_bundle(tmp_path_factory, cache_dir):
+    """The scratch ring at each size: below the limit, above it, and the two sizes that overran a worker's stack."""
+    return build_bundle(
+        [_scratch_ring(lanes) for lanes in SCRATCH_SIZES],
+        tmp_path_factory.mktemp("group_scratch"),
+        targets=("host",),
+        cache_dir=cache_dir,
+        host_profile="native",
+    )
+
+
+def _scratch_run(bundle, lanes, n):
+    """The ring over ``n`` random lanes, launched on four pool threads; returns the input and the output."""
+    x = RNG.normal(size=n)
+    y = np.zeros(n)
+    hawk.set_host_threads(4)
+    try:
+        hawk.plan(_loaded(bundle, f"scratch_ring_{lanes}"), hawk.HostTeam).bind(
+            x=x, y=y
+        ).launch()
+    finally:
+        hawk.set_host_threads(None)
+    return x, y
+
+
+@pytest.mark.parametrize("lanes", (LOCAL_LIMIT, LOCAL_LIMIT + 1))
+def test_a_group_just_below_and_just_above_the_limit_gives_the_numpy_values_with_a_short_last_group(
+    scratch_bundle, lanes
+):
+    """Oracle: ``_scratch_ring_oracle``. The group kept on the stack and the group held as a plane do the same two operations on
+    the same entries, so every lane equals the NumPy value exactly (there is no reduction whose order could differ)."""
+    x, y = _scratch_run(scratch_bundle, lanes, 3 * lanes + 5)
+    np.testing.assert_array_equal(y, _scratch_ring_oracle(x, lanes))
+
+
+def test_a_group_of_four_million_doubles_of_scratch_runs_and_equals_numpy(
+    scratch_bundle,
+):
+    """Oracle: ``_scratch_ring_oracle``. A group this size overran a stack of the team's workers."""
+    x, y = _scratch_run(scratch_bundle, 4_000_000, 4_000_000)
+    np.testing.assert_array_equal(y, _scratch_ring_oracle(x, 4_000_000))
+
+
+def test_more_than_sixty_four_groups_of_eighty_thousand_doubles_run_on_pool_threads_and_equal_numpy(
+    scratch_bundle,
+):
+    """Oracle: ``_scratch_ring_oracle``. Seventy-one groups (the last one short) are shared among four threads."""
+    n = 70 * 80_000 + 123
+    x, y = _scratch_run(scratch_bundle, 80_000, n)
+    np.testing.assert_array_equal(y, _scratch_ring_oracle(x, 80_000))
+
+
+def test_a_group_keeps_its_scratch_on_the_stack_up_to_the_limit_and_reads_a_plane_above_it():
+    """The emitted text states which: an array of the group's size, or a restrict pointer into the slice of the group."""
+    below = _host_text(_scratch_ring(LOCAL_LIMIT))
+    above = _host_text(_scratch_ring(LOCAL_LIMIT + 1))
+    assert f"Real scr_t[{LOCAL_LIMIT}];" in below and "__restrict scr_t" not in below
+    assert (
+        "Real* __restrict scr_t = " in above
+        and f"Real scr_t[{LOCAL_LIMIT + 1}]" not in above
+    )

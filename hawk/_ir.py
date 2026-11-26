@@ -32,7 +32,7 @@ _CONTEXT_OF_CONSTANTS = _osprey.Ctx()
 # constant as a tuple).
 _STRING_CONSTANTS = (
     "NAMESPACE_SEP", "PARAM_CELL", "CELL_PLANE",
-    "COMPANION_SUFFIX", "ADJOINT_PREFIX", "REDUCE_KIND", "PRIMITIVE_KIND", "SAMPLE_SUM_COMP_SUFFIX",
+    "COMPANION_SUFFIX", "ADJOINT_PREFIX", "REDUCE_KIND", "SAMPLE_SUM_COMP_SUFFIX",
 )  # fmt: skip
 _TUPLE_CONSTANTS = (
     "COMPARE", "LOGICAL", "PREDICATE", "CONTRACTS", "LEAF_ROLES",
@@ -48,7 +48,7 @@ COMPARE, LOGICAL, PREDICATE, CONTRACTS = (
     _CONTEXT_OF_CONSTANTS.const_names(name) for name in _TUPLE_CONSTANTS[4:]
 )  # fmt: skip
 (NAMESPACE_SEP, PARAM_CELL, CELL_PLANE, COMPANION_SUFFIX,
- ADJOINT_PREFIX, REDUCE_KIND, PRIMITIVE_KIND, SAMPLE_SUM_COMP_SUFFIX) = (
+ ADJOINT_PREFIX, REDUCE_KIND, SAMPLE_SUM_COMP_SUFFIX) = (
     _CONTEXT_OF_CONSTANTS.const_names(name)[0] for name in _STRING_CONSTANTS
 )  # fmt: skip
 INT_BINARY = _CONTEXT_OF_CONSTANTS.const_names("INT_BINARY")
@@ -1213,23 +1213,6 @@ def reduce_jvp(node: Any, tangents: Mapping[Any, Any]) -> Any:
     """Return the tangent of a sum over samples, or ``None`` when its operand has none."""
     answer = node.ctx.reduce_jvp(node, list(tangents), list(tangents.values()))
     return answer[0] if answer else None
-
-
-@_as_hawk_error
-def rule_template_check(name: str, roots: Sequence[Any], allowed: Sequence[str]) -> None:
-    """Refuse, by name, a graph that is not a closed rule template of primitive ``name``.
-
-    Its free leaves must be among ``allowed``; loop placeholders, edges, plane writes and tape reads
-    are checked by the library.
-    """
-    roots = list(roots)
-    _context_of(roots, "rule_template_check").rule_template_check(name, roots, " ".join(allowed))
-
-
-@_as_hawk_error
-def kind_reserved(context: Any, name: str) -> bool:
-    """Whether ``name`` is taken as a kind name (primitive, core or declared)."""
-    return context.kind_reserved(name)
 
 
 # ---- the wings' rewrites and predicates (the library runs them) ----

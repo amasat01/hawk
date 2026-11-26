@@ -28,6 +28,7 @@ Releases after 0.6.5 are on [GitHub](https://github.com/amasat01/hawk/releases):
 - **The library owns a sum's compensation plane** (`<target>_c`, and a cell's rows): binding one is refused by name; the target alone holds the compensated sum after the run.
 - **`base=` and `count=` mean what the library says for the kernel.** A thread-box kernel's range counts threads, and a kernel that reads an index set takes one range of positions; hawk no longer computes a thread count.
 - **A kernel call runs through `hawk.deploy`.** `k(...)` is `hawk.deploy(k)(...)`, the plan kept on the kernel; hawk no longer imports `eagle` anywhere. `Kernel.broadcast_call` is removed: a plan classifies a broadcast shape itself. An argument a call refuses is a `HawkError` (it was a `ValueError` from eagle), and the gradient of a Python number given for a per-lane input is refused by name (pass a one-element array); an array that varies along no axis is bound as one cell of its own memory.
+- **`hawk.primitive` is `hawk.function(jvp=, vjp=)`.** `hawk.primitive`, `hawk.ext.primitive`, `hawk.ext.primitives` and `hawk.ext.PrimitiveDef` are removed with no alias: `@hawk.function(name=..., jvp=..., vjp=...)` takes the same rules and is written once and called, not inlined. A function given one rule derives the other direction from its body, where a primitive refused it; a second body under a taken name is refused by the function table.
 - **`HostKernel` is `LoadedKernel`**, the object `hawk.load` returns. There is no alias.
 
 ### Changed

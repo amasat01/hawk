@@ -67,7 +67,7 @@ from typing import NamedTuple
 
 import _osprey
 
-from . import _broadcast, _cells, _ir, _lane_bind, _place, ospreys
+from . import _broadcast, _ir, _lane_bind, _place, ospreys
 from ._bind_checks import _PER_SAMPLE_ROLES, _check_bind, _n_from, narrow_index, refuse_index_width, widen_index
 from ._place import Maker
 from ._plane_layout import LayoutChoice, describe, is_ndarray, samples_last, split_marks
@@ -178,7 +178,6 @@ class LoadedKernel:
         self._slot_named = {name: i for i, name in enumerate(self._slots)}
         #: ``{(role, name): slot}``: a slot is the index of the plane in the unit's slot table.
         self.slot_of = {pair: self._slot_named[pair[1]] for pair in self.bind_spec}
-        self._made = _door_made_names(self.declared)
         #: the names of the active map and count when the unit reads an active set the caller or a runner makes, else ()
         self.active_set = (() if self.declared.get("launch", {}).get("index_set") is not None
                            else tuple(name for name in _ACTIVE_SET_PLANES if name in self._slot_named))
@@ -186,6 +185,13 @@ class LoadedKernel:
         self._vjps: dict = {}
         #: the unit on the host door, which the load checks
         self.unit = self.unit_on(self._door)
+        #: the names of the slots the loaded unit says its library makes; the caller need not bind them
+        self._made = {
+            self._slots[slot]
+            for slot in through_door(self._door.unit_made_slots, self.unit)
+        }
+        #: the cell planes of a kernel in stages that hawk makes zeroed when the caller binds none
+        self._filled = _cells_hawk_fills(self.declared)
 
     def unit_on(self, door):
         """The unit loaded through ``door``, once for each door: a plan runs on the door of the place its planes live in. A unit
@@ -330,8 +336,8 @@ class LoadedKernel:
         name (a cell of a kernel in stages is the caller's only when it binds it)."""
         cells = self.declared.get("cells") or {}
         rows = {plane for cell, spec in cells.items() for plane in _ir.planes(cell, spec["columns"])}
-        named = [name for role, name in self.bind_spec if role in _ir.SINK_ROLES and name not in self._made
-                 and (name not in rows or name in cells)]
+        named = [name for role, name in self.bind_spec if role in _ir.SINK_ROLES
+                 and name not in self._made | self._filled and (name not in rows or name in cells)]
         return tuple(dict.fromkeys([*named, *(cell for cell in cells if not self.declared.get("stages"))]))
 
     def _made_outputs(self, arrays: dict, n_samples: int, make: Maker) -> dict:
@@ -449,7 +455,9 @@ class LoadedKernel:
             if sidecar.get("index_planes"):
                 arrays = narrow_index(sidecar["index_planes"], arrays, sidecar.get("kernel", ""))
         arrays = self._with_cell_columns(arrays)
-        made = self._made | {*self.active_set, _ir.FUSED_STEPS_PLANE} if running else self._made   # a runner makes both
+        made = self._made | self._filled
+        if running:
+            made |= {*self.active_set, _ir.FUSED_STEPS_PLANE}   # a runner makes both
         spec = tuple(pair for pair in self.bind_spec if pair[1] in arrays or pair[1] not in made)
         _check_bind(sidecar, spec, arrays, n_samples, choice)
         planes, uniforms = {}, {}
@@ -944,27 +952,15 @@ def _declared_over(sidecars: list) -> dict:
     return merged
 
 
-def _door_made_names(sidecar: dict) -> set:
-    """The names of the slots the library makes and the caller need not bind: the finished
-    counter, a dispatch group's branch counters, the compensation companions, the scratch planes between the
-    stages, the compensation of a cell's rows and, in a split kernel, the cells themselves (the library keeps the
-    ones the caller does not read) and the extent of each runtime axis, which the runtime fills from the shape of the bound plane."""
-    names = {_ir.FINISHED_PLANE} | {name for role, name in sidecar["arg_spec"] if role == "extent"}
-    names |= {entry["mix"] for entry in sidecar.get("dispatch", ()) if entry.get("mix") is not None}
-    for entry in sidecar.get("dispatch", ()):
-        if entry["strategy"] == "segmented":
-            names |= {entry["class"], entry["stale"], entry["offsets"]}   # the group's sorted-sample planes
-    names |= set(sidecar.get("companions") or ()) | set(sidecar.get("team_planes") or ()) | set(sidecar.get("keyed") or ())
+def _cells_hawk_fills(sidecar: dict) -> set:
+    """The cell planes of a kernel in stages that hawk makes zeroed when the caller binds none.
+
+    This is hawk's rule, not the library's: the library keeps these planes bindable and makes none of them, so a caller who
+    reads a cell binds it and a caller who does not is not asked to."""
+    if not sidecar.get("stages"):
+        return set()
     cells = sidecar.get("cells") or {}
-    positions = any(spec["op"].startswith("arg") for spec in cells.values())
-    for cell, spec in cells.items():
-        planes = _ir.planes(cell, spec["columns"])
-        if sidecar.get("stages"):
-            names |= set(planes)
-        # a sum keeps a compensation; where a position is asked for, every minimum, maximum and position keeps the lanes that won
-        if spec["op"] in ("sum", "mean") or (positions and spec["op"] in ("min", "max", "argmin", "argmax")):
-            names |= {_cells.comp_name(plane) for plane in planes}
-    return names
+    return {plane for cell, spec in cells.items() for plane in _ir.planes(cell, spec["columns"])}
 
 
 def load(directory, kernel: str, sidecar: dict | None = None) -> LoadedKernel:

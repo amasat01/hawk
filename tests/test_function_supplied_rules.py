@@ -1,33 +1,22 @@
 # Copyright 2026 Alessandro Masat
 # SPDX-License-Identifier: Apache-2.0
 
-"""The tests of ``hawk.primitive``, restated on ``@hawk.function(jvp=, vjp=)`` with the decorator renamed (``name=`` for the
-registered name) and the values, bounds and kernels unchanged. Four rows could not be restated by the rename alone; each says
-why where it stands. The primitive's own tests stay until the primitive is deleted.
-
-An extension seam: a custom primitive with a SUPPLIED rule.
+"""A function with SUPPLIED derivative rules, ``@hawk.function(jvp=, vjp=)``.
 
 WHAT THIS ROW HAS TO PROVE, and why each half is here.
 
-A primitive is two claims at once, and they pull in opposite directions. The
-FORWARD claim is that nothing changed: the decorated function is inlined, so the
-kernel that calls it computes and emits exactly what the same arithmetic written
-longhand computes and emits — no call, no second entry point, no extra
-translation unit. The DERIVATIVE claim is that everything changed: the
-table's rule for that subgraph is not used, the author's is. A test that only
-checked the forward would pass with the rule ignored; a test that only checked
-the derivative against finite differences would pass with a CORRECT supplied
-rule that was never consulted, because the table's rule is correct too.
+A function with rules is two claims at once, and they pull in opposite directions. The FORWARD claim is that nothing changed:
+the kernel that calls it computes what the same arithmetic written longhand computes. The DERIVATIVE claim is that everything
+changed: the rule derived from the body is not used, the author's is. A test that only checked the forward would pass with the
+rule ignored; a test that only checked the derivative against finite differences would pass with a CORRECT supplied rule that
+was never consulted, because the derived rule is correct too.
 
-So the load-bearing row is neither: it is
-:func:`test_a_wrong_supplied_vjp_is_the_one_that_is_used`, which registers a
-primitive whose declared reverse rule is deliberately WRONG by a factor of three
-and requires the derived gradient to be wrong by exactly three. That is the
-positive control — an in-suite one, not a plant — and it is the only shape of
-evidence that separates "the supplied rule is used" from "some correct rule is
-used". The finite-difference rows beside it then say the machinery around it is
-sound, and the emitted-body row says the forward paid nothing for it.
+So the load-bearing row is neither: it is :func:`test_a_wrong_supplied_vjp_is_the_one_that_is_used`, which declares a function
+whose reverse rule is deliberately WRONG by a factor of three and requires the derived gradient to be wrong by exactly three.
+That is the positive control, an in-suite one, and the only shape of evidence that separates "the supplied rule is used" from
+"some correct rule is used". The finite-difference rows beside it then say the machinery around it is sound.
 
+A function given ONE rule derives the other direction from its body; the derived-direction rows pin that against closed forms.
 """
 
 from __future__ import annotations
@@ -52,8 +41,7 @@ H = 1e-5
 
 # --------------------------------------------------------------------------- #
 # The subject: softplus, whose derivative HAS a closed form the table would
-# otherwise reach through log/exp/div — the shape a real primitive is declared
-# for (a downstream spline B-spline basis is the same shape at a larger size).
+# otherwise reach through log/exp/div, the shape a supplied rule is written for.
 # --------------------------------------------------------------------------- #
 @hawk.function(
     name="hw7a_softplus",
@@ -61,7 +49,7 @@ H = 1e-5
     jvp=lambda x, dx: dx / (1.0 + exp(-x)),
 )
 def softplus(x):
-    """``log(1 + exp(x))`` — traced INLINE at every call site."""
+    """``log(1 + exp(x))``."""
     return log(1.0 + exp(x))
 
 
@@ -83,12 +71,12 @@ def wrongly_declared(x):
 
 @hawk.function(name="hw7a_reverse_only", vjp=lambda x, bar: bar)
 def reverse_only(x):
-    """A primitive with no forward-mode rule — the refusal row's subject."""
+    """A function with no forward-mode rule: the derived-direction row's subject."""
     return x + 0.0
 
 
 @hawk.kernel
-def primitive_kernel(x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
+def softplus_kernel(x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
     y = softplus(x) * 2.0
 
 
@@ -103,13 +91,13 @@ def wrong_kernel(x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
 
 
 # --------------------------------------------------------------------------- #
-# The forward is INLINED: same text, same numbers.
+# The forward is the function's body: same numbers as the longhand.
 # --------------------------------------------------------------------------- #
 def test_the_boundary_node_is_recorded_in_the_dag():
-    """RESTATED (no Primitive node exists in a function): the trace carries a Call of the function, with the declared inputs as
+    """The trace carries a Call of the function, with the declared inputs as
     operands, and the longhand kernel carries none."""
     found = [
-        n for n in _ir.canonical_nodes(primitive_kernel.sinks)[0] if _ir.is_a(n, "call")
+        n for n in _ir.canonical_nodes(softplus_kernel.sinks)[0] if _ir.is_a(n, "call")
     ]
     assert len(found) == 1, f"expected ONE call, got {found}"
     assert found[0].field_nodes("callee")[0].field_text("name") == "hw7a_softplus__f64"
@@ -123,7 +111,7 @@ def test_the_forward_runs_bit_identically_on_the_host_path(tmp_path, cache_dir):
     """Not `allclose`: the two bodies are the same text, so the two artifacts
     must give the same bits, and a tolerance here would hide a re-association."""
     x = RNG.uniform(-2.0, 2.0, size=N)
-    mine = _run(primitive_kernel, tmp_path / "prim", cache_dir, x=x)
+    mine = _run(softplus_kernel, tmp_path / "prim", cache_dir, x=x)
     theirs = _run(longhand_kernel, tmp_path / "long", cache_dir, x=x)
     np.testing.assert_array_equal(mine, theirs)
 
@@ -136,26 +124,21 @@ def test_a_wrong_supplied_vjp_is_the_one_that_is_used():
 
     ``wrongly_declared`` is the identity; the table's rule for that DAG
     gives ``bar`` and the declared rule gives ``3 * bar``. If the transform ever
-    differentiated THROUGH the primitive, this row would report ``bar`` and say
+    differentiated THROUGH the body, this row would report ``bar`` and say
     so — which is exactly the failure a correct-but-ignored rule hides."""
     env = {"x": 1.7, "bar_y": 0.9}
     got = evaluate(vjp(wrong_kernel), env)["bar_x"]
     assert float(got) == pytest.approx(3.0 * env["bar_y"], rel=1e-12), (
         "the SUPPLIED vjp must be the one applied: expected the "
         f"declared 3x rule ({3.0 * env['bar_y']}), got {got} — which is the "
-        "table's own derivative of the inlined forward"
+        "derivative derived from the body"
     )
 
 
 @pytest.mark.parametrize("x0", [-1.3, -0.2, 0.4, 2.6])
 def test_the_supplied_vjp_matches_finite_differences(x0):
-    """Needs the ``Primitive`` branch in ``hawk/diff/transform``'s reverse
-    loop, or the boundary reaches the closed-world table::
-
-        hawk.HawkError: no derivative rule for node kind 'primitive'
-        (rank 0): HAWK's rule table is closed-world ...
-    """
-    sinks = primitive_kernel.sinks
+    """The supplied reverse rule agrees with central differences of the forward."""
+    sinks = softplus_kernel.sinks
     env = {"x": x0, "bar_y": 0.7}
     got = float(evaluate(vjp(sinks), env)["bar_x"])
     h = H * max(1.0, abs(x0))
@@ -168,7 +151,7 @@ def test_the_supplied_vjp_matches_finite_differences(x0):
 
 @pytest.mark.parametrize("x0", [-1.3, -0.2, 0.4, 2.6])
 def test_the_supplied_jvp_matches_finite_differences(x0):
-    sinks = primitive_kernel.sinks
+    sinks = softplus_kernel.sinks
     got = float(evaluate(jvp(sinks), {"x": x0, "dot_x": 1.0})["dot_y"])
     h = H * max(1.0, abs(x0))
     plus = float(evaluate(sinks, {"x": x0 + h})["y"])
@@ -181,9 +164,9 @@ def test_the_derived_reverse_ir_deploys_and_runs(tmp_path, cache_dir):
     toolchain — walk, emitter, compiler — not merely the interpreter."""
     from types import SimpleNamespace
 
-    sinks = vjp(primitive_kernel)
+    sinks = vjp(softplus_kernel)
     derived = SimpleNamespace(
-        name="primitive_kernel_vjp",
+        name="softplus_kernel_vjp",
         sinks=sinks,
         walk=_ir.canonical(sinks),
         gradients=sinks.gradients,
@@ -203,8 +186,8 @@ def test_the_derived_reverse_ir_deploys_and_runs(tmp_path, cache_dir):
 # The two refusals.
 # --------------------------------------------------------------------------- #
 def test_a_missing_direction_is_derived_from_the_forward_and_agrees_with_it():
-    """RESTATED (a traced function derives the direction it was given no rule for, where a primitive refused it): the forward
-    direction of ``reverse_only`` is the table's derivative of its body, and the supplied reverse direction still works."""
+    """A traced function derives the direction it was given no rule for: the forward direction of ``reverse_only`` is the derivative
+    of its body (the closed form is 1), and the supplied reverse direction still works."""
 
     @hawk.kernel
     def uses_reverse_only(x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
@@ -215,9 +198,31 @@ def test_a_missing_direction_is_derived_from_the_forward_and_agrees_with_it():
     assert float(got) == pytest.approx(1.0, rel=1e-12)
 
 
+@pytest.mark.parametrize("x0", [-1.3, 0.4, 2.6])
+def test_a_forward_direction_derived_from_a_lone_reverse_rule_matches_the_closed_form(
+    x0,
+):
+    """``lone_softplus`` supplies only a reverse rule; its forward direction is derived from the body and equals the closed
+    form ``1 / (1 + exp(-x))`` of the NumPy reference, as does its supplied reverse direction."""
+
+    @hawk.function(name="hw7a_lone_reverse", vjp=lambda x, bar: bar / (1.0 + exp(-x)))
+    def lone_softplus(x):
+        return log(1.0 + exp(x))
+
+    @hawk.kernel
+    def uses_lone(x: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
+        y = lone_softplus(x)
+
+    expected = 1.0 / (1.0 + np.exp(-x0))
+    forward = float(evaluate(jvp(uses_lone.sinks), {"x": x0, "dot_x": 1.0})["dot_y"])
+    reverse = float(evaluate(vjp(uses_lone.sinks), {"x": x0, "bar_y": 1.0})["bar_x"])
+    assert forward == pytest.approx(expected, rel=1e-12)
+    assert reverse == pytest.approx(expected, rel=1e-12)
+
+
 def test_two_functions_under_one_name_are_refused_by_the_function_table():
-    """RESTATED (there is no registry; the function table holds one function per name, and the digest covers the body, so two
-    kernels never share a hash): a second body under a taken name is refused when a kernel holds both."""
+    """The function table holds one function per name and the digest covers the body, so two kernels never share a hash: a second
+    body under a taken name is refused when a kernel holds both."""
 
     @hawk.function(name="hw7a_collision_subject")
     def first(x):
@@ -245,7 +250,7 @@ def test_a_rule_of_the_wrong_arity_or_type_is_refused():
 
     with pytest.raises(
         HawkError, match="returned 1 gradient"
-    ):  # RESTATED: the rule is traced when a kernel first calls it
+    ):  # the rule is traced when a kernel first calls it
 
         @hawk.kernel
         def uses_two(a: hawk.Scalar, b: hawk.Scalar, y: hawk.Mutable[hawk.Scalar]):
@@ -257,7 +262,7 @@ def test_a_rule_of_the_wrong_arity_or_type_is_refused():
 
     with pytest.raises(
         HawkError, match="declared to return"
-    ):  # RESTATED: the type owed is the function's result
+    ):  # the type owed is the function's result
 
         @hawk.kernel
         def uses_rank(v: hawk.Vector[3], y: hawk.Mutable[hawk.Vector[3]]):
