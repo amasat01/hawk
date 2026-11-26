@@ -519,7 +519,6 @@ fn kernel_units(
     docs: &CardSet,
     exports_block: bool,
 ) -> Result<Vec<UnitAnswer>, Refusal> {
-    group::refuse_unwritten(ctx, request)?;
     let mut pending = match &request.body {
         Body::Plain(member) => vec![Pending::of(member, request.one_step.as_ref())],
         Body::Chain(members) => {

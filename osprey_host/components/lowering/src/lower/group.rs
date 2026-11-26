@@ -1,11 +1,9 @@
-//! The group of a unit: the record the unit description states for a walk whose root is a `Group`, and the refusal that keeps a group
-//! body from being asked for as text until a writer can emit it. The record is filled from the IR's own facts of the group
+//! The group of a unit: the record the unit description states for a walk whose root is a `Group`. The record is filled from the IR's own facts of the group
 //! (membership, scratch declarations, phase count); the phases and the scratch are never worked out again here.
 use super::meta_fill::Parts;
 use super::real_bytes;
-use super::request::{Body, KernelRequest};
 use super::unit_meta as m;
-use aether_writers::contract::types::{Role, Target};
+use aether_writers::contract::types::Role;
 use aether_writers::refuse::{bad, fault, not_written, Refusal};
 use aether_writers::unit::group::hoisted_planes;
 use raptor_ir::record::Ctx;
@@ -17,32 +15,6 @@ pub(super) fn group_of(ctx: &Ctx, sinks: &[u32]) -> Option<u32> {
         .iter()
         .copied()
         .find(|&sink| ctx.table.is_a(ctx.nodes[sink as usize].class, "Group"))
-}
-
-/// Refuses a request for the device whose body holds a group: the device text of a group is not written yet, so no unit of it is
-/// lowered. The host text is written by the writers, which refuse by name the forms of a group they do not write.
-pub(super) fn refuse_unwritten(ctx: *mut Ctx, request: &KernelRequest) -> Result<(), Refusal> {
-    if !request.targets.contains(&Target::Device) {
-        return Ok(());
-    }
-    // SAFETY: `ctx` is the live context the caller holds; it is only read here.
-    let context = unsafe { &*ctx };
-    let members = match &request.body {
-        Body::Plain(member) => vec![member],
-        Body::Chain(members) | Body::Fused(members) => members.iter().collect(),
-    };
-    let holds = request
-        .one_step
-        .iter()
-        .chain(members)
-        .any(|member| group_of(context, &member.sinks).is_some());
-    if holds {
-        return Err(not_written(format!(
-            "{:?}: a group body is not written for this backend yet",
-            request.name
-        )));
-    }
-    Ok(())
 }
 
 /// A fact of the group node, or the fault that the IR does not state it.
@@ -302,11 +274,11 @@ fn distinct_slots(parts: &Parts, group: u32) -> Result<Vec<usize>, Refusal> {
 
 #[cfg(test)]
 mod tests {
-    //! The record of the three reference kernels, whose documents the IR stores, and of a key group; the refusal that keeps a group body
-    //! from being asked for as text, on each backend.
+    //! The record of the three reference kernels, whose documents the IR stores, and of a key group; the text of a group on each backend.
     //!
     //! Oracle for the values: the comments of the reference constructors (`raptor_support::groups`): `tile` and `ring` are groups of 8
     //! lanes over one scratch `t` of 8 doubles, two phases each; `rows` spans the axis `col` of 4 lanes, has no scratch and two phases.
+    use super::super::request::{Body, KernelRequest};
     use super::super::{canonical, lower, typed_walk, Cards, Pending};
     use super::*;
     use crate::facts::CardSet;
@@ -558,7 +530,7 @@ mod tests {
 
     #[test]
     fn asking_for_the_text_of_a_group_is_refused_by_name_where_it_is_not_written() {
-        // `tile` holds a group reduce: the host writers refuse it by name, the device refuses every group body
+        // `tile` holds a group reduce: each backend's writer refuses it by name
         for (target, stem) in [
             (
                 Target::Host,
@@ -566,7 +538,7 @@ mod tests {
             ),
             (
                 Target::Device,
-                "\"tile\": a group body is not written for this backend yet",
+                "\"tile\": a group reduce is not written on the device yet",
             ),
         ] {
             let (ctx, group) = loaded(TILE);
@@ -588,6 +560,27 @@ mod tests {
             );
             assert_eq!(why.reason, stem, "{target:?}");
         }
+    }
+
+    #[test]
+    fn the_device_text_of_a_group_is_a_block_per_group_with_strided_phases() {
+        let (ctx, group) = loaded(RING);
+        let request = request_for("ring", group, &[], Target::Device);
+        let answer = lower(&TestDevice, ctx, &request.to_json(), &shipped());
+        // SAFETY: `ctx` is the live context made above and is not used after.
+        unsafe { rx_ctx_free(ctx) };
+        let answer = answer.expect("the device text of ring");
+        let text = &answer.units[0].texts[0].text;
+        assert!(
+            text.contains("extern __shared__ __align__(8) char hawk_scratch[];"),
+            "{text}"
+        );
+        assert!(
+            text.contains("hawk_g = base + static_cast<std::int64_t>(blockIdx.x)"),
+            "{text}"
+        );
+        assert!(text.contains("hawk_rank += blockDim.x"), "{text}");
+        assert!(text.contains("__syncthreads();"), "{text}");
     }
 
     #[test]
