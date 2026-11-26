@@ -889,8 +889,22 @@ def test_two_run_time_lane_axes_cannot_be_authored_so_a_group_over_them_is_not_a
         Grid["row", "col"]
 
 
-def test_a_group_for_the_device_is_refused_by_name():
-    with pytest.raises(
-        HawkError, match=r"a group body is not written for this backend yet"
-    ):
-        emit_source(_ring("wrap"), targets=("cuda",))
+def test_a_group_reduce_and_a_group_by_key_are_refused_by_name_on_the_device():
+    """The device writes a group of lanes (``test_group_device``); what it does not write yet it refuses as the host does."""
+
+    @hawk.kernel
+    def summed(x: Scalar, y: Mutable[Scalar]):
+        with hawk.group(lanes=8) as g:
+            y = g.sum(x)
+
+    @hawk.kernel
+    def keyed(cell: Index, x: Scalar, y: Mutable[Scalar]):
+        with hawk.group(key=cell, max_size=16) as g:
+            t = g.scratch("t", Scalar)
+            t[g.rank] = x
+            g.barrier()
+            y = t[g.rank]
+
+    for kernel, what in ((summed, "a group reduce"), (keyed, "a group by key")):
+        with pytest.raises(HawkError, match=rf"{what} is not written on the device yet"):
+            emit_source(kernel, targets=("cuda",))
