@@ -343,8 +343,8 @@ pub fn forget_probes() {
 
 /// The standard output of `<path> <args>`, or why it did not run: the operating system's error when it could not be started,
 /// else the exit code and the tool's own complaint. A success is memoised per executable for this process and, when `root` is
-/// given, kept in the store under it, keyed on the executable's path, size and modification time, the arguments and the release
-/// of the operating system, so a fresh process and a second process do not ask the tool again, and neither a replaced executable
+/// given, kept in the store under it, keyed on the executable's path, size and modification time, the arguments, the release
+/// of the operating system and the values of [`ANSWER_VARIABLES`], so a fresh process and a second process do not ask the tool again, and neither a replaced executable
 /// nor an updated system reads the old answer. Where the system's release cannot be asked, the answer is not kept.
 fn probe(path: &Path, args: &[String], env: &Env, root: Option<&Path>) -> Result<String, String> {
     let unreadable = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
@@ -376,7 +376,7 @@ fn probe(path: &Path, args: &[String], env: &Env, root: Option<&Path>) -> Result
         Err(format!("{code}: {}", done.stderr.trim()))
     };
     let answer = match (root, system_release()) {
-        (Some(root), Some(release)) => kept(root, release, &key, ask)?,
+        (Some(root), Some(release)) => kept(root, release, env, &key, ask)?,
         _ => ask()?,
     };
     if let Ok(mut memo) = PROBES.lock() {
@@ -403,12 +403,23 @@ fn system_release() -> Option<&'static str> {
         .as_deref()
 }
 
-/// The answer of `ask` for the probe `key` on the system of `release`, kept as a slot of the store under `root/probes`: built
+/// The variables whose value changes what a compiler states, and so belong to the key of a kept probe answer. Every other variable
+/// is left out on purpose: the key states what the answer depends on, not the whole environment.
+///
+/// | variable | what it changes |
+/// |---|---|
+/// | `DEVELOPER_DIR` | the toolchain the system's compiler stub runs, so its version text |
+/// | `SDKROOT` | the platform SDK the compiler reads; its predefined macros, or a refusal when the SDK is missing |
+/// | `MACOSX_DEPLOYMENT_TARGET` | the `__ENVIRONMENT_*_VERSION_MIN_REQUIRED__` predefined macros of the macro dump |
+const ANSWER_VARIABLES: [&str; 3] = ["DEVELOPER_DIR", "SDKROOT", "MACOSX_DEPLOYMENT_TARGET"];
+
+/// The answer of `ask` for the probe `key` on the system of `release` under the values `env` gives [`ANSWER_VARIABLES`], kept as a slot of the store under `root/probes`: built
 /// once however many processes ask, published whole. A failed probe leaves no slot. A store that cannot be used (a read-only
 /// root) costs only the keeping.
 fn kept(
     root: &Path,
     release: &str,
+    env: &Env,
     key: &(PathBuf, u64, u128, Vec<String>),
     ask: impl Fn() -> Result<String, String>,
 ) -> Result<String, String> {
@@ -419,6 +430,15 @@ fn kept(
         mtime.to_string(),
         release.to_string(),
     ];
+    // A set variable and an unset one are different terms, so an empty value is not read as absent.
+    terms.extend(
+        ANSWER_VARIABLES
+            .iter()
+            .map(|name| match env.vars().get(*name) {
+                Some(value) => format!("{name}={value}"),
+                None => format!("-{name}"),
+            }),
+    );
     terms.extend_from_slice(args);
     let slot = sha256::hex(terms.join("\0").as_bytes());
     let failed = std::cell::RefCell::new(None);
@@ -607,6 +627,7 @@ mod tests {
     fn a_kept_probe_answer_is_not_read_on_another_release_of_the_system() {
         let root = std::env::temp_dir().join(format!("toolkit_release_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
+        let env = Env::from_pairs(&[]);
         let key = (PathBuf::from("/tool"), 1, 2, vec!["--version".to_string()]);
         let asked = std::cell::Cell::new(0);
         let ask = |text: &'static str| {
@@ -614,19 +635,63 @@ mod tests {
             Ok(text.to_string())
         };
         assert_eq!(
-            kept(&root, "release a", &key, || ask("on a")).unwrap(),
+            kept(&root, "release a", &env, &key, || ask("on a")).unwrap(),
             "on a"
         );
         assert_eq!(
-            kept(&root, "release a", &key, || ask("unasked")).unwrap(),
+            kept(&root, "release a", &env, &key, || ask("unasked")).unwrap(),
             "on a"
         );
         assert_eq!(asked.get(), 1);
         assert_eq!(
-            kept(&root, "release b", &key, || ask("on b")).unwrap(),
+            kept(&root, "release b", &env, &key, || ask("on b")).unwrap(),
             "on b"
         );
         assert_eq!(asked.get(), 2);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Oracle: the count of questions the asker was put; a kept answer is read without asking.
+    #[test]
+    fn a_kept_probe_answer_is_not_read_under_another_value_of_a_variable_that_changes_it() {
+        let root = std::env::temp_dir().join(format!("toolkit_variable_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let key = (PathBuf::from("/tool"), 1, 2, vec!["-dM".to_string()]);
+        let asked = std::cell::Cell::new(0);
+        let ask = |text: &'static str| {
+            asked.set(asked.get() + 1);
+            Ok(text.to_string())
+        };
+        let kept_under = |pairs: &[(&str, &str)], text: &'static str| {
+            kept(&root, "release", &Env::from_pairs(pairs), &key, || {
+                ask(text)
+            })
+            .unwrap()
+        };
+        assert_eq!(
+            kept_under(&[("MACOSX_DEPLOYMENT_TARGET", "12.0")], "on 12"),
+            "on 12"
+        );
+        assert_eq!(
+            kept_under(&[("MACOSX_DEPLOYMENT_TARGET", "12.0")], "unasked"),
+            "on 12"
+        );
+        assert_eq!(asked.get(), 1);
+        assert_eq!(
+            kept_under(&[("MACOSX_DEPLOYMENT_TARGET", "13.0")], "on 13"),
+            "on 13"
+        );
+        assert_eq!(kept_under(&[("SDKROOT", "/sdk")], "sdk"), "sdk");
+        assert_eq!(kept_under(&[("DEVELOPER_DIR", "/dev")], "dev"), "dev");
+        assert_eq!(
+            kept_under(&[("MACOSX_DEPLOYMENT_TARGET", "")], "empty"),
+            "empty"
+        );
+        assert_eq!(kept_under(&[], "none"), "none");
+        assert_eq!(asked.get(), 6);
+        // a variable no compiler answer depends on does not split the kept answer
+        assert_eq!(kept_under(&[("HOME", "/h")], "unasked"), "none");
+        assert_eq!(asked.get(), 6);
         std::fs::remove_dir_all(&root).unwrap();
     }
 

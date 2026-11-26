@@ -86,7 +86,7 @@ Every file with its line count (this file excluded):
       2  osprey_host/components/toolkit/rustfmt.toml
     252  osprey_host/components/toolkit/src/argv_tests.rs
     516  osprey_host/components/toolkit/src/compile.rs
-    657  osprey_host/components/toolkit/src/discover.rs
+    722  osprey_host/components/toolkit/src/discover.rs
     100  osprey_host/components/toolkit/src/dl.rs
      90  osprey_host/components/toolkit/src/embed.rs
     149  osprey_host/components/toolkit/src/headers.rs
