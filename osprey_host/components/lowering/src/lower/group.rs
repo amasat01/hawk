@@ -1,10 +1,13 @@
 //! The group of a unit: the record the unit description states for a walk whose root is a `Group`. The record is filled from the IR's own facts of the group
 //! (membership, scratch declarations, phase count); the phases and the scratch are never worked out again here.
+use super::card::BuildNumbers;
 use super::meta_fill::Parts;
 use super::real_bytes;
+use super::request::DeclaredSlot;
 use super::unit_meta as m;
-use aether_writers::contract::types::Role;
+use aether_writers::contract::types::{Dtype, Role, Scalar};
 use aether_writers::refuse::{bad, fault, not_written, Refusal};
+use aether_writers::spell::group::scratch_slot;
 use aether_writers::unit::group::hoisted_planes;
 use raptor_ir::record::Ctx;
 use raptor_ir::value::{text_val, Val};
@@ -76,9 +79,9 @@ fn axis_pairs(value: &Val, what: &str) -> Result<Vec<(String, Option<i64>)>, Ref
 }
 
 /// The wire type of a scratch scalar and its width in bytes: a float is the unit's real, a whole number keeps its own width.
-fn scalar_of(dtype: &str, parts: &Parts, name: &str) -> Result<(m::WireDtype, i64), Refusal> {
+fn scalar_of(dtype: &str, scalar: Scalar, name: &str) -> Result<(m::WireDtype, i64), Refusal> {
     match dtype {
-        "f64" | "f32" => Ok((m::WireDtype::Real, real_bytes(parts.request.scalar))),
+        "f64" | "f32" => Ok((m::WireDtype::Real, real_bytes(scalar))),
         "i64" => Ok((m::WireDtype::Int64, 8)),
         "i32" => Ok((m::WireDtype::Int32, 4)),
         "bool" => Ok((m::WireDtype::Bool, 1)),
@@ -90,7 +93,7 @@ fn scalar_of(dtype: &str, parts: &Parts, name: &str) -> Result<(m::WireDtype, i6
 
 /// The scratch planes the group declares, from the IR's declarations: each plane's elements per group are the extent of its one
 /// axis `rank` times the scalars of one value.
-fn scratch_planes(ctx: &Ctx, group: u32, parts: &Parts) -> Result<Vec<m::GroupScratch>, Refusal> {
+fn scratch_planes(ctx: &Ctx, group: u32, scalar: Scalar) -> Result<Vec<m::GroupScratch>, Refusal> {
     let Val::Tuple(declared) = fact(ctx, group, "scratch_decls")? else {
         return Err(fault("the scratch declarations of a group are not a tuple"));
     };
@@ -114,7 +117,7 @@ fn scratch_planes(ctx: &Ctx, group: u32, parts: &Parts) -> Result<Vec<m::GroupSc
                 .iter()
                 .map(|d| whole(d, "a scratch extent"))
                 .collect::<Result<_, _>>()?;
-            let (wire, width) = scalar_of(dtype, parts, name)?;
+            let (wire, width) = scalar_of(dtype, scalar, name)?;
             let elements = rank * shape.iter().product::<i64>();
             Ok(m::GroupScratch {
                 dtype: wire,
@@ -122,6 +125,8 @@ fn scratch_planes(ctx: &Ctx, group: u32, parts: &Parts) -> Result<Vec<m::GroupSc
                 elements,
                 bytes: elements * width,
                 name: name.clone(),
+                realisation: m::ScratchRealisation::Local,
+                slot: None,
             })
         })
         .collect()
@@ -229,7 +234,32 @@ pub(super) fn record(parts: &Parts) -> Result<Option<m::Group>, Refusal> {
         }
         other => return Err(fault(format!("a group of membership {other}"))),
     };
-    let scratch = scratch_planes(ctx, group, parts)?;
+    let mut scratch = scratch_planes(ctx, group, parts.request.scalar)?;
+    for plane in &mut scratch {
+        if !in_plane(parts.card, plane.bytes) {
+            continue;
+        }
+        plane.realisation = m::ScratchRealisation::Plane;
+        plane.slot = Some(
+            parts
+                .typed
+                .slots
+                .iter()
+                .position(|slot| slot.name == scratch_slot(&plane.name))
+                .ok_or_else(|| {
+                    fault(format!(
+                        "the scratch plane '{}' is held by the runtime but its slot is not in the walk",
+                        plane.name
+                    ))
+                })?,
+        );
+        if bound.is_none_or(|lanes| plane.elements != lanes * plane.shape.iter().product::<i64>()) {
+            return Err(not_written(format!(
+                "{:?}: the scratch '{}' is held by the runtime but its extent is not the group's size",
+                parts.pending.member.name, plane.name
+            )));
+        }
+    }
     let distinct_slots = distinct_slots(parts, group)?;
     Ok(Some(m::Group {
         membership,
@@ -245,6 +275,68 @@ pub(super) fn record(parts: &Parts) -> Result<Option<m::Group>, Refusal> {
         scratch,
         distinct_slots,
     }))
+}
+
+/// Whether a scratch plane of `bytes` per group is held by the runtime: it is when the card states a limit and the plane is larger.
+fn in_plane(card: &BuildNumbers, bytes: i64) -> bool {
+    card.group_scratch_plane_bytes
+        .is_some_and(|limit| bytes > limit)
+}
+
+/// The scratch planes of the group among `sinks` that the runtime holds, from the IR's declarations and the card's limit.
+fn planed(
+    ctx: &Ctx,
+    sinks: &[u32],
+    scalar: Scalar,
+    card: &BuildNumbers,
+) -> Result<Vec<m::GroupScratch>, Refusal> {
+    let Some(group) = group_of(ctx, sinks) else {
+        return Ok(vec![]);
+    };
+    let mut planes = scratch_planes(ctx, group, scalar)?;
+    planes.retain(|plane| in_plane(card, plane.bytes));
+    Ok(planes)
+}
+
+/// The names of the scratch planes of the group among `sinks` that the runtime holds: the writer reads them through slots.
+pub(super) fn planed_names(
+    ctx: &Ctx,
+    sinks: &[u32],
+    scalar: Scalar,
+    card: &BuildNumbers,
+) -> Result<Vec<String>, Refusal> {
+    Ok(planed(ctx, sinks, scalar, card)?
+        .into_iter()
+        .map(|plane| plane.name)
+        .collect())
+}
+
+/// The slots the runtime makes for the scratch planes it holds, as lookup planes of each plane's element type, to join the
+/// member's declared slots.
+pub(super) fn plane_slots(
+    ctx: &Ctx,
+    sinks: &[u32],
+    scalar: Scalar,
+    card: &BuildNumbers,
+) -> Result<Vec<DeclaredSlot>, Refusal> {
+    planed(ctx, sinks, scalar, card)?
+        .into_iter()
+        .map(|plane| {
+            let dtype = match plane.dtype {
+                m::WireDtype::Real if scalar == Scalar::Float32 => Dtype::F32,
+                m::WireDtype::Real => Dtype::F64,
+                m::WireDtype::Int64 => Dtype::I64,
+                m::WireDtype::Int32 => Dtype::Int32,
+                m::WireDtype::Bool => Dtype::Bool,
+                other => {
+                    return Err(fault(format!(
+                        "a scratch plane of wire type {other:?} cannot be held by the runtime"
+                    )))
+                }
+            };
+            Ok(DeclaredSlot::lookup(&scratch_slot(&plane.name), dtype))
+        })
+        .collect()
 }
 
 /// The slots of the planes the host text reaches through restrict pointers, from the writers' own decision
@@ -282,6 +374,7 @@ mod tests {
     use super::super::{canonical, lower, typed_walk, Cards, Pending};
     use super::*;
     use crate::facts::CardSet;
+    use crate::lower::card::TargetCards;
     use crate::lower::request::{LaneAxis, Member};
     use crate::testing::{load_cards, shipped, TestDevice, TestHost, ALL_CARDS};
     use aether_writers::contract::types::{Scalar, Target};
@@ -432,6 +525,7 @@ mod tests {
             elements: 8,
             bytes,
             name: "t".into(),
+            ..m::GroupScratch::default()
         }
     }
 
@@ -449,6 +543,52 @@ mod tests {
             ..m::Group::default()
         };
         assert_eq!(record_of(TILE, "tile", &[], Scalar::Float64), want);
+    }
+
+    /// The numbers of the host card with the plane limit set to `limit`.
+    fn card_with_limit(limit: Option<i64>) -> BuildNumbers {
+        BuildNumbers {
+            group_scratch_plane_bytes: limit,
+            ..crate::testing::FixtureCards::host().deciding().clone()
+        }
+    }
+
+    /// The names of the scratch planes `tile` holds in the runtime under `card`, and the slots made for them.
+    fn planed_of(card: &BuildNumbers) -> (Vec<String>, Vec<DeclaredSlot>) {
+        let (ctx, group) = loaded(TILE);
+        // SAFETY: `ctx` is the live context made above; it is only read here.
+        let context = unsafe { &*ctx };
+        let sinks = [group];
+        let names = planed_names(context, &sinks, Scalar::Float64, card).unwrap();
+        let slots = plane_slots(context, &sinks, Scalar::Float64, card).unwrap();
+        // SAFETY: `ctx` is the live context made above and is not used after.
+        unsafe { rx_ctx_free(ctx) };
+        (names, slots)
+    }
+
+    /// Oracle: the reference's own numbers: `tile` holds 8 doubles, 64 bytes, per group; a plane is held by the runtime only when it
+    /// is LARGER than the card's limit, so 64 bytes is local at a limit of 64 and in the runtime at 63.
+    #[test]
+    fn a_scratch_is_held_by_the_runtime_only_above_the_cards_limit() {
+        assert_eq!(
+            planed_of(&card_with_limit(Some(64))).0,
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            planed_of(&card_with_limit(Some(63))).0,
+            vec!["t".to_string()]
+        );
+        assert_eq!(planed_of(&card_with_limit(None)).0, Vec::<String>::new());
+    }
+
+    /// Oracle: the slot is a scalar lookup plane of the scratch's element type (doubles), named by the writers' own naming.
+    #[test]
+    fn a_planed_scratch_is_made_as_a_lookup_slot_of_its_element_type() {
+        let slots = planed_of(&card_with_limit(Some(8))).1;
+        assert_eq!(
+            slots,
+            vec![DeclaredSlot::lookup("group_scratch_t", Dtype::F64)]
+        );
     }
 
     #[test]
@@ -529,37 +669,31 @@ mod tests {
     }
 
     #[test]
-    fn asking_for_the_text_of_a_group_is_refused_by_name_where_it_is_not_written() {
-        // `tile` holds a group reduce: each backend's writer refuses it by name
-        for (target, stem) in [
-            (
-                Target::Host,
-                "\"tile\": a group reduce is not written on the host yet",
-            ),
-            (
-                Target::Device,
-                "\"tile\": a group reduce is not written on the device yet",
-            ),
-        ] {
-            let (ctx, group) = loaded(TILE);
-            let request = request_for("tile", group, &[], target);
-            let json = request.to_json();
-            let why = match target {
-                Target::Host => lower(&TestHost, ctx, &json, &shipped()),
-                Target::Device => lower(&TestDevice, ctx, &json, &shipped()),
-            }
+    fn a_group_reduce_is_written_on_the_host_and_refused_by_name_on_the_device() {
+        // `tile` holds a group reduce: the host writes it as a work array reduced after the loop that stores the operands,
+        // the device writer refuses it by name
+        let (ctx, group) = loaded(TILE);
+        let request = request_for("tile", group, &[], Target::Host);
+        let answer = lower(&TestHost, ctx, &request.to_json(), &shipped());
+        // SAFETY: `ctx` is the live context made above and is not used after.
+        unsafe { rx_ctx_free(ctx) };
+        let answer = answer.expect("the host text of tile");
+        let text = &answer.units[0].texts[0].text;
+        assert!(text.contains("hawk_work_"), "{text}");
+        assert!(text.contains("const Real hawk_total_"), "{text}");
+
+        let (ctx, group) = loaded(TILE);
+        let request = request_for("tile", group, &[], Target::Device);
+        let why = lower(&TestDevice, ctx, &request.to_json(), &shipped())
             .map(|_| ())
             .expect_err("a refusal");
-            // SAFETY: `ctx` is the live context made above and is not used after.
-            unsafe { rx_ctx_free(ctx) };
-            assert_eq!(
-                why.kind,
-                RefusalKind::NotWritten,
-                "{target:?}: {}",
-                why.reason
-            );
-            assert_eq!(why.reason, stem, "{target:?}");
-        }
+        // SAFETY: `ctx` is the live context made above and is not used after.
+        unsafe { rx_ctx_free(ctx) };
+        assert_eq!(why.kind, RefusalKind::NotWritten, "{}", why.reason);
+        assert_eq!(
+            why.reason,
+            "\"tile\": a group reduce is not written on the device yet"
+        );
     }
 
     #[test]
@@ -614,21 +748,18 @@ mod tests {
     }
 
     #[test]
-    fn the_per_lane_outputs_of_a_group_lower_up_to_the_group_reduce_they_read() {
-        // both documents commit an ordinary output (an `Assign`) of a value that holds a group reduce, which the host does not
-        // write yet: the refusal names the reduce, not the output
+    fn the_per_lane_outputs_of_a_group_lower_with_the_group_reduce_they_read_on_the_host() {
+        // both documents commit an ordinary output (an `Assign`) of a value that holds a group reduce, which the host reads as the
+        // reduce's one value
         for (name, dump) in [("lane_out", LANE_OUT), ("lane_vector_out", LANE_VECTOR_OUT)] {
             let (ctx, group) = loaded(dump);
             let request = request_for(name, group, &[], Target::Host);
-            let why = lower(&TestHost, ctx, &request.to_json(), &shipped())
-                .map(|_| ())
-                .expect_err("a refusal");
+            let answer = lower(&TestHost, ctx, &request.to_json(), &shipped());
             // SAFETY: `ctx` is the live context made above and is not used after.
             unsafe { rx_ctx_free(ctx) };
-            assert_eq!(
-                why.reason,
-                format!("\"{name}\": a group reduce is not written on the host yet")
-            );
+            let answer = answer.unwrap_or_else(|why| panic!("{name}: {}", why.reason));
+            let text = &answer.units[0].texts[0].text;
+            assert!(text.contains("hawk_total_"), "{name}: {text}");
         }
     }
 }

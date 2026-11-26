@@ -110,6 +110,20 @@ pub fn host_build_of(docs: &CardSet) -> Result<BuildNumbers, Refusal> {
     host_build(&docs.text(file).map_err(fault)?).map_err(|why| defect(docs, file, why))
 }
 
+/// The bytes above which a group's scratch plane is held by the runtime. The groups of a launch run on the threads of the host
+/// pool, which are plain threads whose stack is the platform's default for a secondary thread: 512 KiB on macOS, the smallest of
+/// the hosts we run on (8 MiB on Linux). A plane of an eighth of that, 64 KiB, leaves the rest of the smallest stack to the
+/// unit's other arrays and the frames above it; a larger plane overruns a worker's stack and ends the process.
+fn group_scratch_plane_bytes(top: &mut Keys) -> Result<i64, Refusal> {
+    let bytes = number(top, "group_scratch_plane_bytes")?;
+    match bytes > 0 {
+        true => Ok(bytes),
+        false => Err(fault(format!(
+            "facts: group_scratch_plane_bytes {bytes} must be positive"
+        ))),
+    }
+}
+
 /// Reads the text of the host build card (`build.json`); every defect is a fault, which `host_build_of` turns into the caller's
 /// refusal when the text is the caller's.
 pub fn host_build(text: &str) -> Result<BuildNumbers, Refusal> {
@@ -143,6 +157,7 @@ pub fn host_build(text: &str) -> Result<BuildNumbers, Refusal> {
         copy_threads: number(&mut lanes, "copy_threads")?,
         team_threads,
         team_threads_large,
+        group_scratch_plane_bytes: Some(group_scratch_plane_bytes(&mut top)?),
         box_lanes: box_lanes(&section(&mut top, "thread_box")?, "build.json")?,
         steps_reverse: Some(steps_reverse(top.req("steps_reverse")?, "build.json")?),
         device_steps_reverse: None,

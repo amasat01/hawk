@@ -267,6 +267,13 @@ closed! {
     }
 }
 closed! {
+    /// Where a group's scratch plane lives.
+    pub enum ScratchRealisation {
+        /** An array of the unit's own text, on the stack of the thread that runs the group. */ Local = 0 => "EG_SCRATCH_LOCAL",
+        /** A plane the runtime makes at the plan's creation, read through a slot. */ Plane = 1 => "EG_SCRATCH_PLANE",
+    }
+}
+closed! {
     /// The shape of a plane the runtime makes.
     pub enum PlaneLayout {
         /** `(per_lane * units,)`. */ Flat = 0 => "EG_LAYOUT_FLAT",
@@ -725,6 +732,10 @@ record! {
         pub bytes: i64,
         /// The declared name.
         pub name: String,
+        /// Where the plane lives.
+        pub realisation: ScratchRealisation,
+        /// The slot the runtime makes for a plane it holds, else none.
+        pub slot: Option<usize>,
     }
 }
 record! {

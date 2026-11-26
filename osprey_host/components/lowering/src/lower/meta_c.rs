@@ -675,7 +675,7 @@ fn group(out: &mut Out, group: Option<&Group>) -> String {
             let members = [
                 ("dtype", p.dtype.c_name().into()),
                 ("rank", p.shape.len().to_string()),
-                ("reserved0", "0".into()),
+                ("realisation", p.realisation.c_name().into()),
                 (
                     "shape",
                     out.numbers("int64_t", &format!("gs{at}_shape"), &p.shape),
@@ -683,6 +683,8 @@ fn group(out: &mut Out, group: Option<&Group>) -> String {
                 ("elements", p.elements.to_string()),
                 ("bytes", p.bytes.to_string()),
                 ("name", lit(&p.name)),
+                ("slot", index(p.slot)),
+                ("reserved1", "0".into()),
             ];
             out.record("eg_unit_group_scratch", &format!("gs{at}"), &members)
         })

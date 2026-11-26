@@ -289,6 +289,8 @@ fn shared_numbers() -> BuildNumbers {
         copy_threads: 256,
         team_threads: 128,
         team_threads_large: 256,
+        // a target that writes a group states the limit of its own; the shared numbers state none
+        group_scratch_plane_bytes: None,
         box_lanes: vec![("float64".into(), 16), ("float32".into(), 8)],
         steps_reverse: None,
         device_steps_reverse: None,
@@ -344,6 +346,7 @@ impl FixtureCards {
             hi: vec![1024.0, 64.0, 65536.0],
         };
         deciding.steps_reverse = Some(steps.clone());
+        deciding.group_scratch_plane_bytes = Some(65536);
         FixtureCards {
             build: shared_build(&deciding, false),
             deciding,

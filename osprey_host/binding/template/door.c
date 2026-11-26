@@ -31,6 +31,7 @@
     X(eg_host_threads)                                                                             \
     X(eg_unit_load)                                                                                \
     X(eg_unit_free)                                                                                \
+    X(eg_unit_made_slots)                                                                          \
     X(eg_plane_wrap)                                                                               \
     X(eg_plane_free)                                                                               \
     X(eg_plan_new)                                                                                 \
@@ -637,6 +638,32 @@ static PyObject* m_unit_load(PyObject* self, PyObject* args, PyObject* kw)
         res = handle_make(d, KIND_UNIT, unit);
     PyMem_Free(deps);
     return res;
+}
+
+/* unit_made_slots(unit): the slot indices of the unit the library makes, in increasing order, as a
+ * tuple of ints. */
+static PyObject* m_unit_made_slots(PyObject* self, PyObject* args)
+{
+    Door* d = (Door*)self;
+    PyObject* ounit;
+    void* unit;
+    int32_t n = 0;
+    if (!PyArg_ParseTuple(args, "O", &ounit) || !door_ready(d)
+        || handle_ptr(d, ounit, KIND_UNIT, &unit) < 0
+        || door_check(d, d->fn.eg_unit_made_slots(d->ctx, unit, 0, NULL, &n)) < 0)
+        return NULL;
+    int32_t* slots = n > 0 ? PyMem_Malloc((size_t)n * sizeof *slots) : NULL;
+    if (n > 0 && !slots)
+        return PyErr_NoMemory();
+    if (n > 0 && door_check(d, d->fn.eg_unit_made_slots(d->ctx, unit, n, slots, &n)) < 0) {
+        PyMem_Free(slots);
+        return NULL;
+    }
+    PyObject* made = PyTuple_New(n);
+    for (int32_t i = 0; made && i < n; ++i)
+        PyTuple_SetItem(made, i, PyLong_FromLong(slots[i]));
+    PyMem_Free(slots);
+    return made;
 }
 
 /* The array's DLPack 1.0 capsule (a new reference), asked with max_version (1, 0) and the stream
@@ -2445,6 +2472,7 @@ static PyMethodDef door_methods[] = {
     { "host_threads", m_host_threads, METH_VARARGS, NULL },
     { "unit_load", KEYWORD_CALL(m_unit_load), METH_VARARGS | METH_KEYWORDS, NULL },
     { "unit_free", m_unit_free, METH_VARARGS, NULL },
+    { "unit_made_slots", m_unit_made_slots, METH_VARARGS, NULL },
     { "plane_wrap", KEYWORD_CALL(m_plane_wrap), METH_VARARGS | METH_KEYWORDS, NULL },
     { "plane_free", m_plane_free, METH_VARARGS, NULL },
     { "array_layout", m_array_layout, METH_VARARGS, NULL },

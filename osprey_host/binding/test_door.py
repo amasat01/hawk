@@ -749,6 +749,22 @@ def check_graph_reverse(door, done, raises):
         door.unit_free(unit)
 
 
+def check_unit_made_slots(door, done, raises):
+    """The slots the library makes, as a unit answers them: none, or a group plane's slot."""
+    plain = door.unit_load(FIXTURE, "axpb", digest(0xA1))
+    planed = door.unit_load(FIXTURE, "grp_planed", digest(0x5B))
+    assert door.unit_made_slots(plain) == ()
+    assert door.unit_made_slots(planed) == (4,)
+    raises(
+        TypeError,
+        lambda: door.unit_made_slots(door.plane_new([2], 2, 64)),
+        "a plane in place of a unit",
+    )
+    for unit in (plain, planed):
+        door.unit_free(unit)
+    done.append("unit_made_slots: no slot for a plain unit, the scratch slot of a group plane")
+
+
 def check_fork_and_cond(door, done, raises):
     """Rows of forks, waits, the conditional's fields and graph_describe; numpy gives the values."""
 
@@ -2313,6 +2329,7 @@ def run(done, raises, not_run, backends):
     check_gemm(door, done, raises)
     check_graph_reverse(door, done, raises)
     check_host_nodes(door, cpu, done, raises)
+    check_unit_made_slots(door, done, raises)
     check_fork_and_cond(door, done, raises)
     check_reverse_structure(door, done)
     check_step_graphs_and_loops(door, done, raises)

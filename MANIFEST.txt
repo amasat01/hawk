@@ -13,11 +13,11 @@ Every file with its line count (this file excluded):
       8  osprey_host/binding/fixture/contract0.c
      11  osprey_host/binding/gen/Cargo.toml
    1428  osprey_host/binding/gen/src/main.rs
-   2702  osprey_host/binding/template/door.c
+   2730  osprey_host/binding/template/door.c
      45  osprey_host/binding/template/module.h
     116  osprey_host/binding/template/types.c
-   1091  osprey_host/binding/test_binding.py
-   2405  osprey_host/binding/test_door.py
+   1080  osprey_host/binding/test_binding.py
+   2422  osprey_host/binding/test_door.py
     314  osprey_host/binding/test_end_to_end.py
     311  osprey_host/binding/test_plane_axes.py
      96  osprey_host/binding/test_sideways.py
@@ -42,28 +42,28 @@ Every file with its line count (this file excluded):
     181  osprey_host/components/lowering/src/lower/active.rs
      51  osprey_host/components/lowering/src/lower/blocks.rs
      35  osprey_host/components/lowering/src/lower/boxed.rs
-    337  osprey_host/components/lowering/src/lower/card.rs
+    340  osprey_host/components/lowering/src/lower/card.rs
     258  osprey_host/components/lowering/src/lower/chain.rs
     776  osprey_host/components/lowering/src/lower/derived.rs
     199  osprey_host/components/lowering/src/lower/events.rs
     239  osprey_host/components/lowering/src/lower/functions.rs
      83  osprey_host/components/lowering/src/lower/fused.rs
-    641  osprey_host/components/lowering/src/lower/group.rs
+    765  osprey_host/components/lowering/src/lower/group.rs
      13  osprey_host/components/lowering/src/lower/image.rs
     335  osprey_host/components/lowering/src/lower/links.rs
     179  osprey_host/components/lowering/src/lower/merge.rs
-    928  osprey_host/components/lowering/src/lower/meta_c.rs
+    930  osprey_host/components/lowering/src/lower/meta_c.rs
    1440  osprey_host/components/lowering/src/lower/meta_fill.rs
-   1610  osprey_host/components/lowering/src/lower/mod.rs
+   1626  osprey_host/components/lowering/src/lower/mod.rs
      89  osprey_host/components/lowering/src/lower/peer.rs
     121  osprey_host/components/lowering/src/lower/placed.rs
    2030  osprey_host/components/lowering/src/lower/request.rs
     377  osprey_host/components/lowering/src/lower/segment.rs
     116  osprey_host/components/lowering/src/lower/stage_block.rs
     695  osprey_host/components/lowering/src/lower/stages.rs
-   1066  osprey_host/components/lowering/src/lower/unit_meta.rs
+   1077  osprey_host/components/lowering/src/lower/unit_meta.rs
     246  osprey_host/components/lowering/src/lower/warp.rs
-    508  osprey_host/components/lowering/src/testing.rs
+    511  osprey_host/components/lowering/src/testing.rs
     496  osprey_host/components/lowering/src/tool.rs
       1  osprey_host/components/lowering/tests/data/device_machine.json
       1  osprey_host/components/lowering/tests/data/facts/fusion.json
@@ -120,13 +120,13 @@ Every file with its line count (this file excluded):
     189  osprey_host/osprey_cpu/door/build.rs
      10  osprey_host/osprey_cpu/door/src/lib.rs
      20  osprey_host/osprey_cpu/facts/arm.json
-     29  osprey_host/osprey_cpu/facts/build.json
+     30  osprey_host/osprey_cpu/facts/build.json
       6  osprey_host/osprey_cpu/facts/cpu.json
      27  osprey_host/osprey_cpu/facts/host_build.json
      31  osprey_host/osprey_cpu/facts/tools.json
      28  osprey_host/osprey_cpu/facts/x86.json
      16  osprey_host/osprey_cpu/osprey.json
-    225  osprey_host/osprey_cpu/src/card.rs
+    240  osprey_host/osprey_cpu/src/card.rs
      48  osprey_host/osprey_cpu/src/compiler_family.rs
     147  osprey_host/osprey_cpu/src/host.rs
     286  osprey_host/osprey_cpu/src/host_build.rs
@@ -152,7 +152,7 @@ Every file with its line count (this file excluded):
      66  osprey_host/osprey_cuda/facts/cuda_image.json
      88  osprey_host/osprey_cuda/facts/tools.json
      16  osprey_host/osprey_cuda/osprey.json
-   1130  osprey_host/osprey_cuda/src/card.rs
+   1131  osprey_host/osprey_cuda/src/card.rs
     396  osprey_host/osprey_cuda/src/device.rs
     157  osprey_host/osprey_cuda/src/device_build.rs
     422  osprey_host/osprey_cuda/src/device_facts.rs
@@ -210,7 +210,7 @@ Every file with its line count (this file excluded):
      87  osprey_host/replay/tests/link_rules.rs
      55  osprey_host/replay/tests/live_environment.rs
     189  osprey_host/replay/tests/loop_rules.rs
-    689  osprey_host/replay/tests/meta_c.rs
+    692  osprey_host/replay/tests/meta_c.rs
     642  osprey_host/replay/tests/own_cards.rs
      54  osprey_host/replay/tests/param_cell.rs
      41  osprey_host/replay/tests/quantity.rs

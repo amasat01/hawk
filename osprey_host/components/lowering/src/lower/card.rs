@@ -103,6 +103,9 @@ pub struct BuildNumbers {
     pub team_threads: i64,
     /// The threads of a team for a larger matrix.
     pub team_threads_large: i64,
+    /// The bytes of one group's scratch plane above which the plane is held by the runtime instead of the unit's own text (an array
+    /// on the stack of the thread that runs the group); none for a target that writes no group.
+    pub group_scratch_plane_bytes: Option<i64>,
     /// The lanes one thread serves in a thread box, by scalar type name; a type with no entry is built without a box.
     pub box_lanes: Vec<(String, i64)>,
     /// The measured rows of the host's `steps_reverse` choice, when the build has a host target.

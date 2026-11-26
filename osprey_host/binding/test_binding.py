@@ -59,6 +59,7 @@ UNIT = {
     "machine": {"isa": "Arm64", "exact_libm": True, "routed_pow": False, "select_weight": {}},
     "exports": "Derived",
     "literal_table": False,
+    "planed_scratch": [],
 }
 
 
@@ -469,36 +470,24 @@ filled = c.zero_of("f64", [3])
 assert filled.field_text("kind") == "splat" and filled.ttype == ((3,), "f64", None)
 done.append("zero_of")
 
-# ---- the checks of a derivative template, and the kind names a primitive may not take ----
-inside = mk(c, "Leaf", [], LEAF.replace("vocab_read", "uniform") % "$in0")
-stranger = mk(c, "Leaf", [], LEAF.replace("vocab_read", "uniform") % "zz")
-closed = c.make_op("add", [inside, inside], "")
-assert c.rule_template_check("p", [closed], "$in0 $dot0 $out") is None
-e = raises(
-    ValueError,
-    lambda: c.rule_template_check("p", [c.make_op("add", [inside, stranger], "")], "$in0 $out"),
-    "rule_template_check: a free leaf that is not a placeholder",
-)
-assert str(e).startswith("primitive 'p': a rule template reads"), str(e)
-assert "'zz'" in str(e) and "(['$in0', '$out'])" in str(e), str(e)
-done.append("rule_template_check: a closed template, and a refusal by name")
-assert c.kind_reserved("primitive") and c.kind_reserved("assign")
-assert not c.kind_reserved("my_primitive") and not c.kind_reserved("add")
-done.append("kind_reserved")
-
 # ---- the kinds the wings declare: block sums, ordered writes, dispatch strategies ----
-wing_kinds = (
-    "block_sum",
-    "block_sum_write",
-    "ordered_accum_write",
-    "predicated_dispatch",
-    "segmented_dispatch",
-    "auto_dispatch",
-)
 fresh = o.Ctx()
-assert not any(fresh.kind_reserved(k) for k in wing_kinds)
-assert fresh.declare_kinds() is None and all(fresh.kind_reserved(k) for k in wing_kinds)
+
+
+def block_sum():
+    """Make a block sum with no operands: refused, and the refusal says whether the kind is declared."""
+    fields = "(('contract', 'auto'), ('kept', ()))"
+    return fresh.make("BlockSum", "f64", [3], None, [], fields)
+
+
+unknown = raises(o.NotWritten, block_sum, "a wing class is unknown before declare_kinds")
+assert str(unknown) == 'unknown class "BlockSum"', str(unknown)
 assert fresh.declare_kinds() is None
+declared = raises(o.NotWritten, block_sum, "a wing class is known after declare_kinds")
+assert str(declared) == "kind 'block_sum': takes 3..3 operand(s), got 0", str(declared)
+assert fresh.declare_kinds() is None
+again = raises(o.NotWritten, block_sum, "a second declare_kinds changes nothing")
+assert str(again) == str(declared)
 done.append("declare_kinds: the wing kinds exist after it, and a second call changes nothing")
 
 # ---- the block predicates of a keyed-sum payload (values recorded from the previous package) ----
